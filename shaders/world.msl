@@ -1,0 +1,125 @@
+//
+// world.msl - W3 world-rendering shaders for the Metal 4 refresher.
+//
+// Compiled at runtime by the MTL4Compiler from the embedded source
+// (see src/files/mtl_shaders.c, generated from this file).
+//
+// Vertex data comes from [[stage_in]] (bound through the vertex-stage
+// argument table at buffer index 0); everything else is delivered
+// through an MTL4ArgumentTable:
+//   vertex stage : [[buffer(1)]] = WorldUbo
+//   fragment     : [[texture(0)]] = surface (and [[texture(1)]] lightmap
+//                  for the lmap path), [[buffer(0)]] = WorldUbo
+//
+// The WorldUbo layout must match world_ubo_t in mtl.h exactly.
+
+#include <metal_stdlib>
+using namespace metal;
+
+struct WorldUbo
+{
+    float4x4 viewproj;		// @0
+    float4x4 model;		// @64
+    float4   color;		// @128
+    float    gamma;		// @144
+    float    viewLightmaps;	// @148
+};
+
+// MSL 3.x removed the coord argument from the sampler constructor.
+constexpr sampler world_sampler(address::repeat, filter::linear, mip_filter::linear);
+constexpr sampler world_lmap_sampler(address::clamp_to_edge, filter::linear);
+
+//==================================================================
+// Plain (unlightmapped) world polys. World-space vertices for the
+// world model (identity model matrix); bmodel water and flowing
+// surfaces pass a real model matrix.
+//==================================================================
+
+struct world_plain_in
+{
+    float3 position [[attribute(0)]];
+    float2 uv      [[attribute(1)]];
+};
+
+struct world_vertex_out
+{
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex world_vertex_out
+world_plain_vertex(world_plain_in in [[stage_in]],
+                  const device WorldUbo *ubo [[buffer(1)]])
+{
+    world_vertex_out out;
+    out.position = ubo->viewproj * (ubo->model * float4(in.position, 1.0));
+    out.uv = in.uv;
+    return out;
+}
+
+fragment float4
+world_plain_fragment(world_vertex_out in [[stage_in]],
+                     texture2d<float, access::sample> tex [[texture(0)]],
+                     constant WorldUbo *ubo [[buffer(0)]])
+{
+    float4 c = tex.sample(world_sampler, in.uv) * ubo->color;
+    c.rgb = pow(c.rgb, float3(ubo->gamma));
+    return c;
+}
+
+//==================================================================
+// Lightmapped world polys: viewproj * model * pos
+//==================================================================
+
+struct world_lmap_in
+{
+    float3 position     [[attribute(0)]];
+    float2 uv          [[attribute(1)]];
+    float2 lmapuv      [[attribute(2)]];
+};
+
+struct world_lmap_out
+{
+    float4 position [[position]];
+    float2 uv;
+    float2 lmapuv;
+    float  viewLightmaps;
+};
+
+vertex world_lmap_out
+world_lmap_vertex(world_lmap_in in [[stage_in]],
+                 const device WorldUbo *ubo [[buffer(1)]])
+{
+    world_lmap_out out;
+    out.position = ubo->viewproj * (ubo->model * float4(in.position, 1.0));
+    out.uv = in.uv;
+    out.lmapuv = in.lmapuv;
+    out.viewLightmaps = ubo->viewLightmaps;
+    return out;
+}
+
+fragment float4
+world_lmap_fragment(world_lmap_out in [[stage_in]],
+                    texture2d<float, access::sample> tex [[texture(0)]],
+                    texture2d<float, access::sample> lmap [[texture(1)]],
+                    constant WorldUbo *ubo [[buffer(0)]])
+{
+    float4 color = tex.sample(world_sampler, in.uv);
+    float4 light = lmap.sample(world_lmap_sampler, in.lmapuv);
+    return (1.0 - in.viewLightmaps) * color * light + in.viewLightmaps * light;
+}
+
+//==================================================================
+// Sky: 20-byte vertices (pos3 + uv2), viewproj * model * pos, plain
+// fragment (color = white).
+//==================================================================
+
+vertex world_vertex_out
+world_sky_vertex(world_plain_in in [[stage_in]],
+                const device WorldUbo *ubo [[buffer(1)]])
+{
+    world_vertex_out out;
+    out.position = ubo->viewproj * (ubo->model * float4(in.position, 1.0));
+    out.uv = in.uv;
+    return out;
+}
