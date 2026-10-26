@@ -112,6 +112,11 @@ typedef struct
 	float color[3];
 } dlightvert_t;				// 24 bytes
 
+typedef struct
+{
+	float position[2];
+} flashvert_t;				// 8 bytes
+
 // Per-draw uniform block. Must match the MSL WorldUbo layout exactly
 // (float4x4 members are 64-byte aligned in both C and MSL).
 typedef struct
@@ -183,6 +188,7 @@ extern cvar_t	*r_cull;
 extern cvar_t	*mtl_picmip;
 extern cvar_t	*r_palettedtexture;
 extern cvar_t	*mtl_flashblend;
+extern cvar_t	*mtl_polyblend;
 extern cvar_t	*mtl_dynamic;
 extern cvar_t	*mtl_showtris;
 extern cvar_t	*r_lightmap;
@@ -382,6 +388,14 @@ typedef struct mtlstate_s
 	id<MTLRenderPipelineState>	pipeline_dlight;	// dlight_vertex + dlight_fragment
 	id<MTL4ArgumentTable>		dlight_vert_table;	// buf0 = stage_in verts, buf1 = UBO
 
+	// W4: view flash (R_PolyBlend): full-screen clip-space quad, uniform
+	// color from v_blend, standard alpha blend, no depth test or write.
+	// The six vertices are static; the color rides on the world UBO ring
+	// (16 bytes per frame).
+	id<MTLRenderPipelineState>	pipeline_flash;	// flash_vertex + flash_fragment
+	id<MTL4ArgumentTable>		flash_vert_table;	// buf0 = stage_in verts, buf1 = color UBO
+	id<MTLBuffer>			flash_vertex_buffer;	// static 6-vertex triangle list (8B each)
+
 	// W3: per-slot vertex/UBO rings (one per allocator slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)
 	id<MTLBuffer>			world_lmap_vertex_buffer[3];	// lmappolyvert_t records (28B)
@@ -408,6 +422,7 @@ typedef struct mtlstate_s
 	id<MTLTexture>			depth_texture;
 	id<MTLDepthStencilState>	depth_state;	// world pass: less-than, writes
 	id<MTLDepthStencilState>	depth_state_nodwrite;	// dlights: less-than, no writes
+	id<MTLDepthStencilState>	depth_state_none;	// flash: always, no writes
 	int				depth_width;
 	int				depth_height;
 

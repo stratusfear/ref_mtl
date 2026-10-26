@@ -164,3 +164,42 @@ dlight_fragment(dlight_out in [[stage_in]])
 {
     return float4(in.color, 1.0);
 }
+
+//==================================================================
+// View flash (R_PolyBlend): a full-screen clip-space quad with a
+// uniform RGBA color taken from v_blend (pain / damage feedback).
+// The vertices are already NDC, so no matrix is needed; the color
+// arrives in a small UBO and is passed through to the fragment.
+//==================================================================
+
+struct FlashUbo
+{
+    float4 color;		// @0
+};
+
+struct flash_in
+{
+    float2 position [[attribute(0)]];
+};
+
+struct flash_out
+{
+    float4 position [[position]];
+    float4 color;
+};
+
+vertex flash_out
+flash_vertex(flash_in in [[stage_in]],
+             const device FlashUbo *ubo [[buffer(1)]])
+{
+    flash_out out;
+    out.position = float4(in.position, 0.0, 1.0);
+    out.color = ubo->color;
+    return out;
+}
+
+fragment float4
+flash_fragment(flash_out in [[stage_in]])
+{
+    return in.color;
+}

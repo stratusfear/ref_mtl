@@ -101,6 +101,7 @@ cvar_t		*r_cull;
 cvar_t		*mtl_picmip;
 cvar_t		*r_palettedtexture;
 cvar_t		*mtl_flashblend;
+cvar_t		*mtl_polyblend;
 cvar_t		*mtl_dynamic;
 cvar_t		*mtl_showtris;
 cvar_t		*r_lightmap;
@@ -146,6 +147,7 @@ R_Register(void)
 	mtl_picmip = ri.Cvar_Get("mtl_picmip", "0", 0);
 	r_palettedtexture = ri.Cvar_Get("r_palettedtexture", "0", 0);
 	mtl_flashblend = ri.Cvar_Get("mtl_flashblend", "0", 0);
+	mtl_polyblend = ri.Cvar_Get("mtl_polyblend", "1", 0);
 	r_clear = ri.Cvar_Get("r_clear", "0", CVAR_ARCHIVE);
 	r_lockpvs = ri.Cvar_Get("r_lockpvs", "0", 0);
 	r_modulate = ri.Cvar_Get("r_modulate", "1", CVAR_ARCHIVE);
@@ -632,6 +634,16 @@ R_ReleaseShaders(mtlstate_t *st)
 			st->dlight_vertex_buffer[i] = nil;
 		}
 	}
+	if (st->flash_vertex_buffer != nil)
+	{
+		[st->flash_vertex_buffer release];
+		st->flash_vertex_buffer = nil;
+	}
+	if (st->depth_state_none != nil)
+	{
+		[st->depth_state_none release];
+		st->depth_state_none = nil;
+	}
 	if (st->depth_state_nodwrite != nil)
 	{
 		[st->depth_state_nodwrite release];
@@ -672,10 +684,20 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->dlight_vert_table release];
 		st->dlight_vert_table = nil;
 	}
+	if (st->flash_vert_table != nil)
+	{
+		[st->flash_vert_table release];
+		st->flash_vert_table = nil;
+	}
 	if (st->pipeline_dlight != nil)
 	{
 		[st->pipeline_dlight release];
 		st->pipeline_dlight = nil;
+	}
+	if (st->pipeline_flash != nil)
+	{
+		[st->pipeline_flash release];
+		st->pipeline_flash = nil;
 	}
 	if (st->pipeline_sky != nil)
 	{
@@ -871,6 +893,73 @@ R_InitShaders(void)
 		}
 	}
 
+	/* W4: view flash (R_PolyBlend). Full-screen clip-space quad with a
+	   uniform color from v_blend, standard alpha blend (matching the vk
+	   color-rect pipeline), no depth test or write. The six vertices are
+	   static; the color is written into the world UBO ring per frame. */
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"flash_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"flash_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat2;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(flashvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_flash = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_flash == nil)
+		{
+			Com_Printf("ref_mtl: flash pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		/* Static full-screen quad: two triangles in the mtl convention
+		   (triangle list, no index buffers). Winding is irrelevant - the
+		   flash draws with culling disabled. */
+		st->flash_vertex_buffer = [st->device newBufferWithLength:6 * sizeof(flashvert_t) options:MTLResourceStorageModeShared];
+		if (st->flash_vertex_buffer == nil)
+		{
+			Com_Printf("ref_mtl: failed to create flash vertex buffer\n");
+			R_ReleaseShaders(st);
+			return false;
+		}
+		{
+			static const float corners[12] = {
+				-1.f, -1.f,  1.f, -1.f,  1.f,  1.f,
+				-1.f, -1.f, -1.f,  1.f,  1.f,  1.f,
+			};
+			flashvert_t *dst = (flashvert_t *)st->flash_vertex_buffer.contents;
+
+			for (i = 0; i < 6; i++)
+			{
+				dst[i].position[0] = corners[i * 2];
+				dst[i].position[1] = corners[i * 2 + 1];
+			}
+		}
+	}
+
 	/* Per-slot vertex/UBO rings. The CPU writes world vertices and one
 	   world_ubo_t per draw into the current slot's rings; the GPU consumes
 	   them within the same frame. The slots are gated by the shared event
@@ -950,6 +1039,16 @@ R_InitShaders(void)
 			R_ReleaseShaders(st);
 			return false;
 		}
+
+		atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->flash_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->flash_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create flash vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
 	}
 
 	/* W4: single depth state for the whole world pass - less-than compare,
@@ -978,6 +1077,17 @@ R_InitShaders(void)
 			R_ReleaseShaders(st);
 			return false;
 		}
+
+		/* The flash is drawn last in the world pass, full-screen, and must
+		   never test or write depth. */
+		dsd.depthCompareFunction = MTLCompareFunctionAlways;
+		st->depth_state_none = [st->device newDepthStencilStateWithDescriptor:dsd];
+		if (st->depth_state_none == nil)
+		{
+			Com_Printf("ref_mtl: failed to create no-compare depth stencil state\n");
+			R_ReleaseShaders(st);
+			return false;
+		}
 	}
 
 	/* Metal 4 residency: GPU-visible resources must be part of a committed
@@ -1002,11 +1112,12 @@ R_InitShaders(void)
 			[st->residency_set addAllocation:st->world_ubo[i]];
 			[st->residency_set addAllocation:st->dlight_vertex_buffer[i]];
 		}
+		[st->residency_set addAllocation:st->flash_vertex_buffer];
 		[st->residency_set commit];
 		[st->queue addResidencySet:st->residency_set];
 	}
 
-	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight pipelines)\n");
+	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash pipelines)\n");
 
 	return true;
 }
@@ -1447,6 +1558,60 @@ RE_SetPalette(const unsigned char *palette)
 }
 
 /*
+=============
+R_RenderFlash
+
+View flash (the vk R_PolyBlend equivalent): a full-screen quad tinted with
+v_blend (pain / damage feedback from the core), drawn last in the world
+pass. Gated by mtl_polyblend and skipped when v_blend's alpha is zero. The
+color rides on the slot's world UBO ring (16 bytes), like the dlight UBOs.
+=============
+*/
+static void
+R_RenderFlash(void)
+{
+	mtlstate_t *st = &mtl_state;
+	size_t slot;
+	MTLGPUAddress ubo_addr;
+	float *ubo;
+
+	if (!mtl_polyblend->value || !v_blend[3])
+	{
+		return;
+	}
+
+	if (st->encoder == nil || st->pipeline_flash == nil)
+	{
+		return;
+	}
+
+	slot = st->frame_slot;
+	if (st->world_ubo_offset[slot] + sizeof(float) * 4 > WORLD_UBO_RING_BYTES)
+	{
+		return;	/* ring exhausted, skip the flash */
+	}
+
+	ubo_addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
+	ubo = (float *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	ubo[0] = v_blend[0];
+	ubo[1] = v_blend[1];
+	ubo[2] = v_blend[2];
+	ubo[3] = v_blend[3];
+	st->world_ubo_offset[slot] += sizeof(float) * 4;
+
+	[st->flash_vert_table setAddress:st->flash_vertex_buffer.gpuAddress atIndex:0];
+	[st->flash_vert_table setAddress:ubo_addr atIndex:1];
+
+	[st->encoder setDepthStencilState:st->depth_state_none];
+	[st->encoder setRenderPipelineState:st->pipeline_flash];
+	[st->encoder setArgumentTable:st->flash_vert_table atStages:MTLRenderStageVertex];
+	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+
+	/* restore the world-pass encoder state */
+	[st->encoder setDepthStencilState:st->depth_state];
+}
+
+/*
 ==============
 RE_RenderFrame
 
@@ -1495,6 +1660,7 @@ RE_RenderFrame(refdef_t *fd)
 	R_SetupFrame();
 	R_DrawWorld();
 	R_RenderDlights();
+	R_RenderFlash();
 
 	[st->encoder endEncoding];
 	st->encoder = nil;
