@@ -114,7 +114,7 @@ Fan-expand one polygon and draw it with the plain pipeline.
 */
 static void MTL_DrawPoly (mtlpoly_t *p, image_t *texture, float *color)
 {
-	MTL_DrawPolyChain (p, texture->mtl_texture, NULL, color, 1.f, 0.f, false);
+	MTL_DrawPolyChain (p, texture->mtl_texture, NULL, color, 1.f, 0.f, false, 0.f, false);
 }
 
 //============
@@ -133,7 +133,7 @@ MTL_DrawFlowingPoly(msurface_t *fa, image_t *texture, const float *color)
 	if (scroll == 0.0)
 		scroll = -64.0;
 
-	MTL_DrawPolyChain (fa->polys, texture->mtl_texture, NULL, color, 1.f, scroll, false);
+	MTL_DrawPolyChain (fa->polys, texture->mtl_texture, NULL, color, 1.f, scroll, false, 0.f, false);
 }
 
 static void
@@ -1150,8 +1150,38 @@ MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 	return addr;
 }
 
+/*
+ * Fills one fan-expanded vertex record: position straight from the poly,
+ * texture coords transformed by uvscale/scroll, plus the per-vertex sine
+ * turbulence when warp is set. The sine is evaluated per vertex (matching
+ * the vk polygon_warp vertex shader); the GPU interpolates it across the
+ * triangle, so subdivision density controls the warp's smoothness.
+ */
+static void MTL_WritePolyVert (polyvert_t *dst, const float *src,
+	float uvscale, float scroll, float time, qboolean warp)
+{
+	dst->vertex[0] = src[0];
+	dst->vertex[1] = src[1];
+	dst->vertex[2] = src[2];
+
+	if (warp)
+	{
+		float s = src[3] * uvscale;
+		float t = src[4] * uvscale;
+
+		dst->texCoord[0] = s + scroll + sinf(2.0f * time + t * 3.28f) * 0.05f;
+		dst->texCoord[1] = t + sinf(2.0f * time + s * 3.28f) * 0.05f;
+	}
+	else
+	{
+		dst->texCoord[0] = src[3] * uvscale + scroll;
+		dst->texCoord[1] = src[4] * uvscale;
+	}
+}
+
 void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model,
-	const float *color, float uvscale, float scroll, qboolean sky)
+	const float *color, float uvscale, float scroll, qboolean sky,
+	float time, qboolean warp)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
@@ -1183,24 +1213,12 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 		dst = ring + vstart / sizeof(polyvert_t);
 		for (k = 0; k < nv - 2; k++)
 		{
-			const float *src;
-
-			src = p->verts[0];
-			dst->vertex[0] = src[0];
-			dst->vertex[1] = src[1];
-			dst->vertex[2] = src[2];
-			dst->texCoord[0] = src[3] * uvscale + scroll;
-			dst->texCoord[1] = src[4] * uvscale;
+			MTL_WritePolyVert (dst, p->verts[0], uvscale, scroll, time, warp);
 			dst++;
 
 			for (i = k + 1; i <= k + 2; i++)
 			{
-				src = p->verts[i];
-				dst->vertex[0] = src[0];
-				dst->vertex[1] = src[1];
-				dst->vertex[2] = src[2];
-				dst->texCoord[0] = src[3] * uvscale + scroll;
-				dst->texCoord[1] = src[4] * uvscale;
+				MTL_WritePolyVert (dst, p->verts[i], uvscale, scroll, time, warp);
 				dst++;
 			}
 		}

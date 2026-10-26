@@ -237,12 +237,17 @@ void R_MarkLeaves (void);
  * the current frame slot's vertex ring and draws it with the plain-texture
  * pipeline (sky == false) or the sky pipeline (sky == true). `uvscale`/
  * `scroll` transform the texture coordinates: uv = verts[3..4] * uvscale
- * + scroll (s component only). MTL_DrawLightmappedChain does the same
- * for lightmapped surfaces (28-byte vertices, scroll added to the surface
- * uv only). MTL_DrawSkyQuad draws a pre-built 6-vertex sky quad.
+ * + scroll (s component only); when warp is set a per-vertex sine turbulence
+ * is added on top (classic water/lava warp, evaluated per vertex so the GPU
+ * interpolates it across each triangle): uv.s += sin(2*time + uv.t*3.28)*0.05,
+ * uv.t += sin(2*time + uv.s*3.28)*0.05, with scroll applied to s after the
+ * warp (matching the vk polygon_warp vertex shader). MTL_DrawLightmappedChain
+ * does the same for lightmapped surfaces (28-byte vertices, scroll added to
+ * the surface uv only). MTL_DrawSkyQuad draws a pre-built 6-vertex sky quad.
  */
 void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model,
-	const float *color, float uvscale, float scroll, qboolean sky);
+	const float *color, float uvscale, float scroll, qboolean sky,
+	float time, qboolean warp);
 void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 	id<MTLTexture> lmap, const float *model, const float *color, float scroll);
 void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
