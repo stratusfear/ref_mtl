@@ -274,6 +274,7 @@ $(BUILDDIR)/%.o: %.m
 # ----------
 
 REFMTL_OBJS_ := \
+	src/mtl/mtl_alias.o \
 	src/mtl/mtl_main.o \
 	src/mtl/mtl_light.o \
 	src/mtl/mtl_image.o \

@@ -1,0 +1,846 @@
+/*
+ * Copyright (C) 1997-2001 Id Software, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or (at
+ * your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
+ * USA.
+ *
+ * =======================================================================
+ *
+ * W5a: alias models (MD2/SP2)
+ *
+ * Ported from ref_vk (vk_mesh.c). The glcmd strip/fan list is expanded
+ * into triangle lists on the CPU (Metal has no strip/fan topology), with
+ * the exact winding ref_vk's index buffers use (see vk_common.c
+ * RebuildTriangleIndexBuffer): fan vertex i emits (0, i+1, i+2); strip
+ * vertex i emits (i-2, i-1, i) for even i and (i, i-1, i-2) for odd i.
+ * Vertices land in the per-slot alias ring; one alias_ubo_t (model
+ * matrix + viewproj + textured flag) is written to the world UBO ring
+ * per model and shared by all of its draws.
+ *
+ * Deferred from ref_vk: RF_DEPTHHACK / RDF_NOWORLDMODEL projection
+ * hacking, r_lefthand mirroring, shadows (vk_shadows). None of these
+ * matter for baseq2 world entities.
+ *
+ * =======================================================================
+ */
+
+#include "header/mtl.h"
+
+#define SHADEDOT_QUANT	16
+
+static float r_avertexnormals[NUMVERTEXNORMALS][3] = {
+#include "../constants/anorms.h"
+};
+static float r_avertexnormal_dots[SHADEDOT_QUANT][256] = {
+#include "../constants/anormtab.h"
+};
+
+static float shadelight[3];
+static float *shadedots;
+
+/*
+ * Lerped vertex positions in model space, one vec3 per vertex of the
+ * current frame. Reallocated on demand like ref_vk's Mesh_VertsRealloc.
+ */
+static float *s_lerped;	// s_lerped_count * 3 floats
+static int s_lerped_count;
+
+/* Parsed glcmd vertices of the command currently being expanded. */
+typedef struct
+{
+	float uv[2];
+	int index;
+} alias_cmdvert_t;
+
+static alias_cmdvert_t *s_cmdverts;	// s_cmdverts_count records
+static int s_cmdverts_count;
+
+static int
+Alias_LerpRealloc(int count)
+{
+	void *ptr;
+
+	if (s_lerped_count >= count)
+		return 0;
+
+	s_lerped_count = ROUNDUP(count, 256);
+	ptr = realloc(s_lerped, (size_t)s_lerped_count * sizeof(float) * 3);
+	if (!ptr)
+		return -1;
+	s_lerped = ptr;
+
+	return 0;
+}
+
+static int
+Alias_CmdvertRealloc(int count)
+{
+	void *ptr;
+
+	if (s_cmdverts_count >= count)
+		return 0;
+
+	s_cmdverts_count = ROUNDUP(count, 256);
+	ptr = realloc(s_cmdverts, (size_t)s_cmdverts_count * sizeof(alias_cmdvert_t));
+	if (!ptr)
+		return -1;
+	s_cmdverts = ptr;
+
+	return 0;
+}
+
+/*
+ * Writes one alias_ubo_t into the slot's world UBO ring and returns its
+ * GPU address (0 when the ring is exhausted). The model matrix is in
+ * model space (rotation + translation only); the vertex shader applies
+ * viewproj * model.
+ */
+MTLGPUAddress
+MTL_EmitAliasUbo(size_t slot, const float *model, float textured)
+{
+	mtlstate_t *st = &mtl_state;
+	alias_ubo_t *ubo;
+	MTLGPUAddress addr;
+
+	if (st->world_ubo_offset[slot] + sizeof(alias_ubo_t) > WORLD_UBO_RING_BYTES)
+		return 0;
+
+	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
+	ubo = (alias_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
+	memcpy(ubo->model, model, sizeof(float) * 16);
+	ubo->textured = textured;
+	st->world_ubo_offset[slot] += sizeof(alias_ubo_t);
+
+	return addr;
+}
+
+/*
+ * Interpolates the frame's vertices between two frames and origins
+ * (ref_vk Vk_LerpVerts). The result lands in s_lerped, one vec3 per
+ * vertex. Shells offset the vertices along their normals by
+ * POWERSUIT_SCALE so the power armor shell wraps the body.
+ */
+static void
+Alias_LerpVerts(int nverts, dtrivertx_t *v, dtrivertx_t *ov, dtrivertx_t *verts,
+    float *lerp, const float move[3], const float frontv[3], const float backv[3],
+    entity_t *currententity)
+{
+	int i;
+
+	if (currententity->flags & (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE | RF_SHELL_DOUBLE | RF_SHELL_HALF_DAM))
+	{
+		for (i = 0; i < nverts; i++, v++, ov++, lerp += 3)
+		{
+			float *normal = r_avertexnormals[verts[i].lightnormalindex];
+
+			lerp[0] = move[0] + ov->v[0]*backv[0] + v->v[0]*frontv[0] + normal[0] * POWERSUIT_SCALE;
+			lerp[1] = move[1] + ov->v[1]*backv[1] + v->v[1]*frontv[1] + normal[1] * POWERSUIT_SCALE;
+			lerp[2] = move[2] + ov->v[2]*backv[2] + v->v[2]*frontv[2] + normal[2] * POWERSUIT_SCALE;
+		}
+	}
+	else
+	{
+		for (i = 0; i < nverts; i++, v++, ov++, lerp += 3)
+		{
+			lerp[0] = move[0] + ov->v[0]*backv[0] + v->v[0]*frontv[0];
+			lerp[1] = move[1] + ov->v[1]*backv[1] + v->v[1]*frontv[1];
+			lerp[2] = move[2] + ov->v[2]*backv[2] + v->v[2]*frontv[2];
+		}
+	}
+}
+
+/*
+ * One alias ring record for a parsed glcmd vertex: the lerped position,
+ * the texture coordinates from the glcmd list (unused by shells), and
+ * the per-vertex light color (shadedots * shadelight, or plain
+ * shadelight for shells).
+ */
+static void
+MTL_WriteAliasVert(aliasvert_t *dst, const alias_cmdvert_t *cv, dtrivertx_t *verts,
+    float alpha, qboolean shell)
+{
+	dst->position[0] = s_lerped[cv->index * 3 + 0];
+	dst->position[1] = s_lerped[cv->index * 3 + 1];
+	dst->position[2] = s_lerped[cv->index * 3 + 2];
+
+	if (shell)
+	{
+		/* shells are untextured solid color (see alias_fragment) */
+		dst->uv[0] = 0.f;
+		dst->uv[1] = 0.f;
+		dst->color[0] = shadelight[0];
+		dst->color[1] = shadelight[1];
+		dst->color[2] = shadelight[2];
+	}
+	else
+	{
+		/* texture coordinates come from the draw list */
+		dst->uv[0] = cv->uv[0];
+		dst->uv[1] = cv->uv[1];
+
+		/* normals and vertexes come from the frame list */
+		{
+			float l = shadedots[verts[cv->index].lightnormalindex];
+
+			dst->color[0] = l * shadelight[0];
+			dst->color[1] = l * shadelight[1];
+			dst->color[2] = l * shadelight[2];
+		}
+	}
+	dst->color[3] = alpha;
+}
+
+/*
+ * Walks one glcmd list (a mesh node's strip/fan commands) and draws it.
+ * Each command is parsed into s_cmdverts, CPU-expanded into a triangle
+ * list in the slot's alias ring (ref_vk winding, see the file header),
+ * and drawn with the model's UBO and skin.
+ *
+ * Returns 0 when the whole list was consumed; -1 when the ring was
+ * exhausted or a vertex index was out of range (the rest of the model
+ * is skipped).
+ */
+static int
+MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
+    dtrivertx_t *verts, int num_xyz, MTLGPUAddress ubo_addr,
+    qboolean shell, qboolean translucent)
+{
+	mtlstate_t *st = &mtl_state;
+	size_t slot;
+	aliasvert_t *ring;
+
+	if (st->encoder == nil || skin == NULL || skin->mtl_texture == nil)
+		return 0;
+
+	slot = st->frame_slot;
+	ring = (aliasvert_t *)st->alias_vertex_buffer[slot].contents;
+
+	while (1)
+	{
+		int count;
+		qboolean fan;
+		size_t vstart;
+		aliasvert_t *dst;
+		int tri_count;
+		int i, k;
+
+		count = *order++;
+
+		if (!count || order >= order_end)
+			break;	/* done */
+
+		fan = count < 0;
+		if (fan)
+			count = -count;
+
+		if (count < 3)
+			continue;
+
+		if (Alias_CmdvertRealloc(count))
+		{
+			Com_Error(ERR_FATAL, "MTL_DrawAliasGlcmds: can't allocate memory\n");
+		}
+
+		/* parse the command's vertices and validate the indices */
+		for (i = 0; i < count; i++)
+		{
+			int index_xyz = order[2];
+
+			if (index_xyz < 0 || index_xyz >= num_xyz)
+			{
+				Com_Printf("MTL_DrawAliasGlcmds: model has issues with lerped index\n");
+				return -1;
+			}
+
+			s_cmdverts[i].uv[0] = ((float *)order)[0];
+			s_cmdverts[i].uv[1] = ((float *)order)[1];
+			s_cmdverts[i].index = index_xyz;
+			order += 3;
+		}
+
+		/* expand the strip/fan into a triangle list */
+		tri_count = (count - 2) * 3;
+		vstart = st->alias_vertex_offset[slot];
+		if (vstart + (size_t)tri_count * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+			return -1;	/* ring exhausted, skip the rest */
+
+		dst = ring + vstart / sizeof(aliasvert_t);
+		if (fan)
+		{
+			for (i = 0; i < count - 2; i++)
+			{
+				for (k = 0; k < 3; k++)
+					MTL_WriteAliasVert(dst++, &s_cmdverts[k == 0 ? 0 : i + k], verts, alpha, shell);
+			}
+		}
+		else
+		{
+			for (i = 2; i < count; i++)
+			{
+				if (i & 1)
+				{
+					MTL_WriteAliasVert(dst++, &s_cmdverts[i], verts, alpha, shell);
+					MTL_WriteAliasVert(dst++, &s_cmdverts[i - 1], verts, alpha, shell);
+					MTL_WriteAliasVert(dst++, &s_cmdverts[i - 2], verts, alpha, shell);
+				}
+				else
+				{
+					MTL_WriteAliasVert(dst++, &s_cmdverts[i - 2], verts, alpha, shell);
+					MTL_WriteAliasVert(dst++, &s_cmdverts[i - 1], verts, alpha, shell);
+					MTL_WriteAliasVert(dst++, &s_cmdverts[i], verts, alpha, shell);
+				}
+			}
+		}
+		st->alias_vertex_offset[slot] += (size_t)tri_count * sizeof(aliasvert_t);
+
+		[st->alias_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
+		[st->alias_vert_table setAddress:ubo_addr atIndex:1];
+		[st->alias_frag_table setTexture:skin->mtl_texture.gpuResourceID atIndex:0];
+		[st->alias_frag_table setAddress:ubo_addr atIndex:0];
+
+		[st->encoder setRenderPipelineState:translucent ? st->pipeline_alias_translucent : st->pipeline_alias];
+		[st->encoder setDepthStencilState:translucent ? st->depth_state_nodwrite : st->depth_state];
+		[st->encoder setArgumentTable:st->alias_vert_table atStages:MTLRenderStageVertex];
+		[st->encoder setArgumentTable:st->alias_frag_table atStages:MTLRenderStageFragment];
+		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)tri_count];
+	}
+
+	return 0;
+}
+
+/*
+ * Draws the model's lerped frame for each mesh node (ref_vk
+ * Vk_DrawAliasFrameLerp). The model matrix and UBO are computed once;
+ * all of the model's glcmd draws share them.
+ */
+static void
+MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
+    float *modelMatrix, entity_t *currententity)
+{
+	daliasframe_t *frame, *oldframe;
+	dtrivertx_t *v, *ov, *verts;
+	int *order;
+	float frontlerp;
+	float alpha;
+	vec3_t move, delta, vectors[3];
+	vec3_t frontv, backv;
+	int i;
+	float *lerp;
+	int num_mesh_nodes;
+	short *mesh_nodes;
+	qboolean shell, translucent;
+	MTLGPUAddress ubo_addr;
+
+	frame = (daliasframe_t *)((byte *)paliashdr + paliashdr->ofs_frames
+	    + currententity->frame * paliashdr->framesize);
+	verts = v = frame->verts;
+
+	oldframe = (daliasframe_t *)((byte *)paliashdr + paliashdr->ofs_frames
+	    + currententity->oldframe * paliashdr->framesize);
+	ov = oldframe->verts;
+
+	order = (int *)((byte *)paliashdr + paliashdr->ofs_glcmds);
+
+	if (currententity->flags & RF_TRANSLUCENT)
+	{
+		alpha = currententity->alpha;
+	}
+	else
+	{
+		alpha = 1.0;
+	}
+
+	frontlerp = 1.0 - backlerp;
+
+	/* move should be the delta back to the previous frame * backlerp */
+	VectorSubtract(currententity->oldorigin, currententity->origin, delta);
+	AngleVectors(currententity->angles, vectors[0], vectors[1], vectors[2]);
+
+	move[0] = DotProduct(delta, vectors[0]); /* forward */
+	move[1] = -DotProduct(delta, vectors[1]); /* left */
+	move[2] = DotProduct(delta, vectors[2]); /* up */
+
+	VectorAdd(move, oldframe->translate, move);
+
+	for (i = 0; i < 3; i++)
+	{
+		move[i] = backlerp * move[i] + frontlerp * frame->translate[i];
+
+		frontv[i] = frontlerp * frame->scale[i];
+		backv[i] = backlerp * oldframe->scale[i];
+	}
+
+	if (Alias_LerpRealloc(paliashdr->num_xyz))
+	{
+		Com_Error(ERR_FATAL, "MTL_DrawAliasFrameLerp: can't allocate memory\n");
+	}
+
+	lerp = s_lerped;
+	Alias_LerpVerts(paliashdr->num_xyz, v, ov, verts, lerp, move, frontv, backv, currententity);
+
+	shell = (currententity->flags & (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE)) != 0;
+	translucent = (currententity->flags & RF_TRANSLUCENT) != 0;
+
+	ubo_addr = MTL_EmitAliasUbo(mtl_state.frame_slot, modelMatrix,
+	    shell ? 0.f : (r_lightmap->value ? 0.f : 1.f));
+	if (ubo_addr == 0)
+		return;	/* UBO ring exhausted */
+
+	num_mesh_nodes = (paliashdr->ofs_skins - sizeof(dmdl_t)) / sizeof(short) / 2;
+	mesh_nodes = (short *)((char *)paliashdr + sizeof(dmdl_t));
+
+	if (num_mesh_nodes > 0)
+	{
+		for (i = 0; i < num_mesh_nodes; i++)
+		{
+			if (MTL_DrawAliasGlcmds(order + mesh_nodes[i * 2],
+			    order + Q_min(paliashdr->num_glcmds, mesh_nodes[i * 2] + mesh_nodes[i * 2 + 1]),
+			    alpha, skin, verts, paliashdr->num_xyz, ubo_addr, shell, translucent))
+				return;
+		}
+	}
+	else
+	{
+		MTL_DrawAliasGlcmds(order, order + paliashdr->num_glcmds,
+		    alpha, skin, verts, paliashdr->num_xyz, ubo_addr, shell, translucent);
+	}
+}
+
+/*
+ * Frustum culls the model with a per-frame bounding box (ref_vk
+ * R_CullAliasModel): the frame and oldframe translate/scale extents are
+ * combined into an axis-aligned box, its 8 corners are rotated into view
+ * space (yaw negated, matching the entity rotation) and offset by the
+ * origin, then tested against the 4 frustum planes with an aggregate
+ * mask.
+ */
+static qboolean
+R_CullAliasModel(vec3_t bbox[8], entity_t *e, const model_t *currentmodel)
+{
+	int i;
+	vec3_t mins, maxs;
+	dmdl_t *paliashdr;
+	vec3_t vectors[3];
+	vec3_t thismins, oldmins, thismaxs, oldmaxs;
+	daliasframe_t *pframe, *poldframe;
+	vec3_t angles;
+
+	paliashdr = (dmdl_t *)currentmodel->extradata;
+
+	if ((e->frame >= paliashdr->num_frames) || (e->frame < 0))
+	{
+		Com_Printf("R_CullAliasModel %s: no such frame %d\n",
+		    currentmodel->name, e->frame);
+		e->frame = 0;
+	}
+	if ((e->oldframe >= paliashdr->num_frames) || (e->oldframe < 0))
+	{
+		Com_Printf("R_CullAliasModel %s: no such oldframe %d\n",
+		    currentmodel->name, e->oldframe);
+		e->oldframe = 0;
+	}
+
+	pframe = (daliasframe_t *)((byte *)paliashdr +
+	    paliashdr->ofs_frames + e->frame * paliashdr->framesize);
+
+	poldframe = (daliasframe_t *)((byte *)paliashdr +
+	    paliashdr->ofs_frames + e->oldframe * paliashdr->framesize);
+
+	/*
+	** compute axially aligned mins and maxs
+	*/
+	if (pframe == poldframe)
+	{
+		for (i = 0; i < 3; i++)
+		{
+			mins[i] = pframe->translate[i];
+			maxs[i] = mins[i] + pframe->scale[i]*255;
+		}
+	}
+	else
+	{
+		for (i = 0; i < 3; i++)
+		{
+			thismins[i] = pframe->translate[i];
+			thismaxs[i] = thismins[i] + pframe->scale[i]*255;
+
+			oldmins[i] = poldframe->translate[i];
+			oldmaxs[i] = oldmins[i] + poldframe->scale[i]*255;
+
+			if (thismins[i] < oldmins[i])
+				mins[i] = thismins[i];
+			else
+				mins[i] = oldmins[i];
+
+			if (thismaxs[i] > oldmaxs[i])
+				maxs[i] = thismaxs[i];
+			else
+				maxs[i] = oldmaxs[i];
+		}
+	}
+
+	/*
+	** compute a full bounding box
+	*/
+	for (i = 0; i < 8; i++)
+	{
+		vec3_t tmp;
+
+		if (i & 1)
+			tmp[0] = mins[0];
+		else
+			tmp[0] = maxs[0];
+
+		if (i & 2)
+			tmp[1] = mins[1];
+		else
+			tmp[1] = maxs[1];
+
+		if (i & 4)
+			tmp[2] = mins[2];
+		else
+			tmp[2] = maxs[2];
+
+		VectorCopy(tmp, bbox[i]);
+	}
+
+	/*
+	** rotate the bounding box
+	*/
+	VectorCopy(e->angles, angles);
+	angles[YAW] = -angles[YAW];
+	AngleVectors(angles, vectors[0], vectors[1], vectors[2]);
+
+	for (i = 0; i < 8; i++)
+	{
+		vec3_t tmp;
+
+		VectorCopy(bbox[i], tmp);
+
+		bbox[i][0] = DotProduct(vectors[0], tmp);
+		bbox[i][1] = -DotProduct(vectors[1], tmp);
+		bbox[i][2] = DotProduct(vectors[2], tmp);
+
+		VectorAdd(e->origin, bbox[i], bbox[i]);
+	}
+
+	{
+		int p, f, aggregatemask = ~0;
+
+		for (p = 0; p < 8; p++)
+		{
+			int mask = 0;
+
+			for (f = 0; f < 4; f++)
+			{
+				float dp = DotProduct(frustum[f].normal, bbox[p]);
+
+				if ((dp - frustum[f].dist) < 0)
+				{
+					mask |= (1 << f);
+				}
+			}
+
+			aggregatemask &= mask;
+		}
+
+		return aggregatemask != 0;
+	}
+}
+
+/*
+ * Draws one alias model (ref_vk R_DrawAliasModel, minus the deferred
+ * depthhack/lefthand/shadow paths).
+ */
+void
+R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
+{
+	int i;
+	dmdl_t *paliashdr;
+
+	if (!(currententity->flags & RF_WEAPONMODEL))
+	{
+		vec3_t bbox[8];
+
+		if (R_CullAliasModel(bbox, currententity, currentmodel))
+			return;
+	}
+
+	paliashdr = (dmdl_t *)currentmodel->extradata;
+
+	/*
+	 * get lighting information
+	 */
+	if (currententity->flags & (RF_SHELL_HALF_DAM | RF_SHELL_GREEN | RF_SHELL_RED | RF_SHELL_BLUE | RF_SHELL_DOUBLE))
+	{
+		VectorClear(shadelight);
+		if (currententity->flags & RF_SHELL_HALF_DAM)
+		{
+			shadelight[0] = 0.56;
+			shadelight[1] = 0.59;
+			shadelight[2] = 0.45;
+		}
+		if (currententity->flags & RF_SHELL_DOUBLE)
+		{
+			shadelight[0] = 0.9;
+			shadelight[1] = 0.7;
+		}
+		if (currententity->flags & RF_SHELL_RED)
+			shadelight[0] = 1.0;
+		if (currententity->flags & RF_SHELL_GREEN)
+			shadelight[1] = 1.0;
+		if (currententity->flags & RF_SHELL_BLUE)
+			shadelight[2] = 1.0;
+	}
+	else if (currententity->flags & RF_FULLBRIGHT)
+	{
+		for (i = 0; i < 3; i++)
+			shadelight[i] = 1.0;
+	}
+	else
+	{
+		R_LightPoint(r_worldmodel->grid, currententity->origin, shadelight, currententity);
+
+		/* player lighting hack for communication back to server */
+		if (currententity->flags & RF_WEAPONMODEL)
+		{
+			if (shadelight[0] > shadelight[1])
+			{
+				if (shadelight[0] > shadelight[2])
+					r_lightlevel->value = 150*shadelight[0];
+				else
+					r_lightlevel->value = 150*shadelight[2];
+			}
+			else
+			{
+				if (shadelight[1] > shadelight[2])
+					r_lightlevel->value = 150*shadelight[1];
+				else
+					r_lightlevel->value = 150*shadelight[2];
+			}
+		}
+	}
+
+	if (currententity->flags & RF_MINLIGHT)
+	{
+		for (i = 0; i < 3; i++)
+			if (shadelight[i] > 0.1)
+				break;
+		if (i == 3)
+		{
+			shadelight[0] = 0.1;
+			shadelight[1] = 0.1;
+			shadelight[2] = 0.1;
+		}
+	}
+
+	if (currententity->flags & RF_GLOW)
+	{
+		/* bonus items will pulse with time */
+		float scale;
+
+		scale = 0.1 * sin(r_newrefdef.time * 7);
+
+		for (i = 0; i < 3; i++)
+		{
+			float min;
+
+			min = shadelight[i] * 0.8;
+			shadelight[i] += scale;
+
+			if (shadelight[i] < min)
+			{
+				shadelight[i] = min;
+			}
+		}
+	}
+
+	/* ir goggles color override */
+	if ((r_newrefdef.rdflags & RDF_IRGOGGLES) &&
+	    (currententity->flags & RF_IR_VISIBLE))
+	{
+		shadelight[0] = 1.0;
+		shadelight[1] = 0.0;
+		shadelight[2] = 0.0;
+	}
+
+	shadedots = r_avertexnormal_dots[((int)(currententity->angles[1] * (SHADEDOT_QUANT / 360.0))) & (SHADEDOT_QUANT - 1)];
+
+	/* locate the proper data */
+	c_alias_polys += paliashdr->num_tris;
+
+	currententity->angles[PITCH] = -currententity->angles[PITCH];	// sigh.
+	{
+		float model[16];
+		image_t *skin;
+
+		Mat_Identity(model);
+		R_RotateForEntity(currententity, model);
+
+		currententity->angles[PITCH] = -currententity->angles[PITCH];	// sigh.
+
+		/* select skin */
+		if (currententity->skin)
+		{
+			skin = currententity->skin;	/* custom player skin */
+		}
+		else
+		{
+			if (currententity->skinnum >= MAX_MD2SKINS)
+				skin = currentmodel->skins[0];
+			else
+			{
+				skin = currentmodel->skins[currententity->skinnum];
+				if (!skin)
+					skin = currentmodel->skins[0];
+			}
+		}
+
+		if (!skin)
+		{
+			skin = r_notexture;	/* fallback */
+		}
+
+		/* clamp the frames (also done in R_CullAliasModel, but the
+		   culled path is skipped for RF_WEAPONMODEL) */
+		if ((currententity->frame >= paliashdr->num_frames)
+		    || (currententity->frame < 0))
+		{
+			Com_Printf("R_DrawAliasModel %s: no such frame %d\n",
+			    currentmodel->name, currententity->frame);
+			currententity->frame = 0;
+			currententity->oldframe = 0;
+		}
+
+		if ((currententity->oldframe >= paliashdr->num_frames)
+		    || (currententity->oldframe < 0))
+		{
+			Com_Printf("R_DrawAliasModel %s: no such oldframe %d\n",
+			    currentmodel->name, currententity->oldframe);
+			currententity->frame = 0;
+			currententity->oldframe = 0;
+		}
+
+		if (!r_lerpmodels->value)
+		{
+			currententity->backlerp = 0;
+		}
+
+		MTL_DrawAliasFrameLerp(paliashdr, currententity->backlerp, skin, model, currententity);
+	}
+}
+
+/*
+ * Walks the refdef entity list and draws the non-world entities (ref_vk
+ * R_DrawEntitiesOnList): opaque first, translucent second. The world
+ * itself is r_newrefdef.entities[0] and was already drawn by
+ * R_DrawWorld. RF_BEAM and mod_sprite are not handled yet (W5b).
+ */
+void
+R_DrawEntitiesOnList(void)
+{
+	int i;
+
+	if (!r_drawentities->value)
+	{
+		return;
+	}
+
+	/* draw non-transparent first */
+	for (i = 0; i < r_newrefdef.num_entities; i++)
+	{
+		entity_t *currententity = &r_newrefdef.entities[i];
+
+		if (currententity->flags & RF_TRANSLUCENT)
+		{
+			continue; /* solid */
+		}
+
+		if (currententity->flags & RF_BEAM)
+		{
+			continue; /* W5a: no beams in baseq2 maps */
+		}
+
+		{
+			const model_t *currentmodel = currententity->model;
+
+			if (!currentmodel)
+			{
+				continue;
+			}
+
+			switch (currentmodel->type)
+			{
+				case mod_alias:
+					R_DrawAliasModel(currententity, currentmodel);
+					break;
+				case mod_brush:
+					R_DrawBrushModel(currententity, currentmodel);
+					break;
+				case mod_sprite:
+					/* W5b */
+					break;
+				default:
+					Com_Printf("R_DrawEntitiesOnList: Bad modeltype %d\n",
+					    currentmodel->type);
+					return;
+			}
+		}
+	}
+
+	/* draw transparent entities */
+	for (i = 0; i < r_newrefdef.num_entities; i++)
+	{
+		entity_t *currententity = &r_newrefdef.entities[i];
+
+		if (!(currententity->flags & RF_TRANSLUCENT))
+		{
+			continue; /* solid */
+		}
+
+		if (currententity->flags & RF_BEAM)
+		{
+			continue; /* W5a: no beams in baseq2 maps */
+		}
+
+		{
+			const model_t *currentmodel = currententity->model;
+
+			if (!currentmodel)
+			{
+				continue;
+			}
+
+			switch (currentmodel->type)
+			{
+				case mod_alias:
+					R_DrawAliasModel(currententity, currentmodel);
+					break;
+				case mod_brush:
+					R_DrawBrushModel(currententity, currentmodel);
+					break;
+				case mod_sprite:
+					/* W5b */
+					break;
+				default:
+					Com_Printf("R_DrawEntitiesOnList: Bad modeltype %d\n",
+					    currentmodel->type);
+					return;
+			}
+		}
+	}
+}

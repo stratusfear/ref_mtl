@@ -86,6 +86,7 @@ cvar_t		*viewsize;
 
 cvar_t		*r_lefthand;
 cvar_t		*r_drawworld;
+cvar_t		*r_drawentities;
 cvar_t		*r_novis;
 cvar_t		*r_lerpmodels;
 cvar_t		*r_lockpvs;
@@ -131,6 +132,7 @@ R_Register(void)
 
 	r_lefthand = ri.Cvar_Get("hand", "0", CVAR_USERINFO | CVAR_ARCHIVE);
 	r_drawworld = ri.Cvar_Get("r_drawworld", "1", 0);
+	r_drawentities = ri.Cvar_Get("r_drawentities", "1", 0);
 	r_novis = ri.Cvar_Get("r_novis", "0", 0);
 	r_cull = ri.Cvar_Get("r_cull", "1", 0);
 	r_lerpmodels = ri.Cvar_Get("r_lerpmodels", "1", 0);
@@ -638,6 +640,11 @@ R_ReleaseShaders(mtlstate_t *st)
 			[st->showtris_vertex_buffer[i] release];
 			st->showtris_vertex_buffer[i] = nil;
 		}
+		if (st->alias_vertex_buffer[i] != nil)
+		{
+			[st->alias_vertex_buffer[i] release];
+			st->alias_vertex_buffer[i] = nil;
+		}
 	}
 	if (st->flash_vertex_buffer != nil)
 	{
@@ -694,6 +701,16 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->flash_vert_table release];
 		st->flash_vert_table = nil;
 	}
+	if (st->alias_frag_table != nil)
+	{
+		[st->alias_frag_table release];
+		st->alias_frag_table = nil;
+	}
+	if (st->alias_vert_table != nil)
+	{
+		[st->alias_vert_table release];
+		st->alias_vert_table = nil;
+	}
 	if (st->pipeline_dlight != nil)
 	{
 		[st->pipeline_dlight release];
@@ -708,6 +725,16 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->pipeline_showtris release];
 		st->pipeline_showtris = nil;
+	}
+	if (st->pipeline_alias_translucent != nil)
+	{
+		[st->pipeline_alias_translucent release];
+		st->pipeline_alias_translucent = nil;
+	}
+	if (st->pipeline_alias != nil)
+	{
+		[st->pipeline_alias release];
+		st->pipeline_alias = nil;
 	}
 	if (st->pipeline_sky != nil)
 	{
@@ -1010,6 +1037,92 @@ R_InitShaders(void)
 		}
 	}
 
+	/* W5a: alias models. 36-byte vertices (pos3 + uv2 + color4), one UBO
+	   per model (alias_ubo_t, shared by all of the model's draws). The
+	   translucent variant alpha-blends and skips depth writes, like the
+	   flash pipeline. */
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"alias_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"alias_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+
+		st->pipeline_alias = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_alias == nil)
+		{
+			Com_Printf("ref_mtl: alias pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		pd = [MTL4RenderPipelineDescriptor new];
+		pd.vertexFunctionDescriptor = vf;
+		pd.fragmentFunctionDescriptor = ff;
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_alias_translucent = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_alias_translucent == nil)
+		{
+			Com_Printf("ref_mtl: alias translucent pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->alias_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->alias_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create alias vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxTextureBindCount = 1;
+		atd.maxBufferBindCount = 1;
+		st->alias_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->alias_frag_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create alias fragment argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
 	/* Per-slot vertex/UBO rings. The CPU writes world vertices and one
 	   world_ubo_t per draw into the current slot's rings; the GPU consumes
 	   them within the same frame. The slots are gated by the shared event
@@ -1021,12 +1134,14 @@ R_InitShaders(void)
 		st->world_ubo[i] = [st->device newBufferWithLength:WORLD_UBO_RING_BYTES options:MTLResourceStorageModeShared];
 		st->dlight_vertex_buffer[i] = [st->device newBufferWithLength:DLIGHT_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->showtris_vertex_buffer[i] = [st->device newBufferWithLength:SHOWTRIS_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
+		st->alias_vertex_buffer[i] = [st->device newBufferWithLength:ALIAS_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 
 		if (st->world_vertex_buffer[i] == nil ||
 		    st->world_lmap_vertex_buffer[i] == nil ||
 		    st->world_ubo[i] == nil ||
 		    st->dlight_vertex_buffer[i] == nil ||
-		    st->showtris_vertex_buffer[i] == nil)
+		    st->showtris_vertex_buffer[i] == nil ||
+		    st->alias_vertex_buffer[i] == nil)
 		{
 			Com_Printf("ref_mtl: failed to create vertex/UBO ring buffers\n");
 			R_ReleaseShaders(st);
@@ -1164,13 +1279,14 @@ R_InitShaders(void)
 			[st->residency_set addAllocation:st->world_ubo[i]];
 			[st->residency_set addAllocation:st->dlight_vertex_buffer[i]];
 			[st->residency_set addAllocation:st->showtris_vertex_buffer[i]];
+			[st->residency_set addAllocation:st->alias_vertex_buffer[i]];
 		}
 		[st->residency_set addAllocation:st->flash_vertex_buffer];
 		[st->residency_set commit];
 		[st->queue addResidencySet:st->residency_set];
 	}
 
-	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash/showtris pipelines)\n");
+	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash/showtris/alias pipelines)\n");
 
 	return true;
 }
@@ -1492,6 +1608,7 @@ RE_BeginFrame(float camera_separation)
 	st->world_ubo_offset[st->frame_slot] = 0;
 	st->dlight_vertex_offset[st->frame_slot] = 0;
 	st->showtris_vertex_offset[st->frame_slot] = 0;
+	st->alias_vertex_offset[st->frame_slot] = 0;
 
 	// W4: the depth texture is sized to the drawable and recreated when
 	// the window (or its contentsScale) changes.
@@ -1713,6 +1830,7 @@ RE_RenderFrame(refdef_t *fd)
 
 	R_SetupFrame();
 	R_DrawWorld();
+	R_DrawEntitiesOnList();
 	R_RenderDlights();
 	R_RenderFlash();
 

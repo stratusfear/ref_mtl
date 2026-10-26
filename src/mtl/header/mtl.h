@@ -117,6 +117,13 @@ typedef struct
 	float position[2];
 } flashvert_t;				// 8 bytes
 
+typedef struct
+{
+	float position[3];
+	float uv[2];
+	float color[4];
+} aliasvert_t;				// 36 bytes
+
 // Per-draw uniform block. Must match the MSL WorldUbo layout exactly
 // (float4x4 members are 64-byte aligned in both C and MSL).
 typedef struct
@@ -136,6 +143,17 @@ typedef struct
 	float viewproj[16];			// @0
 } dlight_ubo_t;					// 64 bytes
 
+// Per-draw uniform block for alias models: the entity model matrix and
+// the view-projection matrix, plus a texture on/off flag (shells draw
+// untextured). Must match the MSL AliasUbo layout (float4x4 members are
+// 64-byte aligned in both C and MSL).
+typedef struct
+{
+	float viewproj[16];			// @0
+	float model[16];				// @64
+	float textured;				// @128
+} alias_ubo_t;					// 132 bytes
+
 #define MAX_LIGHTMAPS	256
 #define DYNLIGHTMAP_OFFSET MAX_LIGHTMAPS
 
@@ -149,6 +167,7 @@ typedef struct
 #define WORLD_UBO_RING_BYTES		(512 * 1024)
 #define DLIGHT_VERTEX_RING_BYTES	(256 * 1024)
 #define SHOWTRIS_VERTEX_RING_BYTES	(4 * 1024 * 1024)
+#define ALIAS_VERTEX_RING_BYTES		(4 * 1024 * 1024)
 
 //====================================================================
 
@@ -173,6 +192,7 @@ extern int		r_viewcluster, r_viewcluster2, r_oldviewcluster, r_oldviewcluster2;
 
 extern cvar_t	*r_lefthand;
 extern cvar_t	*r_drawworld;
+extern cvar_t	*r_drawentities;
 extern cvar_t	*r_novis;
 extern cvar_t	*r_lerpmodels;
 extern cvar_t	*r_lockpvs;
@@ -303,6 +323,16 @@ void MTL_BeginBuildingLightmaps(model_t *m);
 
 void R_DrawBrushModel (entity_t *currententity, const model_t *currentmodel);
 
+/*
+ * W5a: alias models. R_DrawEntitiesOnList walks the refdef entity list
+ * (skipping the world at index 0) and dispatches by model type; mod_alias
+ * is drawn by R_DrawAliasModel. MTL_EmitAliasUbo writes one alias_ubo_t
+ * into the slot's world UBO ring and returns its GPU address (0 when the
+ * ring is exhausted).
+ */
+void R_DrawEntitiesOnList (void);
+MTLGPUAddress MTL_EmitAliasUbo (size_t slot, const float *model, float textured);
+
 //====================================================
 // Images
 //====================================================
@@ -408,6 +438,16 @@ typedef struct mtlstate_s
 	// dlight vertex argument table (identical 24B pos+color layout).
 	id<MTLRenderPipelineState>	pipeline_showtris;	// dlight_vertex + dlight_fragment
 
+	// W5a: alias models (MD2/SP2). CPU-expanded triangle lists of 36-byte
+	// vertices (pos3 + uv2 + color4); the per-draw UBO (alias_ubo_t, 132B)
+	// rides on the world UBO ring. Opaque and translucent pipelines share
+	// the alias_vertex/alias_fragment functions; only the blend/depth
+	// encoder state differs.
+	id<MTLRenderPipelineState>	pipeline_alias;		// alias_vertex + alias_fragment
+	id<MTLRenderPipelineState>	pipeline_alias_translucent;
+	id<MTL4ArgumentTable>		alias_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+	id<MTL4ArgumentTable>		alias_frag_table;	// tex0 = skin, buf0 = UBO
+
 	// W3: per-slot vertex/UBO rings (one per allocator slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)
 	id<MTLBuffer>			world_lmap_vertex_buffer[3];	// lmappolyvert_t records (28B)
@@ -423,6 +463,10 @@ typedef struct mtlstate_s
 	// W4: per-slot showtris vertex ring (dlightvert_t records, 24B)
 	id<MTLBuffer>			showtris_vertex_buffer[3];
 	size_t				showtris_vertex_offset[3];
+
+	// W5a: per-slot alias vertex ring (aliasvert_t records, 36B)
+	id<MTLBuffer>			alias_vertex_buffer[3];
+	size_t				alias_vertex_offset[3];
 
 	// W3: lightmap textures (static [0..MAX_LIGHTMAPS-1] lazily
 	// created, dynamic [DYNLIGHTMAP_OFFSET..MAX_LIGHTMAPS*2-1]
