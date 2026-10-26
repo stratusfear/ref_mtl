@@ -360,3 +360,107 @@ particle_point_fragment(particle_point_out in [[stage_in]],
         discard_fragment();
     return in.color;
 }
+
+//==================================================================
+// 2D UI (RE_Draw_*): screen-space quads for the console, menus, HUD
+// and raw stretched surfaces. The geometry is a static full-screen
+// quad (CPU-expanded to a triangle list, like the flash quad); every
+// draw writes one UiUbo into the world UBO ring that positions the
+// quad in NDC (offset/scale) and carries, per path, the uv transform
+// (tex), the color (color/tint) and the gamma exponent (tex/tint).
+//
+// NDC math: vPos = pos * scale - (1 - scale), as in ref_vk basic.vert,
+// but the final mapping differs per API. Vulkan NDC is y-down
+// (top-left at (-1,-1)), so gl_Position.y = vPos.y + offset.y * 2 puts
+// a quake rect (y,h) at screen rows [y, y+h]. Metal NDC is y-up
+// (OpenGL-style, bottom-left at (-1,-1) per the MSL spec), so the same
+// rect maps to ndc.y = -vPos.y - offset.y * 2: row = (1-ndc.y)/2*H.
+// The uv pairing in the static corner data is unchanged (pos.y=-1 still
+// carries v=0, the top of the picture). The color path intentionally
+// accepts oversized scales (FadeScreen passes raw pixel dimensions) -
+// the quad is clipped to the screen by the rasterizer.
+//==================================================================
+
+struct UiUbo
+{
+    float2 offset;		// @0
+    float2 scale;		// @8
+    float2 uv_offset;	// @16
+    float2 uv_scale;	// @24
+    float4 color;		// @32
+    float  gamma;		// @48
+};
+
+struct ui_tex_in
+{
+    float2 position [[attribute(0)]];
+    float2 uv      [[attribute(1)]];
+};
+
+struct ui_color_in
+{
+    float2 position [[attribute(0)]];
+};
+
+struct ui_out
+{
+    float4 position [[position]];
+    float2 uv;
+    float4 color;
+};
+
+vertex ui_out
+ui_tex_vertex(ui_tex_in in [[stage_in]],
+              const device UiUbo *ubo [[buffer(1)]])
+{
+    ui_out out;
+    float2 vPos = in.position * ubo->scale - (float2(1.0) - ubo->scale);
+    out.position = float4(vPos.x + ubo->offset.x * 2.0,
+                          -vPos.y - ubo->offset.y * 2.0, 0.0, 1.0);
+    out.uv = in.uv * ubo->uv_scale + ubo->uv_offset;
+    out.color = float4(1.0, 1.0, 1.0, 1.0);
+    return out;
+}
+
+vertex ui_out
+ui_color_vertex(ui_color_in in [[stage_in]],
+                const device UiUbo *ubo [[buffer(1)]])
+{
+    ui_out out;
+    float2 vPos = in.position * ubo->scale - (float2(1.0) - ubo->scale);
+    out.position = float4(vPos.x + ubo->offset.x * 2.0,
+                          -vPos.y - ubo->offset.y * 2.0, 0.0, 1.0);
+    out.uv = float2(0.0);
+    out.color = ubo->color;
+    return out;
+}
+
+fragment float4
+ui_tex_fragment(ui_out in [[stage_in]],
+                texture2d<float, access::sample> tex [[texture(0)]],
+                constant UiUbo *ubo [[buffer(0)]])
+{
+    float4 c = tex.sample(world_sampler, in.uv) * in.color;
+    if (c.a < 0.666)
+        discard_fragment();
+    c.rgb = pow(c.rgb, float3(ubo->gamma));
+    return c;
+}
+
+fragment float4
+ui_tint_fragment(ui_out in [[stage_in]],
+                 texture2d<float, access::sample> tex [[texture(0)]],
+                 constant UiUbo *ubo [[buffer(0)]])
+{
+    float4 c = tex.sample(world_sampler, in.uv) * in.color;
+    if (c.a < 0.666)
+        discard_fragment();
+    c.rgb = pow(c.rgb, float3(ubo->gamma)) * ubo->color.rgb;
+    return c;
+}
+
+fragment float4
+ui_color_fragment(ui_out in [[stage_in]])
+{
+    return in.color;
+}

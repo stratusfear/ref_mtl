@@ -117,6 +117,20 @@ typedef struct
 	float position[2];
 } flashvert_t;				// 8 bytes
 
+// Static 2D UI quad vertices (CPU-expanded triangle list, no index
+// buffers in Metal): ui_tex quads carry a uv per corner, the plain
+// color quad only positions.
+typedef struct
+{
+	float position[2];
+	float uv[2];
+} uitexvert_t;				// 16 bytes
+
+typedef struct
+{
+	float position[2];
+} uicolorvert_t;				// 8 bytes
+
 typedef struct
 {
 	float position[3];
@@ -177,6 +191,20 @@ typedef struct
 	float att_b;
 	float att_c;
 } particle_point_ubo_t;			// 92 bytes
+
+// Per-draw uniform block for the 2D UI (RE_Draw_*): NDC offset/scale of
+// the static full-screen quad, the uv transform (tex paths) and the
+// tint/clear color plus gamma exponent (tint/tex paths). One layout
+// serves all three UI pipelines. Must match the MSL UiUbo layout.
+typedef struct
+{
+	float offset[2];			// @0
+	float scale[2];			// @8
+	float uv_offset[2];		// @16
+	float uv_scale[2];		// @24
+	float color[4];			// @32
+	float gamma;				// @48
+} ui_ubo_t;					// 56 bytes
 
 #define MAX_LIGHTMAPS	256
 #define DYNLIGHTMAP_OFFSET MAX_LIGHTMAPS
@@ -499,6 +527,34 @@ typedef struct mtlstate_s
 	id<MTL4ArgumentTable>		particle_frag_table;	// tex0 = dot/square, buf0 = UBO
 	id<MTLRenderPipelineState>	pipeline_point_particle;	// particle_point_vertex + particle_point_fragment
 	id<MTL4ArgumentTable>		point_particle_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+
+	// W5d: 2D UI (RE_Draw_*). Three pipelines over one static full-screen
+	// quad pair: the tex path samples a picture and applies gamma, the
+	// tint path additionally multiplies by the UBO color, and the color
+	// path outputs the UBO color with standard alpha blending. All three
+	// share the 56-byte ui_ubo_t layout; the UBOs ride on the world UBO
+	// ring (8-byte aligned). Drawn in a second, color-only render pass
+	// that loads (not clears) the drawable, except when the world pass
+	// has not run (plaque/cinematic frames) or a UI quad was drawn before
+	// it (TileClear with viewsize < 100), in which case the world pass
+	// must not clear either.
+	id<MTLRenderPipelineState>	pipeline_ui_tex;	// ui_tex_vertex + ui_tex_fragment
+	id<MTLRenderPipelineState>	pipeline_ui_tint;	// ui_tex_vertex + ui_tint_fragment
+	id<MTLRenderPipelineState>	pipeline_ui_color;	// ui_color_vertex + ui_color_fragment
+	id<MTL4ArgumentTable>		ui_tex_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+	id<MTL4ArgumentTable>		ui_tint_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+	id<MTL4ArgumentTable>		ui_color_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+	id<MTL4ArgumentTable>		ui_tex_frag_table;	// tex0 = picture, buf0 = UBO
+	id<MTL4ArgumentTable>		ui_tint_frag_table;	// tex0 = picture, buf0 = UBO
+	id<MTLBuffer>			ui_tex_vertex_buffer;	// static 6-vertex triangle list (16B each)
+	id<MTLBuffer>			ui_color_vertex_buffer;	// static 6-vertex triangle list (8B each)
+
+	// W5d: UI render pass (color only, no depth), created in
+	// RE_InitContext and reused every frame; the encoder is created
+	// lazily on the first RE_Draw_* call of the frame.
+	MTL4RenderPassDescriptor		*ui_pass_descriptor;
+	MTLRenderPassColorAttachmentDescriptor *ui_color_attachment;
+	id<MTL4RenderCommandEncoder>	ui_encoder;
 
 	// W3: per-slot vertex/UBO rings (one per allocator slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)

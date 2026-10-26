@@ -456,12 +456,41 @@ R_RotateForEntity(entity_t *e, float *mvMatrix)
 ==============
 Draw_InitLocal
 
-2D UI is stubbed in W3.0; nothing to initialize.
+W5d: find the console character font. The 2D UI (RE_Draw_*) renders
+console text, menus and HUD from this 16x16 character atlas; without it
+there is no way to draw text, so a missing conchars is fatal (matches
+ref_vk Draw_InitLocal).
 ==============
 */
+static image_t *draw_chars;
+
+/* W5d: RE_Draw_StretchRaw's dynamic texture, recreated when the size
+   changes (see RE_Draw_StretchRaw). */
+static id<MTLTexture> raw_texture;
+static int raw_texture_width;
+static int raw_texture_height;
+
 void
 Draw_InitLocal(void)
 {
+	draw_chars = R_FindPic("conchars", (findimage_t)MTL_FindImage);
+
+	/* Anachronox */
+	if (!draw_chars)
+	{
+		draw_chars = R_FindPic("fonts/conchars", (findimage_t)MTL_FindImage);
+	}
+
+	/* Daikatana */
+	if (!draw_chars)
+	{
+		draw_chars = R_FindPic("dkchars", (findimage_t)MTL_FindImage);
+	}
+
+	if (!draw_chars)
+	{
+		Com_Error(ERR_FATAL, "%s: Couldn't load pics/conchars", __func__);
+	}
 }
 
 static qboolean
@@ -469,6 +498,12 @@ R_SetMode(void);
 
 static void
 R_ReleaseShaders(mtlstate_t *st);
+
+/* W5d: 2D UI pass (see the definitions before RE_Draw_FindPic). */
+static void
+MTL_BeginUIPass(void);
+static void
+MTL_EndUIPass(void);
 
 /*
 ==============
@@ -551,6 +586,18 @@ RE_Shutdown(void)
 	// no commands registered in W1
 	RE_ShutdownContext();
 
+	// W5d: StretchRaw's dynamic texture (still referenced by the residency
+	// set until it is released)
+	if (raw_texture != nil)
+	{
+		if (st->residency_set != nil)
+		{
+			[st->residency_set removeAllocation:raw_texture];
+		}
+		[raw_texture release];
+		raw_texture = nil;
+	}
+
 	// W2: shaders and test resources
 	R_ReleaseShaders(st);
 
@@ -561,6 +608,14 @@ RE_Shutdown(void)
 	if (st->color_attachment != nil)
 	{
 		[st->color_attachment release];
+	}
+	if (st->ui_pass_descriptor != nil)
+	{
+		[st->ui_pass_descriptor release];
+	}
+	if (st->ui_color_attachment != nil)
+	{
+		[st->ui_color_attachment release];
 	}
 	if (st->command_buffer != nil)
 	{
@@ -664,6 +719,56 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->flash_vertex_buffer release];
 		st->flash_vertex_buffer = nil;
+	}
+	if (st->ui_tex_vertex_buffer != nil)
+	{
+		[st->ui_tex_vertex_buffer release];
+		st->ui_tex_vertex_buffer = nil;
+	}
+	if (st->ui_color_vertex_buffer != nil)
+	{
+		[st->ui_color_vertex_buffer release];
+		st->ui_color_vertex_buffer = nil;
+	}
+	if (st->ui_tex_frag_table != nil)
+	{
+		[st->ui_tex_frag_table release];
+		st->ui_tex_frag_table = nil;
+	}
+	if (st->ui_tint_frag_table != nil)
+	{
+		[st->ui_tint_frag_table release];
+		st->ui_tint_frag_table = nil;
+	}
+	if (st->ui_tex_vert_table != nil)
+	{
+		[st->ui_tex_vert_table release];
+		st->ui_tex_vert_table = nil;
+	}
+	if (st->ui_tint_vert_table != nil)
+	{
+		[st->ui_tint_vert_table release];
+		st->ui_tint_vert_table = nil;
+	}
+	if (st->ui_color_vert_table != nil)
+	{
+		[st->ui_color_vert_table release];
+		st->ui_color_vert_table = nil;
+	}
+	if (st->pipeline_ui_tex != nil)
+	{
+		[st->pipeline_ui_tex release];
+		st->pipeline_ui_tex = nil;
+	}
+	if (st->pipeline_ui_tint != nil)
+	{
+		[st->pipeline_ui_tint release];
+		st->pipeline_ui_tint = nil;
+	}
+	if (st->pipeline_ui_color != nil)
+	{
+		[st->pipeline_ui_color release];
+		st->pipeline_ui_color = nil;
 	}
 	if (st->depth_state_none != nil)
 	{
@@ -1373,6 +1478,227 @@ R_InitShaders(void)
 		}
 	}
 
+	/* W5d: 2D UI (RE_Draw_*). Three pipelines over one static full-screen
+	   quad pair, all sharing the 56-byte ui_ubo_t (which rides on the world
+	   UBO ring): the tex path samples a picture and applies gamma, the tint
+	   path additionally multiplies by the UBO color (crosshair /
+	   PicScaledCol), and the color path outputs the UBO color with standard
+	   alpha blending (Fill / FadeScreen). The quads are CPU-expanded triangle
+	   lists (six vertices, no index buffers in Metal); the tex quad carries a
+	   uv per corner, the color quad only positions. No depth: the UI pass has
+	   no depth attachment. */
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"ui_tex_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"ui_tex_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat2;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 8;
+		vd.attributes[1].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(uitexvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+
+		st->pipeline_ui_tex = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_ui_tex == nil)
+		{
+			Com_Printf("ref_mtl: ui tex pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->ui_tex_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->ui_tex_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create ui tex vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxTextureBindCount = 1;
+		atd.maxBufferBindCount = 1;
+		st->ui_tex_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->ui_tex_frag_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create ui tex fragment argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	{
+		/* tint path: same vertex function and quad, the fragment multiplies
+		   by the UBO color after gamma. */
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"ui_tex_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"ui_tint_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat2;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 8;
+		vd.attributes[1].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(uitexvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+
+		st->pipeline_ui_tint = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_ui_tint == nil)
+		{
+			Com_Printf("ref_mtl: ui tint pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->ui_tint_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->ui_tint_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create ui tint vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxTextureBindCount = 1;
+		atd.maxBufferBindCount = 1;
+		st->ui_tint_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->ui_tint_frag_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create ui tint fragment argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	{
+		/* color path: the UBO color is output by the vertex stage and
+		   returned raw by the fragment, standard alpha blend. No fragment
+		   argument table (no resource bindings). */
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"ui_color_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"ui_color_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat2;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(uicolorvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_ui_color = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_ui_color == nil)
+		{
+			Com_Printf("ref_mtl: ui color pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->ui_color_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->ui_color_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create ui color vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* Static UI quads: the ref_vk CreateStaticBuffers texVerts/colorVerts
+	   corners expanded through indices {0,1,2, 0,3,1} into triangle lists. */
+	st->ui_tex_vertex_buffer = [st->device newBufferWithLength:6 * sizeof(uitexvert_t) options:MTLResourceStorageModeShared];
+	if (st->ui_tex_vertex_buffer == nil)
+	{
+		Com_Printf("ref_mtl: failed to create ui tex vertex buffer\n");
+		R_ReleaseShaders(st);
+		return false;
+	}
+	{
+		static const float corners[24] = {
+			-1.f, -1.f, 0.f, 0.f,  1.f, 1.f, 1.f, 1.f,  -1.f, 1.f, 0.f, 1.f,
+			-1.f, -1.f, 0.f, 0.f,  1.f, -1.f, 1.f, 0.f,  1.f, 1.f, 1.f, 1.f,
+		};
+		uitexvert_t *dst = (uitexvert_t *)st->ui_tex_vertex_buffer.contents;
+
+		for (i = 0; i < 6; i++)
+		{
+			dst[i].position[0] = corners[i * 4];
+			dst[i].position[1] = corners[i * 4 + 1];
+			dst[i].uv[0] = corners[i * 4 + 2];
+			dst[i].uv[1] = corners[i * 4 + 3];
+		}
+	}
+
+	st->ui_color_vertex_buffer = [st->device newBufferWithLength:6 * sizeof(uicolorvert_t) options:MTLResourceStorageModeShared];
+	if (st->ui_color_vertex_buffer == nil)
+	{
+		Com_Printf("ref_mtl: failed to create ui color vertex buffer\n");
+		R_ReleaseShaders(st);
+		return false;
+	}
+	{
+		static const float corners[12] = {
+			-1.f, -1.f,  1.f,  1.f,  -1.f,  1.f,
+			-1.f, -1.f,  1.f, -1.f,  1.f,  1.f,
+		};
+		uicolorvert_t *dst = (uicolorvert_t *)st->ui_color_vertex_buffer.contents;
+
+		for (i = 0; i < 6; i++)
+		{
+			dst[i].position[0] = corners[i * 2];
+			dst[i].position[1] = corners[i * 2 + 1];
+		}
+	}
+
 	/* Per-slot vertex/UBO rings. The CPU writes world vertices and one
 	   world_ubo_t per draw into the current slot's rings; the GPU consumes
 	   them within the same frame. The slots are gated by the shared event
@@ -1532,6 +1858,8 @@ R_InitShaders(void)
 			[st->residency_set addAllocation:st->alias_vertex_buffer[i]];
 		}
 		[st->residency_set addAllocation:st->flash_vertex_buffer];
+		[st->residency_set addAllocation:st->ui_tex_vertex_buffer];
+		[st->residency_set addAllocation:st->ui_color_vertex_buffer];
 		[st->residency_set commit];
 		[st->queue addResidencySet:st->residency_set];
 	}
@@ -1627,6 +1955,11 @@ RE_InitContext(void *sdl_window)
 
 		st->pass_descriptor = [MTL4RenderPassDescriptor new];
 		st->color_attachment = [[MTLRenderPassColorAttachmentDescriptor alloc] init];
+
+		/* W5d: the 2D UI pass shares the drawable but has no depth
+		   attachment; it is opened lazily on the first RE_Draw_* call. */
+		st->ui_pass_descriptor = [MTL4RenderPassDescriptor new];
+		st->ui_color_attachment = [[MTLRenderPassColorAttachmentDescriptor alloc] init];
 	}
 
 	/* W3: runtime shader compilation and world rings. Guarded by the
@@ -1919,6 +2252,10 @@ RE_EndFrame(void)
 		return;
 	}
 	st->frame_active = false;
+
+	/* W5d: close the 2D UI pass (if one was opened) before the command
+	   buffer ends. */
+	MTL_EndUIPass();
 
 	[st->command_buffer endCommandBuffer];
 
@@ -2263,8 +2600,21 @@ RE_RenderFrame(refdef_t *fd)
 
 	r_newrefdef = *fd;
 
+	/* W5d: if the 2D UI opened a pass before the world (SCR_TileClear runs
+	   before V_RenderView when viewsize < 100), end it first so the two
+	   passes do not overlap, and LOAD the color attachment so the tiles the
+	   UI just drew survive outside the (unclipped) world region. Depth still
+	   clears. ref_mtl does not scissor the world to the vrect, so this is
+	   cosmetically a no-op today; it matches ref_vk and future-proofs a
+	   later viewport clip. */
+	qboolean ui_before_world = (st->ui_encoder != nil);
+	if (ui_before_world)
+	{
+		MTL_EndUIPass();
+	}
+
 	st->color_attachment.texture = st->drawable.texture;
-	st->color_attachment.loadAction = MTLLoadActionClear;
+	st->color_attachment.loadAction = ui_before_world ? MTLLoadActionLoad : MTLLoadActionClear;
 	st->color_attachment.storeAction = MTLStoreActionStore;
 	st->color_attachment.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 	st->pass_descriptor.colorAttachments[0] = st->color_attachment;
@@ -2306,60 +2656,608 @@ RE_RenderFrame(refdef_t *fd)
 
 /*
 ==============
-2D UI stubs (W0)
+2D UI (W5d) - ported from ref_vk vk_draw.c
 ==============
+
+The 2D UI (console, menus, HUD, raw stretched surfaces) is drawn into the
+same drawable as the world but in its own render pass with no depth
+attachment. Three pipelines share one static full-screen quad pair and one
+56-byte ui_ubo_t (which rides on the world UBO ring):
+  tex   - sample a picture, apply gamma            (CharScaled/StretchPic/
+                                                   TileClear/StretchRaw)
+  tint  - like tex, then multiply by the UBO color (PicScaledCol/crosshair)
+  color - output the UBO color, standard alpha blend (Fill/FadeScreen)
+The NDC math lives in the vertex stage (world.msl ui_*_vertex); here we only
+fill the UBO. offset/scale place the quad in pixels, uv_offset/uv_scale map
+the picture, color is the tint/clear color and gamma is 2.1 - vid_gamma.
 */
+
+static void
+MTL_BeginUIPass(void)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (st->ui_encoder != nil)
+	{
+		return;		// already open
+	}
+
+	if (!st->frame_active || st->drawable == nil || st->pipeline_ui_tex == nil)
+	{
+		return;
+	}
+
+	st->ui_color_attachment.texture = st->drawable.texture;
+	st->ui_color_attachment.loadAction = MTLLoadActionLoad;
+	st->ui_color_attachment.storeAction = MTLStoreActionStore;
+	st->ui_pass_descriptor.colorAttachments[0] = st->ui_color_attachment;
+
+	st->ui_encoder = [st->command_buffer renderCommandEncoderWithDescriptor:st->ui_pass_descriptor];
+}
+
+static void
+MTL_EndUIPass(void)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (st->ui_encoder == nil)
+	{
+		return;
+	}
+
+	[st->ui_encoder endEncoding];
+	st->ui_encoder = nil;
+}
+
+/*
+ * Writes one ui_ubo_t into the slot's world UBO ring and returns its GPU
+ * address (0 when the ring is exhausted). The ring is a plain byte stream
+ * shared with the world UBOs; the offset advances by sizeof(ui_ubo_t) like
+ * every other emitter.
+ */
+static MTLGPUAddress
+MTL_EmitUiUbo(size_t slot, const ui_ubo_t *ubo)
+{
+	mtlstate_t *st = &mtl_state;
+	ui_ubo_t *dst;
+	MTLGPUAddress addr;
+
+	if (st->world_ubo_offset[slot] + sizeof(ui_ubo_t) > WORLD_UBO_RING_BYTES)
+	{
+		return 0;
+	}
+
+	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
+	dst = (ui_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	memcpy(dst, ubo, sizeof(ui_ubo_t));
+	st->world_ubo_offset[slot] += sizeof(ui_ubo_t);
+
+	return addr;
+}
+
+/*
+ * Draws the static textured quad (tex or tint pipeline) with the given UBO.
+ * The tex fragment ignores the UBO color (white multiply) but the tint
+ * fragment uses it, so it is always written.
+ */
+static void
+MTL_DrawUiTex(image_t *image, const ui_ubo_t *ubo_in, qboolean tint)
+{
+	mtlstate_t *st = &mtl_state;
+	size_t slot = (size_t)st->frame_slot;
+	MTLGPUAddress ubo_addr;
+	id<MTL4ArgumentTable> vert_table;
+	id<MTL4ArgumentTable> frag_table;
+	id<MTLRenderPipelineState> pipeline;
+
+	if (image == NULL || image->mtl_texture == nil)
+	{
+		return;
+	}
+
+	ubo_addr = MTL_EmitUiUbo(slot, ubo_in);
+	if (ubo_addr == 0)
+	{
+		return;		// ring exhausted
+	}
+
+	vert_table = tint ? st->ui_tint_vert_table : st->ui_tex_vert_table;
+	frag_table = tint ? st->ui_tint_frag_table : st->ui_tex_frag_table;
+	pipeline = tint ? st->pipeline_ui_tint : st->pipeline_ui_tex;
+
+	[vert_table setAddress:st->ui_tex_vertex_buffer.gpuAddress atIndex:0];
+	[vert_table setAddress:ubo_addr atIndex:1];
+	[frag_table setTexture:image->mtl_texture.gpuResourceID atIndex:0];
+	[frag_table setAddress:ubo_addr atIndex:0];
+
+	[st->ui_encoder setRenderPipelineState:pipeline];
+	[st->ui_encoder setArgumentTable:vert_table atStages:MTLRenderStageVertex];
+	[st->ui_encoder setArgumentTable:frag_table atStages:MTLRenderStageFragment];
+	[st->ui_encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+}
+
+/*
+ * Draws the static color quad (color pipeline) with the given UBO. The UBO
+ * color is output by the vertex stage and returned raw by the fragment; the
+ * pipeline does standard alpha blending.
+ */
+static void
+MTL_DrawUiColor(const ui_ubo_t *ubo_in)
+{
+	mtlstate_t *st = &mtl_state;
+	size_t slot = (size_t)st->frame_slot;
+	MTLGPUAddress ubo_addr;
+
+	ubo_addr = MTL_EmitUiUbo(slot, ubo_in);
+	if (ubo_addr == 0)
+	{
+		return;		// ring exhausted
+	}
+
+	[st->ui_color_vert_table setAddress:st->ui_color_vertex_buffer.gpuAddress atIndex:0];
+	[st->ui_color_vert_table setAddress:ubo_addr atIndex:1];
+
+	[st->ui_encoder setRenderPipelineState:st->pipeline_ui_color];
+	[st->ui_encoder setArgumentTable:st->ui_color_vert_table atStages:MTLRenderStageVertex];
+	[st->ui_encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+}
+
 static struct image_s *
 RE_Draw_FindPic(const char *name)
 {
-	return NULL;
+	return R_FindPic(name, (findimage_t)MTL_FindImage);
 }
 
 static void
 RE_Draw_GetPicSize(int *w, int *h, const char *name)
 {
-	*w = 0;
-	*h = 0;
+	struct image_s *image;
+
+	image = R_FindPic(name, (findimage_t)MTL_FindImage);
+	if (!image)
+	{
+		*w = -1;
+		*h = -1;
+		return;
+	}
+
+	*w = image->width;
+	*h = image->height;
 }
 
+/*
+ * Shared body for RE_Draw_StretchPic and RE_Draw_PicScaledCol. If `color`
+ * is non-NULL the tint pipeline is used (RGB multiply); otherwise the plain
+ * textured pipeline.
+ */
 static void
-RE_Draw_PicScaled(int x, int y, const char *pic, float factor)
+DrawStretchPicCommon(int x, int y, int w, int h, const char *name, const float *color)
 {
+	mtlstate_t *st = &mtl_state;
+	struct image_s *image;
+	ui_ubo_t ubo;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	image = R_FindPic(name, (findimage_t)MTL_FindImage);
+	if (!image)
+	{
+		Com_Printf("%s(): Can't find pic: %s\n", __func__, name);
+		return;
+	}
+
+	memset(&ubo, 0, sizeof(ubo));
+	ubo.offset[0] = (float)x / vid.width;
+	ubo.offset[1] = (float)y / vid.height;
+	ubo.scale[0] = (float)w / vid.width;
+	ubo.scale[1] = (float)h / vid.height;
+	ubo.uv_offset[0] = 0.f;
+	ubo.uv_offset[1] = 0.f;
+	ubo.uv_scale[0] = 1.f;
+	ubo.uv_scale[1] = 1.f;
+	if (color)
+	{
+		ubo.color[0] = color[0];
+		ubo.color[1] = color[1];
+		ubo.color[2] = color[2];
+		ubo.color[3] = 1.f;
+	}
+	else
+	{
+		ubo.color[0] = ubo.color[1] = ubo.color[2] = ubo.color[3] = 1.f;
+	}
+	ubo.gamma = 2.1f - vid_gamma->value;
+
+	MTL_BeginUIPass();
+	if (st->ui_encoder == nil)
+	{
+		return;
+	}
+	MTL_DrawUiTex(image, &ubo, color != NULL);
 }
 
 static void
 RE_Draw_StretchPic(int x, int y, int w, int h, const char *name)
 {
+	DrawStretchPicCommon(x, y, w, h, name, NULL);
 }
 
 static void
-RE_Draw_CharScaled(int x, int y, int num, float scale)
+RE_Draw_PicScaled(int x, int y, const char *pic, float factor)
 {
-}
+	mtlstate_t *st = &mtl_state;
+	struct image_s *image;
 
-static void
-RE_Draw_TileClear(int x, int y, int w, int h, const char *name)
-{
-}
+	if (!st->frame_active)
+	{
+		return;
+	}
 
-static void
-RE_Draw_Fill(int x, int y, int w, int h, int c)
-{
-}
+	image = R_FindPic(pic, (findimage_t)MTL_FindImage);
+	if (!image)
+	{
+		Com_Printf("%s(): Can't find pic: %s\n", __func__, pic);
+		return;
+	}
 
-static void
-RE_Draw_FadeScreen(void)
-{
-}
-
-static void
-RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *data, int bits)
-{
+	RE_Draw_StretchPic(x, y, image->width * factor, image->height * factor, pic);
 }
 
 static void
 RE_Draw_PicScaledCol(int x, int y, const char *pic, float factor, const float color[3])
 {
+	mtlstate_t *st = &mtl_state;
+	struct image_s *image;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	image = R_FindPic(pic, (findimage_t)MTL_FindImage);
+	if (!image)
+	{
+		Com_Printf("%s(): Can't find pic: %s\n", __func__, pic);
+		return;
+	}
+
+	DrawStretchPicCommon(x, y, image->width * factor, image->height * factor, pic, color);
+}
+
+/*
+ * Draws one 8x8 console character (0 is transparent), scaled. The character
+ * index selects a cell in the 16x16 conchars atlas: row = num >> 4,
+ * col = num & 15. Clipped to the top of the screen (y <= -8) so the console
+ * can scroll off smoothly.
+ */
+static void
+RE_Draw_CharScaled(int x, int y, int num, float scale)
+{
+	mtlstate_t *st = &mtl_state;
+	ui_ubo_t ubo;
+	int row, col;
+	float frow, fcol, size;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	num &= 255;
+
+	if ((num & 127) == 32)
+	{
+		return;		// space
+	}
+
+	if (y <= -8)
+	{
+		return;		// totally off screen
+	}
+
+	row = num >> 4;
+	col = num & 15;
+
+	frow = row * 0.0625;
+	fcol = col * 0.0625;
+	size = 0.0625;
+
+	memset(&ubo, 0, sizeof(ubo));
+	ubo.offset[0] = (float)x / vid.width;
+	ubo.offset[1] = (float)y / vid.height;
+	ubo.scale[0] = 8.f * scale / vid.width;
+	ubo.scale[1] = 8.f * scale / vid.height;
+	ubo.uv_offset[0] = fcol;
+	ubo.uv_offset[1] = frow;
+	ubo.uv_scale[0] = size;
+	ubo.uv_scale[1] = size;
+	ubo.color[0] = ubo.color[1] = ubo.color[2] = ubo.color[3] = 1.f;
+	ubo.gamma = 2.1f - vid_gamma->value;
+
+	MTL_BeginUIPass();
+	if (st->ui_encoder == nil)
+	{
+		return;
+	}
+	MTL_DrawUiTex(draw_chars, &ubo, false);
+}
+
+/*
+ * Repeats a 64x64 tile graphic to fill the screen around a sized-down
+ * refresh window. The uv transform maps the (x,y)-(x+w,y+h) pixel region
+ * onto (x/64,y/64)-(+w/64,+h/64) so the tile repeats every 64 pixels; the
+ * repeating world_sampler wraps it.
+ */
+static void
+RE_Draw_TileClear(int x, int y, int w, int h, const char *name)
+{
+	mtlstate_t *st = &mtl_state;
+	struct image_s *image;
+	ui_ubo_t ubo;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	image = R_FindPic(name, (findimage_t)MTL_FindImage);
+	if (!image)
+	{
+		Com_Printf("%s(): Can't find pic: %s\n", __func__, name);
+		return;
+	}
+
+	memset(&ubo, 0, sizeof(ubo));
+	ubo.offset[0] = (float)x / vid.width;
+	ubo.offset[1] = (float)y / vid.height;
+	ubo.scale[0] = (float)w / vid.width;
+	ubo.scale[1] = (float)h / vid.height;
+	ubo.uv_offset[0] = (float)x / 64.f;
+	ubo.uv_offset[1] = (float)y / 64.f;
+	ubo.uv_scale[0] = (float)w / 64.f;
+	ubo.uv_scale[1] = (float)h / 64.f;
+	ubo.color[0] = ubo.color[1] = ubo.color[2] = ubo.color[3] = 1.f;
+	ubo.gamma = 2.1f - vid_gamma->value;
+
+	MTL_BeginUIPass();
+	if (st->ui_encoder == nil)
+	{
+		return;
+	}
+	MTL_DrawUiTex(image, &ubo, false);
+}
+
+/*
+ * Fills a box of pixels with a single palette color (solid quad, alpha 1).
+ */
+static void
+RE_Draw_Fill(int x, int y, int w, int h, int c)
+{
+	mtlstate_t *st = &mtl_state;
+	union
+	{
+		unsigned	c;
+		byte		v[4];
+	} color;
+	ui_ubo_t ubo;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	if ((unsigned)c > 255)
+	{
+		Com_Error(ERR_FATAL, "%s: bad color", __func__);
+	}
+
+	color.c = d_8to24table[c];
+
+	memset(&ubo, 0, sizeof(ubo));
+	ubo.offset[0] = (float)x / vid.width;
+	ubo.offset[1] = (float)y / vid.height;
+	ubo.scale[0] = (float)w / vid.width;
+	ubo.scale[1] = (float)h / vid.height;
+	ubo.color[0] = color.v[0] / 255.f;
+	ubo.color[1] = color.v[1] / 255.f;
+	ubo.color[2] = color.v[2] / 255.f;
+	ubo.color[3] = 1.f;
+	ubo.gamma = 2.1f - vid_gamma->value;
+
+	MTL_BeginUIPass();
+	if (st->ui_encoder == nil)
+	{
+		return;
+	}
+	MTL_DrawUiColor(&ubo);
+}
+
+/*
+ * Fades the whole screen with a translucent black overlay (death / damage
+ * feedback). Passes raw pixel dimensions as the scale, so the quad is
+ * intentionally oversized and clipped to the screen by the rasterizer.
+ */
+static void
+RE_Draw_FadeScreen(void)
+{
+	mtlstate_t *st = &mtl_state;
+	ui_ubo_t ubo;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	memset(&ubo, 0, sizeof(ubo));
+	ubo.offset[0] = 0.f;
+	ubo.offset[1] = 0.f;
+	ubo.scale[0] = (float)vid.width;
+	ubo.scale[1] = (float)vid.height;
+	ubo.color[0] = 0.f;
+	ubo.color[1] = 0.f;
+	ubo.color[2] = 0.f;
+	ubo.color[3] = 0.8f;
+	ubo.gamma = 2.1f - vid_gamma->value;
+
+	MTL_BeginUIPass();
+	if (st->ui_encoder == nil)
+	{
+		return;
+	}
+	MTL_DrawUiColor(&ubo);
+}
+
+/*
+ * Stretches a raw pixel buffer (palette-indexed or 32-bit) into the screen.
+ * The buffer is converted to RGBA32 (applying r_retexturing 2x/3x scaling
+ * and smoothing for palette data), uploaded to a persistent dynamic texture,
+ * and drawn as a textured quad.
+ */
+static void
+RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *data, int bits)
+{
+	mtlstate_t *st = &mtl_state;
+	ui_ubo_t ubo;
+	int i, j;
+	unsigned *dest;
+	byte *source;
+	byte *image_scaled = NULL;
+	unsigned *raw_image32;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	if (bits == 32)
+	{
+		raw_image32 = malloc((size_t)cols * rows * sizeof(unsigned));
+		if (!raw_image32)
+		{
+			return;
+		}
+		memcpy(raw_image32, data, (size_t)cols * rows * sizeof(unsigned));
+	}
+	else
+	{
+		if (r_retexturing->value)
+		{
+			// triple scaling
+			if (cols < (vid.width / 3) || rows < (vid.height / 3))
+			{
+				image_scaled = malloc((size_t)cols * rows * 9);
+				scale3x(data, image_scaled, cols, rows);
+				cols = cols * 3;
+				rows = rows * 3;
+			}
+			else
+			// double scaling
+			{
+				image_scaled = malloc((size_t)cols * rows * 4);
+				scale2x(data, image_scaled, cols, rows);
+				cols = cols * 2;
+				rows = rows * 2;
+			}
+		}
+		else
+		{
+			image_scaled = (byte *)data;
+		}
+
+		raw_image32 = malloc((size_t)cols * rows * sizeof(unsigned));
+		if (!raw_image32)
+		{
+			if (image_scaled != data)
+			{
+				free(image_scaled);
+			}
+			return;
+		}
+
+		source = image_scaled;
+		dest = raw_image32;
+		for (i = 0; i < rows; ++i)
+		{
+			int rowOffset = i * cols;
+			for (j = 0; j < cols; ++j)
+			{
+				byte palIdx = source[rowOffset + j];
+				dest[rowOffset + j] = r_rawpalette[palIdx];
+			}
+		}
+
+		if (r_retexturing->value)
+		{
+			int scaled_size = cols * rows;
+			free(image_scaled);
+			SmoothColorImage(raw_image32, scaled_size, (size_t)scaled_size >> 7);
+		}
+	}
+
+	/* (Re)create the dynamic texture when the size changes. */
+	if (raw_texture != nil &&
+	    (raw_texture_width != cols || raw_texture_height != rows))
+	{
+		[st->residency_set removeAllocation:raw_texture];
+		[raw_texture release];
+		raw_texture = nil;
+	}
+
+	if (raw_texture == nil)
+	{
+		MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+		        MTLPixelFormatRGBA8Unorm
+		        width:(NSUInteger)cols
+		        height:(NSUInteger)rows
+		        mipmapped:NO];
+		td.storageMode = MTLStorageModeShared;
+		raw_texture = [st->device newTextureWithDescriptor:td];
+		if (raw_texture == nil)
+		{
+			free(raw_image32);
+			return;
+		}
+		[st->residency_set addAllocation:raw_texture];
+		[st->residency_set commit];
+		raw_texture_width = cols;
+		raw_texture_height = rows;
+	}
+
+	[raw_texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)cols, (NSUInteger)rows)
+	        mipmapLevel:0 slice:0 withBytes:raw_image32
+	        bytesPerRow:cols * 4 bytesPerImage:cols * rows * 4];
+
+	free(raw_image32);
+
+	/* Draw the raw texture as a quad. */
+	{
+		struct image_s fake;
+
+		memset(&fake, 0, sizeof(fake));
+		fake.mtl_texture = raw_texture;
+
+		memset(&ubo, 0, sizeof(ubo));
+		ubo.offset[0] = (float)x / vid.width;
+		ubo.offset[1] = (float)y / vid.height;
+		ubo.scale[0] = (float)w / vid.width;
+		ubo.scale[1] = (float)h / vid.height;
+		ubo.uv_offset[0] = 0.f;
+		ubo.uv_offset[1] = 0.f;
+		ubo.uv_scale[0] = 1.f;
+		ubo.uv_scale[1] = 1.f;
+		ubo.color[0] = ubo.color[1] = ubo.color[2] = ubo.color[3] = 1.f;
+		ubo.gamma = 2.1f - vid_gamma->value;
+
+		MTL_BeginUIPass();
+		if (st->ui_encoder == nil)
+		{
+			return;
+		}
+		MTL_DrawUiTex(&fake, &ubo, false);
+	}
 }
 
 /*
