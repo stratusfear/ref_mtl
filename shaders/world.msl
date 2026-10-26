@@ -293,3 +293,70 @@ sprite_fragment(alias_out in [[stage_in]],
     c.rgb = pow(c.rgb, float3(ubo->gamma));
     return c;
 }
+
+//==================================================================
+// Particles: two paths mirroring ref_vk's vk_custom_particles.
+// Textured mode (mtl_custom_particles 0 or 2): one triangle per
+// particle from three world-space 36-byte vertices (pos3 + uv2 +
+// color4, uvs centered on the dot texture), drawn with the sprite
+// vertex function (viewproj only) and a basic.frag-style fragment
+// that discards alpha < 0.5 and gamma-corrects. Point mode (1,
+// default): one vertex per particle; the vertex shader computes the
+// attenuated point size and the fragment discards the square corners
+// of the point sprite (no texture, no gamma - ref_vk parity).
+//==================================================================
+
+fragment float4
+particle_fragment(alias_out in [[stage_in]],
+                  texture2d<float, access::sample> tex [[texture(0)]],
+                  constant SpriteUbo *ubo [[buffer(0)]])
+{
+    float4 c = tex.sample(world_sampler, in.uv) * in.color;
+    if (c.a < 0.5)
+        discard_fragment();
+    c.rgb = pow(c.rgb, float3(ubo->gamma));
+    return c;
+}
+
+struct ParticlePointUbo
+{
+    float4x4 viewproj;		// @0
+    float    pointSize;		// @64
+    float    pointScale;
+    float    minPointSize;
+    float    maxPointSize;
+    float    att_a;
+    float    att_b;
+    float    att_c;
+};
+
+struct particle_point_out
+{
+    float4 position [[position]];
+    float  point_size [[point_size]];
+    float4 color;
+};
+
+vertex particle_point_out
+particle_point_vertex(alias_in in [[stage_in]],
+                      const device ParticlePointUbo *ubo [[buffer(1)]])
+{
+    particle_point_out out;
+    float4 p = ubo->viewproj * float4(in.position, 1.0);
+    float dist_atten = ubo->pointScale / (ubo->att_a + ubo->att_b * p.w + ubo->att_c * p.w * p.w);
+    out.point_size = clamp(ubo->pointScale * ubo->pointSize * sqrt(dist_atten),
+                           ubo->minPointSize, ubo->maxPointSize);
+    out.position = p;
+    out.color = in.color;
+    return out;
+}
+
+fragment float4
+particle_point_fragment(particle_point_out in [[stage_in]],
+                        float2 point_coord [[point_coord]])
+{
+    float2 cxy = 2.0 * point_coord - 1.0;
+    if (dot(cxy, cxy) > 1.0)
+        discard_fragment();
+    return in.color;
+}

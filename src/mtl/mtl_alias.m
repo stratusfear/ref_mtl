@@ -130,9 +130,11 @@ MTL_EmitAliasUbo(size_t slot, const float *model, float textured)
 
 /*
  * Writes one sprite_ubo_t (viewproj + gamma) into the slot's world UBO
- * ring and returns its GPU address (0 when the ring is exhausted).
+ * ring and returns its GPU address (0 when the ring is exhausted). Also
+ * used by the textured particle path (W5c), which needs the same
+ * viewproj + gamma UBO.
  */
-static MTLGPUAddress
+MTLGPUAddress
 MTL_EmitSpriteUbo(size_t slot)
 {
 	mtlstate_t *st = &mtl_state;

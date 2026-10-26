@@ -163,6 +163,21 @@ typedef struct
 	float gamma;					// @64
 } sprite_ubo_t;					// 72 bytes
 
+// Per-draw uniform block for point particles: the view-projection
+// matrix and the point size/attenuation parameters (ref_vk particleUbo).
+// Must match the MSL ParticlePointUbo layout.
+typedef struct
+{
+	float viewproj[16];			// @0
+	float pointSize;				// @64
+	float pointScale;
+	float minPointSize;
+	float maxPointSize;
+	float att_a;
+	float att_b;
+	float att_c;
+} particle_point_ubo_t;			// 92 bytes
+
 #define MAX_LIGHTMAPS	256
 #define DYNLIGHTMAP_OFFSET MAX_LIGHTMAPS
 
@@ -221,6 +236,13 @@ extern cvar_t	*mtl_flashblend;
 extern cvar_t	*mtl_polyblend;
 extern cvar_t	*mtl_dynamic;
 extern cvar_t	*mtl_showtris;
+extern cvar_t	*mtl_custom_particles;
+extern cvar_t	*mtl_particle_size;
+extern cvar_t	*mtl_particle_att_a;
+extern cvar_t	*mtl_particle_att_b;
+extern cvar_t	*mtl_particle_att_c;
+extern cvar_t	*mtl_particle_min_size;
+extern cvar_t	*mtl_particle_max_size;
 extern cvar_t	*r_lightmap;
 extern cvar_t	*mtl_mip_nearfilter;
 extern cvar_t	*r_retexturing;
@@ -341,6 +363,7 @@ void R_DrawBrushModel (entity_t *currententity, const model_t *currentmodel);
  */
 void R_DrawEntitiesOnList (void);
 MTLGPUAddress MTL_EmitAliasUbo (size_t slot, const float *model, float textured);
+MTLGPUAddress MTL_EmitSpriteUbo (size_t slot);
 void R_DrawSpriteModel (entity_t *currententity, const model_t *currentmodel);
 
 //====================================================
@@ -465,6 +488,17 @@ typedef struct mtlstate_s
 	id<MTLRenderPipelineState>	pipeline_sprite;	// sprite_vertex + sprite_fragment
 	id<MTL4ArgumentTable>		sprite_vert_table;	// buf0 = stage_in verts, buf1 = UBO
 	id<MTL4ArgumentTable>		sprite_frag_table;	// tex0 = skin, buf0 = UBO
+
+	// W5c: particles. Textured mode (mtl_custom_particles 0 or 2) draws
+	// one triangle per particle (three 36B alias-ring vertices) with the
+	// sprite vertex function and a 0.5 alpha-discard fragment; point mode
+	// (1, default) draws one point per particle with a GPU-computed point
+	// size. UBOs ride on the world UBO ring.
+	id<MTLRenderPipelineState>	pipeline_particle;	// sprite_vertex + particle_fragment
+	id<MTL4ArgumentTable>		particle_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+	id<MTL4ArgumentTable>		particle_frag_table;	// tex0 = dot/square, buf0 = UBO
+	id<MTLRenderPipelineState>	pipeline_point_particle;	// particle_point_vertex + particle_point_fragment
+	id<MTL4ArgumentTable>		point_particle_vert_table;	// buf0 = stage_in verts, buf1 = UBO
 
 	// W3: per-slot vertex/UBO rings (one per allocator slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)

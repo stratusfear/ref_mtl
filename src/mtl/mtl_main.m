@@ -105,6 +105,13 @@ cvar_t		*mtl_flashblend;
 cvar_t		*mtl_polyblend;
 cvar_t		*mtl_dynamic;
 cvar_t		*mtl_showtris;
+cvar_t		*mtl_custom_particles;
+cvar_t		*mtl_particle_size;
+cvar_t		*mtl_particle_att_a;
+cvar_t		*mtl_particle_att_b;
+cvar_t		*mtl_particle_att_c;
+cvar_t		*mtl_particle_min_size;
+cvar_t		*mtl_particle_max_size;
 cvar_t		*r_lightmap;
 cvar_t		*mtl_mip_nearfilter;
 cvar_t		*r_retexturing;
@@ -155,6 +162,13 @@ R_Register(void)
 	r_modulate = ri.Cvar_Get("r_modulate", "1", CVAR_ARCHIVE);
 	mtl_dynamic = ri.Cvar_Get("mtl_dynamic", "1", 0);
 	mtl_showtris = ri.Cvar_Get("mtl_showtris", "0", 0);
+	mtl_custom_particles = ri.Cvar_Get("mtl_custom_particles", "1", CVAR_ARCHIVE);
+	mtl_particle_size = ri.Cvar_Get("mtl_particle_size", "40", CVAR_ARCHIVE);
+	mtl_particle_att_a = ri.Cvar_Get("mtl_particle_att_a", "0.01", CVAR_ARCHIVE);
+	mtl_particle_att_b = ri.Cvar_Get("mtl_particle_att_b", "0.0", CVAR_ARCHIVE);
+	mtl_particle_att_c = ri.Cvar_Get("mtl_particle_att_c", "0.01", CVAR_ARCHIVE);
+	mtl_particle_min_size = ri.Cvar_Get("mtl_particle_min_size", "2", CVAR_ARCHIVE);
+	mtl_particle_max_size = ri.Cvar_Get("mtl_particle_max_size", "40", CVAR_ARCHIVE);
 	r_lightmap = ri.Cvar_Get("r_lightmap", "0", 0);
 	mtl_mip_nearfilter = ri.Cvar_Get("mtl_mip_nearfilter", "0", CVAR_ARCHIVE);
 	r_retexturing = ri.Cvar_Get("r_retexturing", "1", CVAR_ARCHIVE);
@@ -751,6 +765,31 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_sprite release];
 		st->pipeline_sprite = nil;
 	}
+	if (st->point_particle_vert_table != nil)
+	{
+		[st->point_particle_vert_table release];
+		st->point_particle_vert_table = nil;
+	}
+	if (st->pipeline_point_particle != nil)
+	{
+		[st->pipeline_point_particle release];
+		st->pipeline_point_particle = nil;
+	}
+	if (st->particle_frag_table != nil)
+	{
+		[st->particle_frag_table release];
+		st->particle_frag_table = nil;
+	}
+	if (st->particle_vert_table != nil)
+	{
+		[st->particle_vert_table release];
+		st->particle_vert_table = nil;
+	}
+	if (st->pipeline_particle != nil)
+	{
+		[st->pipeline_particle release];
+		st->pipeline_particle = nil;
+	}
 	if (st->pipeline_sky != nil)
 	{
 		[st->pipeline_sky release];
@@ -1203,6 +1242,132 @@ R_InitShaders(void)
 		if (st->sprite_frag_table == nil)
 		{
 			Com_Printf("ref_mtl: failed to create sprite fragment argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* W5c: particles. Textured mode reuses the sprite vertex function and
+	   UBO (viewproj + gamma); only the fragment threshold differs (0.5,
+	   ref_vk basic.frag aTreshold). Point mode computes the attenuated
+	   point size in the vertex shader; its fragment has no bindings at
+	   all. Both blend like the sprite pipeline (ref_vk default blendOpts). */
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"sprite_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"particle_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_particle = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_particle == nil)
+		{
+			Com_Printf("ref_mtl: particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->particle_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->particle_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create particle vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxTextureBindCount = 1;
+		atd.maxBufferBindCount = 1;
+		st->particle_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->particle_frag_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create particle fragment argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"particle_point_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"particle_point_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_point_particle = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_point_particle == nil)
+		{
+			Com_Printf("ref_mtl: point particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->point_particle_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->point_particle_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create point particle vertex argument table: %s\n", err.localizedDescription.UTF8String);
 			R_ReleaseShaders(st);
 			return false;
 		}
@@ -1868,6 +2033,216 @@ R_RenderFlash(void)
 }
 
 /*
+ * W5c: particles (ported from ref_vk R_DrawParticles / Vk_DrawParticles).
+ * mtl_custom_particles selects the path, mirroring vk_custom_particles:
+ *   1 (default) - point sprites, size and attenuation computed on the GPU
+ *   2           - textured triangles with r_squaretexture
+ *   otherwise   - textured triangles with the dot texture
+ * Vertices ride on the alias vertex ring (36B pos3+uv2+color4; uv is
+ * unused in point mode); UBOs ride on the world UBO ring. Blending and
+ * depth state match the vk particle pipelines (default blendOpts, depth
+ * test + write).
+ */
+
+/*
+ * Writes one particle_point_ubo_t into the slot's world UBO ring and
+ * returns its GPU address (0 when the ring is exhausted).
+ */
+static MTLGPUAddress
+MTL_EmitParticlePointUbo(size_t slot)
+{
+	mtlstate_t *st = &mtl_state;
+	particle_point_ubo_t *ubo;
+	MTLGPUAddress addr;
+
+	if (st->world_ubo_offset[slot] + sizeof(particle_point_ubo_t) > WORLD_UBO_RING_BYTES)
+		return 0;
+
+	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
+	ubo = (particle_point_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
+	ubo->pointSize = mtl_particle_size->value;
+	ubo->pointScale = vid.width * viewsize->value / 102400;
+	ubo->minPointSize = mtl_particle_min_size->value;
+	ubo->maxPointSize = mtl_particle_max_size->value;
+	ubo->att_a = mtl_particle_att_a->value;
+	ubo->att_b = mtl_particle_att_b->value;
+	ubo->att_c = mtl_particle_att_c->value;
+	st->world_ubo_offset[slot] += sizeof(particle_point_ubo_t);
+
+	return addr;
+}
+
+static void
+R_DrawParticles(void)
+{
+	mtlstate_t *st = &mtl_state;
+	size_t slot, vstart;
+	MTLGPUAddress ubo_addr;
+
+	if (!r_newrefdef.num_particles || st->encoder == nil)
+	{
+		return;
+	}
+
+	if (r_newrefdef.num_particles > MAX_PARTICLES)
+	{
+		r_newrefdef.num_particles = MAX_PARTICLES;
+	}
+
+	slot = st->frame_slot;
+	vstart = st->alias_vertex_offset[slot];
+
+	if (mtl_custom_particles->value == 1)
+	{
+		/* point mode: one vertex per particle, size computed on the GPU */
+		static aliasvert_t visibleParticles[MAX_PARTICLES];
+		const particle_t *p;
+		unsigned color;
+		aliasvert_t *dst;
+		int i;
+
+		if (vstart + r_newrefdef.num_particles * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+		{
+			return;	/* ring exhausted */
+		}
+
+		ubo_addr = MTL_EmitParticlePointUbo(slot);
+		if (ubo_addr == 0)
+		{
+			return;	/* UBO ring exhausted */
+		}
+
+		for (i = 0, p = r_newrefdef.particles; i < r_newrefdef.num_particles; i++, p++)
+		{
+			color = d_8to24table[p->color];
+			dst = &visibleParticles[i];
+			dst->position[0] = p->origin[0];
+			dst->position[1] = p->origin[1];
+			dst->position[2] = p->origin[2];
+			dst->uv[0] = 0;
+			dst->uv[1] = 0;
+			dst->color[0] = (color & 0xff) / 255.f;
+			dst->color[1] = ((color >> 8) & 0xff) / 255.f;
+			dst->color[2] = ((color >> 16) & 0xff) / 255.f;
+			dst->color[3] = p->alpha;
+		}
+
+		memcpy((byte *)st->alias_vertex_buffer[slot].contents + vstart,
+		       visibleParticles, r_newrefdef.num_particles * sizeof(aliasvert_t));
+		st->alias_vertex_offset[slot] += r_newrefdef.num_particles * sizeof(aliasvert_t);
+
+		[st->point_particle_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
+		[st->point_particle_vert_table setAddress:ubo_addr atIndex:1];
+
+		[st->encoder setRenderPipelineState:st->pipeline_point_particle];
+		[st->encoder setDepthStencilState:st->depth_state];
+		[st->encoder setArgumentTable:st->point_particle_vert_table atStages:MTLRenderStageVertex];
+		[st->encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:r_newrefdef.num_particles];
+	}
+	else
+	{
+		/* textured mode: one triangle per particle (three vertices),
+		   uvs centered on the dot/square texture */
+		static aliasvert_t visibleParticles[MAX_PARTICLES * 3];
+		const particle_t *p;
+		vec3_t up, right;
+		image_t *skin;
+		unsigned color;
+		aliasvert_t *dst;
+		float scale;
+		int i;
+
+		VectorScale(vup, 1.5, up);
+		VectorScale(vright, 1.5, right);
+
+		skin = (mtl_custom_particles->value == 2) ? r_squaretexture : r_particletexture;
+		if (!skin || skin->mtl_texture == nil)
+		{
+			return;
+		}
+
+		if (vstart + r_newrefdef.num_particles * 3 * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+		{
+			return;	/* ring exhausted */
+		}
+
+		ubo_addr = MTL_EmitSpriteUbo(slot);
+		if (ubo_addr == 0)
+		{
+			return;	/* UBO ring exhausted */
+		}
+
+		for (i = 0, p = r_newrefdef.particles; i < r_newrefdef.num_particles; i++, p++)
+		{
+			color = d_8to24table[p->color];
+
+			// hack a scale up to keep particles from disapearing
+			scale = (p->origin[0] - r_origin[0]) * vpn[0] +
+				(p->origin[1] - r_origin[1]) * vpn[1] +
+				(p->origin[2] - r_origin[2]) * vpn[2];
+
+			if (scale < 20)
+			{
+				scale = 1;
+			}
+			else
+			{
+				scale = 1 + scale * 0.004;
+			}
+
+			dst = &visibleParticles[i * 3];
+			dst->position[0] = p->origin[0];
+			dst->position[1] = p->origin[1];
+			dst->position[2] = p->origin[2];
+			dst->uv[0] = 0.0625;
+			dst->uv[1] = 0.0625;
+			dst->color[0] = (color & 0xff) / 255.f;
+			dst->color[1] = ((color >> 8) & 0xff) / 255.f;
+			dst->color[2] = ((color >> 16) & 0xff) / 255.f;
+			dst->color[3] = p->alpha;
+			dst++;
+
+			dst->position[0] = p->origin[0] + up[0] * scale;
+			dst->position[1] = p->origin[1] + up[1] * scale;
+			dst->position[2] = p->origin[2] + up[2] * scale;
+			dst->uv[0] = 1.0625;
+			dst->uv[1] = 0.0625;
+			dst->color[0] = (color & 0xff) / 255.f;
+			dst->color[1] = ((color >> 8) & 0xff) / 255.f;
+			dst->color[2] = ((color >> 16) & 0xff) / 255.f;
+			dst->color[3] = p->alpha;
+			dst++;
+
+			dst->position[0] = p->origin[0] + right[0] * scale;
+			dst->position[1] = p->origin[1] + right[1] * scale;
+			dst->position[2] = p->origin[2] + right[2] * scale;
+			dst->uv[0] = 0.0625;
+			dst->uv[1] = 1.0625;
+			dst->color[0] = (color & 0xff) / 255.f;
+			dst->color[1] = ((color >> 8) & 0xff) / 255.f;
+			dst->color[2] = ((color >> 16) & 0xff) / 255.f;
+			dst->color[3] = p->alpha;
+		}
+
+		memcpy((byte *)st->alias_vertex_buffer[slot].contents + vstart,
+		       visibleParticles, r_newrefdef.num_particles * 3 * sizeof(aliasvert_t));
+		st->alias_vertex_offset[slot] += r_newrefdef.num_particles * 3 * sizeof(aliasvert_t);
+
+		[st->particle_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
+		[st->particle_vert_table setAddress:ubo_addr atIndex:1];
+		[st->particle_frag_table setTexture:skin->mtl_texture.gpuResourceID atIndex:0];
+		[st->particle_frag_table setAddress:ubo_addr atIndex:0];
+
+		[st->encoder setRenderPipelineState:st->pipeline_particle];
+		[st->encoder setDepthStencilState:st->depth_state];
+		[st->encoder setArgumentTable:st->particle_vert_table atStages:MTLRenderStageVertex];
+		[st->encoder setArgumentTable:st->particle_frag_table atStages:MTLRenderStageFragment];
+		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:r_newrefdef.num_particles * 3];
+	}
+}
+
+/*
 ==============
 RE_RenderFrame
 
@@ -1917,6 +2292,7 @@ RE_RenderFrame(refdef_t *fd)
 	R_DrawWorld();
 	R_DrawEntitiesOnList();
 	R_RenderDlights();
+	R_DrawParticles();
 	R_RenderFlash();
 
 	[st->encoder endEncoding];
