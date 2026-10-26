@@ -148,6 +148,7 @@ typedef struct
 #define WORLD_LMAP_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 #define WORLD_UBO_RING_BYTES		(512 * 1024)
 #define DLIGHT_VERTEX_RING_BYTES	(256 * 1024)
+#define SHOWTRIS_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 
 //====================================================================
 
@@ -277,6 +278,11 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	const float *model, const float *color);
 void MTL_FreeLightmaps (void);
 
+/* Writes one viewproj-only UBO (dlight_ubo_t, 64 bytes) into the slot's
+ * world UBO ring and returns its GPU address (0 when the ring is
+ * exhausted). Shared by the dlight quads and the showtris outlines. */
+MTLGPUAddress MTL_EmitViewProjUbo (size_t slot);
+
 void EmitWaterPolys (msurface_t *fa, image_t *texture,
 				   const float *modelMatrix, const float *color,
 				   qboolean solid_surface);
@@ -396,6 +402,12 @@ typedef struct mtlstate_s
 	id<MTL4ArgumentTable>		flash_vert_table;	// buf0 = stage_in verts, buf1 = color UBO
 	id<MTLBuffer>			flash_vertex_buffer;	// static 6-vertex triangle list (8B each)
 
+	// W4: showtris (R_DrawTriangleOutlines): white line-strip outlines of
+	// every lightmapped triangle, drawn over the world with no depth test,
+	// cull or blend. Reuses the dlight vertex/fragment functions and the
+	// dlight vertex argument table (identical 24B pos+color layout).
+	id<MTLRenderPipelineState>	pipeline_showtris;	// dlight_vertex + dlight_fragment
+
 	// W3: per-slot vertex/UBO rings (one per allocator slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)
 	id<MTLBuffer>			world_lmap_vertex_buffer[3];	// lmappolyvert_t records (28B)
@@ -407,6 +419,10 @@ typedef struct mtlstate_s
 	// W4: per-slot dlight vertex ring (dlightvert_t records, 24B)
 	id<MTLBuffer>			dlight_vertex_buffer[3];
 	size_t				dlight_vertex_offset[3];
+
+	// W4: per-slot showtris vertex ring (dlightvert_t records, 24B)
+	id<MTLBuffer>			showtris_vertex_buffer[3];
+	size_t				showtris_vertex_offset[3];
 
 	// W3: lightmap textures (static [0..MAX_LIGHTMAPS-1] lazily
 	// created, dynamic [DYNLIGHTMAP_OFFSET..MAX_LIGHTMAPS*2-1]

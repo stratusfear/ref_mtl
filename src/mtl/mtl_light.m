@@ -31,12 +31,13 @@ int r_dlightframecount;
 
 /*
  * Writes one dlight_ubo_t (viewproj only) into the slot's UBO ring and
- * returns its GPU address (0 when the ring is exhausted). The dlight UBOs
- * share the world UBO ring - it is a plain byte stream consumed
- * sequentially within the frame.
+ * returns its GPU address (0 when the ring is exhausted). The viewproj
+ * UBOs share the world UBO ring - it is a plain byte stream consumed
+ * sequentially within the frame. Used by the dlight quads and the
+ * showtris outlines.
  */
-static MTLGPUAddress
-MTL_EmitDlightUbo(size_t slot)
+MTLGPUAddress
+MTL_EmitViewProjUbo(size_t slot)
 {
 	mtlstate_t *st = &mtl_state;
 	dlight_ubo_t *ubo;
@@ -128,7 +129,7 @@ R_RenderDlight(dlight_t *light)
 	}
 	st->dlight_vertex_offset[slot] += 48 * sizeof(dlightvert_t);
 
-	ubo_addr = MTL_EmitDlightUbo(slot);
+	ubo_addr = MTL_EmitViewProjUbo(slot);
 	if (ubo_addr == 0)
 	{
 		return;

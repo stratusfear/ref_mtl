@@ -139,11 +139,86 @@ MTL_DrawFlowingPoly(msurface_t *fa, image_t *texture, const float *color)
 static void
 R_DrawTriangleOutlines(void)
 {
-	/* W3.0: mtl_showtris triangle outlines are a stub until GPU draw lands. */
+	mtlstate_t *st = &mtl_state;
+	size_t slot;
+	dlightvert_t *dst;
+	MTLGPUAddress ubo_addr;
+	int i, j;
+
+	static const float color[3] = { 1.f, 1.f, 1.f };
+
 	if (!mtl_showtris->value)
 	{
 		return;
 	}
+
+	if (st->encoder == nil || st->pipeline_showtris == nil)
+	{
+		return;
+	}
+
+	slot = st->frame_slot;
+	ubo_addr = MTL_EmitViewProjUbo(slot);
+	if (ubo_addr == 0)
+	{
+		return;	/* ring exhausted, skip the outlines */
+	}
+
+	[st->encoder setDepthStencilState:st->depth_state_none];
+	[st->encoder setRenderPipelineState:st->pipeline_showtris];
+
+	for (i = 0; i < MAX_LIGHTMAPS; i++)
+	{
+		msurface_t *surf;
+
+		for (surf = mtl_lms.lightmap_surfaces[i]; surf != 0; surf = surf->lightmapchain)
+		{
+			mtlpoly_t *p;
+
+			for (p = surf->polys; p; p = p->chain)
+			{
+				/* Fan-expand each triangle into a closed 4-vertex line
+				   strip (v0, v(j-1), v(j), v0) - the mtl convention, no
+				   index buffers. Metal has no unconnected line-list
+				   topology, so each triangle is its own draw (matching
+				   the vk showtris path). */
+				for (j = 2; j < p->numverts; j++)
+				{
+					size_t vstart;
+
+					vstart = st->showtris_vertex_offset[slot];
+					if (vstart + 4 * sizeof(dlightvert_t) > SHOWTRIS_VERTEX_RING_BYTES)
+					{
+						goto done;	/* ring exhausted, stop outlining */
+					}
+
+					dst = (dlightvert_t *)st->showtris_vertex_buffer[slot].contents + vstart / sizeof(dlightvert_t);
+					memcpy(dst->vertex, p->verts[0], sizeof(float) * 3);
+					memcpy(dst->color, color, sizeof(float) * 3);
+					dst++;
+					memcpy(dst->vertex, p->verts[j - 1], sizeof(float) * 3);
+					memcpy(dst->color, color, sizeof(float) * 3);
+					dst++;
+					memcpy(dst->vertex, p->verts[j], sizeof(float) * 3);
+					memcpy(dst->color, color, sizeof(float) * 3);
+					dst++;
+					memcpy(dst->vertex, p->verts[0], sizeof(float) * 3);
+					memcpy(dst->color, color, sizeof(float) * 3);
+					dst++;
+					st->showtris_vertex_offset[slot] += 4 * sizeof(dlightvert_t);
+
+					[st->dlight_vert_table setAddress:st->showtris_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
+					[st->dlight_vert_table setAddress:ubo_addr atIndex:1];
+					[st->encoder setArgumentTable:st->dlight_vert_table atStages:MTLRenderStageVertex];
+					[st->encoder drawPrimitives:MTLPrimitiveTypeLine vertexStart:0 vertexCount:4];
+				}
+			}
+		}
+	}
+
+done:
+	/* restore the world-pass encoder state for later draws */
+	[st->encoder setDepthStencilState:st->depth_state];
 }
 
 static void
@@ -1125,8 +1200,22 @@ void MTL_EndBuildingLightmaps (void)
 */
 
 /*
+ * World-space model matrix used when a caller has no transform of its own.
+ * The brush-poly draw paths (MTL_DrawPoly / MTL_DrawFlowingPoly) pass NULL
+ * for the model, so a NULL model means "world space" (identity) - the same
+ * convention MTL_RenderLightmappedPoly applies via Mat_Identity().
+ */
+static const float s_identity_model[16] = {
+	1.f, 0.f, 0.f, 0.f,
+	0.f, 1.f, 0.f, 0.f,
+	0.f, 0.f, 1.f, 0.f,
+	0.f, 0.f, 0.f, 1.f
+};
+
+/*
  * Writes one world_ubo_t into the slot's UBO ring and returns its GPU
- * address (0 when the ring is exhausted).
+ * address (0 when the ring is exhausted). A NULL model means world space
+ * (identity); a NULL color is not expected from any caller.
  */
 static MTLGPUAddress
 MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
@@ -1141,7 +1230,7 @@ MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
 	ubo = (world_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
-	memcpy(ubo->model, model, sizeof(float) * 16);
+	memcpy(ubo->model, model ? model : s_identity_model, sizeof(float) * 16);
 	memcpy(ubo->color, color, sizeof(float) * 4);
 	ubo->gamma = 2.1f - vid_gamma->value;
 	ubo->viewLightmaps = r_lightmap->value ? 1.f : 0.f;

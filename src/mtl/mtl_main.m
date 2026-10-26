@@ -633,6 +633,11 @@ R_ReleaseShaders(mtlstate_t *st)
 			[st->dlight_vertex_buffer[i] release];
 			st->dlight_vertex_buffer[i] = nil;
 		}
+		if (st->showtris_vertex_buffer[i] != nil)
+		{
+			[st->showtris_vertex_buffer[i] release];
+			st->showtris_vertex_buffer[i] = nil;
+		}
 	}
 	if (st->flash_vertex_buffer != nil)
 	{
@@ -698,6 +703,11 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->pipeline_flash release];
 		st->pipeline_flash = nil;
+	}
+	if (st->pipeline_showtris != nil)
+	{
+		[st->pipeline_showtris release];
+		st->pipeline_showtris = nil;
 	}
 	if (st->pipeline_sky != nil)
 	{
@@ -960,6 +970,46 @@ R_InitShaders(void)
 		}
 	}
 
+	/* W4: showtris (R_DrawTriangleOutlines). Reuses the dlight vertex and
+	   fragment functions (same 24B pos+color layout, same viewproj UBO);
+	   the differences live in the pipeline/encoder state - no blend, and
+	   the draws are line primitives with culling and depth test disabled
+	   (see R_DrawTriangleOutlines). */
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"dlight_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"dlight_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat3;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(dlightvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+
+		st->pipeline_showtris = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_showtris == nil)
+		{
+			Com_Printf("ref_mtl: showtris pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
 	/* Per-slot vertex/UBO rings. The CPU writes world vertices and one
 	   world_ubo_t per draw into the current slot's rings; the GPU consumes
 	   them within the same frame. The slots are gated by the shared event
@@ -970,11 +1020,13 @@ R_InitShaders(void)
 		st->world_lmap_vertex_buffer[i] = [st->device newBufferWithLength:WORLD_LMAP_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->world_ubo[i] = [st->device newBufferWithLength:WORLD_UBO_RING_BYTES options:MTLResourceStorageModeShared];
 		st->dlight_vertex_buffer[i] = [st->device newBufferWithLength:DLIGHT_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
+		st->showtris_vertex_buffer[i] = [st->device newBufferWithLength:SHOWTRIS_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 
 		if (st->world_vertex_buffer[i] == nil ||
 		    st->world_lmap_vertex_buffer[i] == nil ||
 		    st->world_ubo[i] == nil ||
-		    st->dlight_vertex_buffer[i] == nil)
+		    st->dlight_vertex_buffer[i] == nil ||
+		    st->showtris_vertex_buffer[i] == nil)
 		{
 			Com_Printf("ref_mtl: failed to create vertex/UBO ring buffers\n");
 			R_ReleaseShaders(st);
@@ -1111,13 +1163,14 @@ R_InitShaders(void)
 			[st->residency_set addAllocation:st->world_lmap_vertex_buffer[i]];
 			[st->residency_set addAllocation:st->world_ubo[i]];
 			[st->residency_set addAllocation:st->dlight_vertex_buffer[i]];
+			[st->residency_set addAllocation:st->showtris_vertex_buffer[i]];
 		}
 		[st->residency_set addAllocation:st->flash_vertex_buffer];
 		[st->residency_set commit];
 		[st->queue addResidencySet:st->residency_set];
 	}
 
-	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash pipelines)\n");
+	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash/showtris pipelines)\n");
 
 	return true;
 }
@@ -1438,6 +1491,7 @@ RE_BeginFrame(float camera_separation)
 	st->world_lmap_vertex_offset[st->frame_slot] = 0;
 	st->world_ubo_offset[st->frame_slot] = 0;
 	st->dlight_vertex_offset[st->frame_slot] = 0;
+	st->showtris_vertex_offset[st->frame_slot] = 0;
 
 	// W4: the depth texture is sized to the drawable and recreated when
 	// the window (or its contentsScale) changes.
