@@ -736,6 +736,21 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_alias release];
 		st->pipeline_alias = nil;
 	}
+	if (st->sprite_frag_table != nil)
+	{
+		[st->sprite_frag_table release];
+		st->sprite_frag_table = nil;
+	}
+	if (st->sprite_vert_table != nil)
+	{
+		[st->sprite_vert_table release];
+		st->sprite_vert_table = nil;
+	}
+	if (st->pipeline_sprite != nil)
+	{
+		[st->pipeline_sprite release];
+		st->pipeline_sprite = nil;
+	}
 	if (st->pipeline_sky != nil)
 	{
 		[st->pipeline_sky release];
@@ -1118,6 +1133,76 @@ R_InitShaders(void)
 		if (st->alias_frag_table == nil)
 		{
 			Com_Printf("ref_mtl: failed to create alias fragment argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* W5b: sprites (mod_sprite). Same 36-byte vertex layout as the alias
+	   models (the CPU writes color = white * alpha per vertex); the UBO is
+	   the smaller sprite_ubo_t (viewproj + gamma). Blending is always on,
+	   like ref_vk's sprite pipeline; depth state is set per draw. */
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"sprite_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"sprite_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_sprite = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_sprite == nil)
+		{
+			Com_Printf("ref_mtl: sprite pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->sprite_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->sprite_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create sprite vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxTextureBindCount = 1;
+		atd.maxBufferBindCount = 1;
+		st->sprite_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->sprite_frag_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create sprite fragment argument table: %s\n", err.localizedDescription.UTF8String);
 			R_ReleaseShaders(st);
 			return false;
 		}

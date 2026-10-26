@@ -129,6 +129,29 @@ MTL_EmitAliasUbo(size_t slot, const float *model, float textured)
 }
 
 /*
+ * Writes one sprite_ubo_t (viewproj + gamma) into the slot's world UBO
+ * ring and returns its GPU address (0 when the ring is exhausted).
+ */
+static MTLGPUAddress
+MTL_EmitSpriteUbo(size_t slot)
+{
+	mtlstate_t *st = &mtl_state;
+	sprite_ubo_t *ubo;
+	MTLGPUAddress addr;
+
+	if (st->world_ubo_offset[slot] + sizeof(sprite_ubo_t) > WORLD_UBO_RING_BYTES)
+		return 0;
+
+	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
+	ubo = (sprite_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
+	ubo->gamma = 2.1f - vid_gamma->value;
+	st->world_ubo_offset[slot] += sizeof(sprite_ubo_t);
+
+	return addr;
+}
+
+/*
  * Interpolates the frame's vertices between two frames and origins
  * (ref_vk Vk_LerpVerts). The result lands in s_lerped, one vec3 per
  * vertex. Shells offset the vertices along their normals by
@@ -745,10 +768,111 @@ R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 }
 
 /*
+ * Draws one sprite (ref_vk R_DrawSpriteModel): a camera-facing quad built
+ * from vup/vright around the entity origin, in world space (no model
+ * matrix), with per-vertex color white * alpha. Six 36-byte vertices ride
+ * on the alias ring; the UBO carries viewproj + gamma, and the fragment
+ * discards pixels whose blended alpha drops below 0.0666.
+ */
+void
+R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
+{
+	mtlstate_t *st = &mtl_state;
+	float alpha = 1.0F;
+	vec3_t point;
+	dsprframe_t *frame;
+	dsprite_t *psprite;
+	image_t *skin;
+	size_t slot, vstart;
+	aliasvert_t *dst;
+	MTLGPUAddress ubo_addr;
+	int i;
+	float quad[4][3];
+
+	if (st->encoder == nil)
+		return;
+
+	/* don't even bother culling, because it's just
+	   a single polygon without a surface cache */
+	psprite = (dsprite_t *)currentmodel->extradata;
+
+	currententity->frame %= psprite->numframes;
+	frame = &psprite->frames[currententity->frame];
+
+	if (currententity->flags & RF_TRANSLUCENT)
+	{
+		alpha = currententity->alpha;
+	}
+
+	/* normal sprite: billboard corners in the vup/vright plane */
+	VectorMA(currententity->origin, -frame->origin_y, vup, point);
+	VectorMA(point, -frame->origin_x, vright, quad[0]);
+	VectorMA(currententity->origin, frame->height - frame->origin_y, vup, point);
+	VectorMA(point, -frame->origin_x, vright, quad[1]);
+	VectorMA(currententity->origin, frame->height - frame->origin_y, vup, point);
+	VectorMA(point, frame->width - frame->origin_x, vright, quad[2]);
+	VectorMA(currententity->origin, -frame->origin_y, vup, point);
+	VectorMA(point, frame->width - frame->origin_x, vright, quad[3]);
+
+	skin = currentmodel->skins[currententity->frame];
+	if (!skin)
+	{
+		skin = r_notexture;	/* fallback */
+	}
+	if (skin->mtl_texture == nil)
+		return;
+
+	slot = st->frame_slot;
+	vstart = st->alias_vertex_offset[slot];
+	if (vstart + 6 * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+		return;	/* ring exhausted */
+
+	ubo_addr = MTL_EmitSpriteUbo(slot);
+	if (ubo_addr == 0)
+		return;	/* UBO ring exhausted */
+
+	/* triangle list: p0,p1,p2 / p0,p2,p3 (ref_vk sprite quadVerts) */
+	{
+		static const int order[6] = { 0, 1, 2, 0, 2, 3 };
+		static const float uvs[6][2] = {
+			{ 0.f, 1.f }, { 0.f, 0.f }, { 1.f, 0.f },
+			{ 0.f, 1.f }, { 1.f, 0.f }, { 1.f, 1.f }
+		};
+
+		dst = (aliasvert_t *)st->alias_vertex_buffer[slot].contents + vstart / sizeof(aliasvert_t);
+		for (i = 0; i < 6; i++)
+		{
+			dst->position[0] = quad[order[i]][0];
+			dst->position[1] = quad[order[i]][1];
+			dst->position[2] = quad[order[i]][2];
+			dst->uv[0] = uvs[i][0];
+			dst->uv[1] = uvs[i][1];
+			dst->color[0] = 1.f;
+			dst->color[1] = 1.f;
+			dst->color[2] = 1.f;
+			dst->color[3] = alpha;
+			dst++;
+		}
+	}
+	st->alias_vertex_offset[slot] += 6 * sizeof(aliasvert_t);
+
+	[st->sprite_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
+	[st->sprite_vert_table setAddress:ubo_addr atIndex:1];
+	[st->sprite_frag_table setTexture:skin->mtl_texture.gpuResourceID atIndex:0];
+	[st->sprite_frag_table setAddress:ubo_addr atIndex:0];
+
+	[st->encoder setRenderPipelineState:st->pipeline_sprite];
+	[st->encoder setDepthStencilState:st->depth_state];
+	[st->encoder setArgumentTable:st->sprite_vert_table atStages:MTLRenderStageVertex];
+	[st->encoder setArgumentTable:st->sprite_frag_table atStages:MTLRenderStageFragment];
+	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+}
+
+/*
  * Walks the refdef entity list and draws the non-world entities (ref_vk
  * R_DrawEntitiesOnList): opaque first, translucent second. The world
  * itself is r_newrefdef.entities[0] and was already drawn by
- * R_DrawWorld. RF_BEAM and mod_sprite are not handled yet (W5b).
+ * R_DrawWorld. RF_BEAM is not handled yet (no beams in baseq2 maps).
  */
 void
 R_DrawEntitiesOnList(void)
@@ -792,7 +916,7 @@ R_DrawEntitiesOnList(void)
 					R_DrawBrushModel(currententity, currentmodel);
 					break;
 				case mod_sprite:
-					/* W5b */
+					R_DrawSpriteModel(currententity, currentmodel);
 					break;
 				default:
 					Com_Printf("R_DrawEntitiesOnList: Bad modeltype %d\n",
@@ -834,7 +958,7 @@ R_DrawEntitiesOnList(void)
 					R_DrawBrushModel(currententity, currentmodel);
 					break;
 				case mod_sprite:
-					/* W5b */
+					R_DrawSpriteModel(currententity, currentmodel);
 					break;
 				default:
 					Com_Printf("R_DrawEntitiesOnList: Bad modeltype %d\n",

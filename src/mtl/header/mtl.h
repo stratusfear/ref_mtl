@@ -154,6 +154,15 @@ typedef struct
 	float textured;				// @128
 } alias_ubo_t;					// 132 bytes
 
+// Per-draw uniform block for sprites: the view-projection matrix and
+// the gamma exponent (2.1 - vid_gamma), matching ref_vk's sprite push
+// constants. Must match the MSL SpriteUbo layout.
+typedef struct
+{
+	float viewproj[16];			// @0
+	float gamma;					// @64
+} sprite_ubo_t;					// 72 bytes
+
 #define MAX_LIGHTMAPS	256
 #define DYNLIGHTMAP_OFFSET MAX_LIGHTMAPS
 
@@ -326,12 +335,13 @@ void R_DrawBrushModel (entity_t *currententity, const model_t *currentmodel);
 /*
  * W5a: alias models. R_DrawEntitiesOnList walks the refdef entity list
  * (skipping the world at index 0) and dispatches by model type; mod_alias
- * is drawn by R_DrawAliasModel. MTL_EmitAliasUbo writes one alias_ubo_t
- * into the slot's world UBO ring and returns its GPU address (0 when the
- * ring is exhausted).
+ * is drawn by R_DrawAliasModel, mod_sprite by R_DrawSpriteModel.
+ * MTL_EmitAliasUbo writes one alias_ubo_t into the slot's world UBO ring
+ * and returns its GPU address (0 when the ring is exhausted).
  */
 void R_DrawEntitiesOnList (void);
 MTLGPUAddress MTL_EmitAliasUbo (size_t slot, const float *model, float textured);
+void R_DrawSpriteModel (entity_t *currententity, const model_t *currentmodel);
 
 //====================================================
 // Images
@@ -447,6 +457,14 @@ typedef struct mtlstate_s
 	id<MTLRenderPipelineState>	pipeline_alias_translucent;
 	id<MTL4ArgumentTable>		alias_vert_table;	// buf0 = stage_in verts, buf1 = UBO
 	id<MTL4ArgumentTable>		alias_frag_table;	// tex0 = skin, buf0 = UBO
+
+	// W5b: sprites (mod_sprite). Reuses the alias vertex ring (same 36B
+	// pos3+uv2+color4 layout) and rides its UBO on the world UBO ring.
+	// Blending is always on, depth writes stay enabled, and the fragment
+	// discards alpha < 0.0666 (ref_vk basic.frag aTreshold).
+	id<MTLRenderPipelineState>	pipeline_sprite;	// sprite_vertex + sprite_fragment
+	id<MTL4ArgumentTable>		sprite_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+	id<MTL4ArgumentTable>		sprite_frag_table;	// tex0 = skin, buf0 = UBO
 
 	// W3: per-slot vertex/UBO rings (one per allocator slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)

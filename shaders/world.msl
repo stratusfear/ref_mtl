@@ -256,3 +256,40 @@ alias_fragment(alias_out in [[stage_in]],
 
     return in.color;	// shell: solid vertex color, no texture
 }
+
+//==================================================================
+// Sprites (mod_sprite): camera-facing billboards. The CPU writes six
+// world-space 36-byte vertices (pos3 + uv2 + color4, color = white *
+// alpha) per sprite, so no model matrix is needed - just viewproj.
+// The fragment discards nearly transparent pixels and gamma-corrects,
+// matching ref_vk's sprite.vert / basic.frag pair.
+//==================================================================
+
+struct SpriteUbo
+{
+    float4x4 viewproj;		// @0
+    float    gamma;		// @64
+};
+
+vertex alias_out
+sprite_vertex(alias_in in [[stage_in]],
+              const device SpriteUbo *ubo [[buffer(1)]])
+{
+    alias_out out;
+    out.position = ubo->viewproj * float4(in.position, 1.0);
+    out.uv = in.uv;
+    out.color = in.color;
+    return out;
+}
+
+fragment float4
+sprite_fragment(alias_out in [[stage_in]],
+                texture2d<float, access::sample> tex [[texture(0)]],
+                constant SpriteUbo *ubo [[buffer(0)]])
+{
+    float4 c = tex.sample(world_sampler, in.uv) * in.color;
+    if (c.a < 0.0666)
+        discard_fragment();
+    c.rgb = pow(c.rgb, float3(ubo->gamma));
+    return c;
+}
