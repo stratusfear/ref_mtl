@@ -29,14 +29,126 @@
 
 int r_dlightframecount;
 
+/*
+ * Writes one dlight_ubo_t (viewproj only) into the slot's UBO ring and
+ * returns its GPU address (0 when the ring is exhausted). The dlight UBOs
+ * share the world UBO ring - it is a plain byte stream consumed
+ * sequentially within the frame.
+ */
+static MTLGPUAddress
+MTL_EmitDlightUbo(size_t slot)
+{
+	mtlstate_t *st = &mtl_state;
+	dlight_ubo_t *ubo;
+	MTLGPUAddress addr;
+
+	if (st->world_ubo_offset[slot] + sizeof(dlight_ubo_t) > WORLD_UBO_RING_BYTES)
+		return 0;
+
+	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
+	ubo = (dlight_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
+	st->world_ubo_offset[slot] += sizeof(dlight_ubo_t);
+
+	return addr;
+}
+
+/*
+ * Builds the billboard for one dynamic light: a center vertex at
+ * origin - vpn*rad (color = light->color * 0.2) and a 16-segment ring
+ * of zero-color vertices in the vright/vup plane, fan-expanded into a
+ * 48-vertex triangle list (the mtl convention, no index buffers). The
+ * quad is drawn additively with depth writes disabled and front-face
+ * culling under a clockwise front winding (matching the vk dlight
+ * pipeline); the encoder state is restored for later passes.
+ */
 static void
 R_RenderDlight(dlight_t *light)
 {
-	/* W3: the additive dlight quads need a dedicated per-frame vertex
-	   pipeline (fan-expanded 18-vertex quad strip with per-vertex color);
-	   they are not part of the W3 scope. The CPU-side dlight attenuation
-	   (R_MarkLights, lightmap blending in R_BuildLightMap) is fully
-	   functional, so only the billboard quads themselves are omitted. */
+	mtlstate_t *st = &mtl_state;
+	size_t slot;
+	dlightvert_t *dst;
+	size_t vstart;
+	MTLGPUAddress ubo_addr;
+	int i, j, k;
+	float rad;
+
+	struct {
+		vec3_t verts;
+		float color[3];
+	} lightVerts[18];
+
+	if (st->encoder == nil || st->pipeline_dlight == nil)
+	{
+		return;
+	}
+
+	rad = light->intensity * 0.35;
+
+	for (i = 0; i < 3; i++)
+	{
+		lightVerts[0].verts[i] = light->origin[i] - vpn[i] * rad;
+	}
+
+	lightVerts[0].color[0] = light->color[0] * 0.2;
+	lightVerts[0].color[1] = light->color[1] * 0.2;
+	lightVerts[0].color[2] = light->color[2] * 0.2;
+
+	for (i = 16; i >= 0; i--)
+	{
+		float a;
+
+		a = i / 16.0 * M_PI * 2;
+		for (j = 0; j < 3; j++)
+		{
+			lightVerts[i+1].verts[j] = light->origin[j] + vright[j] * cos(a)*rad
+				+ vup[j] * sin(a)*rad;
+			lightVerts[i+1].color[j] = 0.f;
+		}
+	}
+
+	slot = st->frame_slot;
+	vstart = st->dlight_vertex_offset[slot];
+	if (vstart + 48 * sizeof(dlightvert_t) > DLIGHT_VERTEX_RING_BYTES)
+	{
+		return;	/* ring exhausted, skip this light */
+	}
+
+	dst = (dlightvert_t *)st->dlight_vertex_buffer[slot].contents + vstart / sizeof(dlightvert_t);
+	for (i = 0; i < 16; i++)
+	{
+		int tri[3] = { 0, i + 1, i + 2 };
+
+		for (k = 0; k < 3; k++)
+		{
+			memcpy(dst->vertex, lightVerts[tri[k]].verts, sizeof(float) * 3);
+			memcpy(dst->color, lightVerts[tri[k]].color, sizeof(float) * 3);
+			dst++;
+		}
+	}
+	st->dlight_vertex_offset[slot] += 48 * sizeof(dlightvert_t);
+
+	ubo_addr = MTL_EmitDlightUbo(slot);
+	if (ubo_addr == 0)
+	{
+		return;
+	}
+
+	[st->dlight_vert_table setAddress:st->dlight_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
+	[st->dlight_vert_table setAddress:ubo_addr atIndex:1];
+
+	[st->encoder setDepthStencilState:st->depth_state_nodwrite];
+	[st->encoder setFrontFacingWinding:MTLWindingClockwise];
+	[st->encoder setCullMode:MTLCullModeFront];
+
+	[st->encoder setRenderPipelineState:st->pipeline_dlight];
+	[st->encoder setArgumentTable:st->dlight_vert_table atStages:MTLRenderStageVertex];
+	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:48];
+
+	/* restore the world-pass encoder state for later draws */
+	[st->encoder setDepthStencilState:st->depth_state];
+	[st->encoder setFrontFacingWinding:MTLWindingCounterClockwise];
+	[st->encoder setCullMode:MTLCullModeNone];
 }
 
 void

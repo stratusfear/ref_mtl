@@ -106,6 +106,12 @@ typedef struct
 	float texCoordLmap[2];
 } lmappolyvert_t;				// 28 bytes
 
+typedef struct
+{
+	float vertex[3];
+	float color[3];
+} dlightvert_t;				// 24 bytes
+
 // Per-draw uniform block. Must match the MSL WorldUbo layout exactly
 // (float4x4 members are 64-byte aligned in both C and MSL).
 typedef struct
@@ -117,15 +123,26 @@ typedef struct
 	float viewLightmaps;			// @148
 } world_ubo_t;					// 152 bytes
 
+// Per-draw uniform block for dynamic light billboards: only the
+// view-projection matrix (matches the vk dlight pipeline, which uploads
+// r_viewproj_matrix alone). Must match the MSL DlightUbo layout.
+typedef struct
+{
+	float viewproj[16];			// @0
+} dlight_ubo_t;					// 64 bytes
+
 #define MAX_LIGHTMAPS	256
 #define DYNLIGHTMAP_OFFSET MAX_LIGHTMAPS
 
 // W3: per-slot streaming rings. Vertex data and uniform blocks are
 // written by the CPU into these shared buffers and consumed by the GPU
 // within one frame; the offsets reset every frame in RE_BeginFrame.
+// The dlight UBOs ride on the world UBO ring (it is a plain byte stream,
+// consumed sequentially per frame).
 #define WORLD_VERTEX_RING_BYTES		(4 * 1024 * 1024)
 #define WORLD_LMAP_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 #define WORLD_UBO_RING_BYTES		(512 * 1024)
+#define DLIGHT_VERTEX_RING_BYTES	(256 * 1024)
 
 //====================================================================
 
@@ -359,6 +376,12 @@ typedef struct mtlstate_s
 	id<MTL4ArgumentTable>		lmap_vert_table;	// buf0 = stage_in verts, buf1 = UBO
 	id<MTL4ArgumentTable>		lmap_frag_table;	// tex0 = surface, tex1 = lightmap, buf0 = UBO
 
+	// W4: dynamic light billboard quads (additive, no depth write).
+	// The fragment stage has no resource bindings, so only the vertex
+	// argument table exists.
+	id<MTLRenderPipelineState>	pipeline_dlight;	// dlight_vertex + dlight_fragment
+	id<MTL4ArgumentTable>		dlight_vert_table;	// buf0 = stage_in verts, buf1 = UBO
+
 	// W3: per-slot vertex/UBO rings (one per allocator slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)
 	id<MTLBuffer>			world_lmap_vertex_buffer[3];	// lmappolyvert_t records (28B)
@@ -366,6 +389,10 @@ typedef struct mtlstate_s
 	size_t				world_vertex_offset[3];	// write offset, reset per frame
 	size_t				world_lmap_vertex_offset[3];
 	size_t				world_ubo_offset[3];
+
+	// W4: per-slot dlight vertex ring (dlightvert_t records, 24B)
+	id<MTLBuffer>			dlight_vertex_buffer[3];
+	size_t				dlight_vertex_offset[3];
 
 	// W3: lightmap textures (static [0..MAX_LIGHTMAPS-1] lazily
 	// created, dynamic [DYNLIGHTMAP_OFFSET..MAX_LIGHTMAPS*2-1]
@@ -379,7 +406,8 @@ typedef struct mtlstate_s
 	// W3: depth buffer (recreated in RE_BeginFrame when the drawable
 	// size changes) and its compare/write state
 	id<MTLTexture>			depth_texture;
-	id<MTLDepthStencilState>	depth_state;
+	id<MTLDepthStencilState>	depth_state;	// world pass: less-than, writes
+	id<MTLDepthStencilState>	depth_state_nodwrite;	// dlights: less-than, no writes
 	int				depth_width;
 	int				depth_height;
 

@@ -123,3 +123,44 @@ world_sky_vertex(world_plain_in in [[stage_in]],
     out.uv = in.uv;
     return out;
 }
+
+//==================================================================
+// Dynamic light billboard quads. 24-byte vertices (pos3 + color3),
+// viewproj * pos, per-vertex color passed through to the fragment.
+// The pipeline is additive with depth writes disabled and front-face
+// culling (encoder state, see R_RenderDlight); the fragment stage has
+// no resource bindings of its own.
+//==================================================================
+
+struct DlightUbo
+{
+    float4x4 viewproj;		// @0
+};
+
+struct dlight_in
+{
+    float3 position [[attribute(0)]];
+    float3 color   [[attribute(1)]];
+};
+
+struct dlight_out
+{
+    float4 position [[position]];
+    float3 color;
+};
+
+vertex dlight_out
+dlight_vertex(dlight_in in [[stage_in]],
+              const device DlightUbo *ubo [[buffer(1)]])
+{
+    dlight_out out;
+    out.position = ubo->viewproj * float4(in.position, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+fragment float4
+dlight_fragment(dlight_out in [[stage_in]])
+{
+    return float4(in.color, 1.0);
+}

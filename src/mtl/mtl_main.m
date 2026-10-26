@@ -626,6 +626,16 @@ R_ReleaseShaders(mtlstate_t *st)
 			[st->world_vertex_buffer[i] release];
 			st->world_vertex_buffer[i] = nil;
 		}
+		if (st->dlight_vertex_buffer[i] != nil)
+		{
+			[st->dlight_vertex_buffer[i] release];
+			st->dlight_vertex_buffer[i] = nil;
+		}
+	}
+	if (st->depth_state_nodwrite != nil)
+	{
+		[st->depth_state_nodwrite release];
+		st->depth_state_nodwrite = nil;
 	}
 	if (st->depth_state != nil)
 	{
@@ -656,6 +666,16 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->plain_vert_table release];
 		st->plain_vert_table = nil;
+	}
+	if (st->dlight_vert_table != nil)
+	{
+		[st->dlight_vert_table release];
+		st->dlight_vert_table = nil;
+	}
+	if (st->pipeline_dlight != nil)
+	{
+		[st->pipeline_dlight release];
+		st->pipeline_dlight = nil;
 	}
 	if (st->pipeline_sky != nil)
 	{
@@ -806,6 +826,51 @@ R_InitShaders(void)
 		}
 	}
 
+	/* W4: dynamic light billboard quads. 24-byte vertices (pos3 +
+	   color3), additive blend, no depth write. The fragment stage has no
+	   resource bindings, so only the vertex argument table exists. */
+	{
+		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+
+		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
+		vf.name = @"dlight_vertex";
+		vf.library = st->library;
+		pd.vertexFunctionDescriptor = vf;
+
+		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
+		ff.name = @"dlight_fragment";
+		ff.library = st->library;
+		pd.fragmentFunctionDescriptor = ff;
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat3;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(dlightvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_dlight = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		if (st->pipeline_dlight == nil)
+		{
+			Com_Printf("ref_mtl: dlight pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
 	/* Per-slot vertex/UBO rings. The CPU writes world vertices and one
 	   world_ubo_t per draw into the current slot's rings; the GPU consumes
 	   them within the same frame. The slots are gated by the shared event
@@ -815,10 +880,12 @@ R_InitShaders(void)
 		st->world_vertex_buffer[i] = [st->device newBufferWithLength:WORLD_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->world_lmap_vertex_buffer[i] = [st->device newBufferWithLength:WORLD_LMAP_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->world_ubo[i] = [st->device newBufferWithLength:WORLD_UBO_RING_BYTES options:MTLResourceStorageModeShared];
+		st->dlight_vertex_buffer[i] = [st->device newBufferWithLength:DLIGHT_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 
 		if (st->world_vertex_buffer[i] == nil ||
 		    st->world_lmap_vertex_buffer[i] == nil ||
-		    st->world_ubo[i] == nil)
+		    st->world_ubo[i] == nil ||
+		    st->dlight_vertex_buffer[i] == nil)
 		{
 			Com_Printf("ref_mtl: failed to create vertex/UBO ring buffers\n");
 			R_ReleaseShaders(st);
@@ -873,6 +940,16 @@ R_InitShaders(void)
 			R_ReleaseShaders(st);
 			return false;
 		}
+
+		atd = [MTL4ArgumentTableDescriptor new];
+		atd.maxBufferBindCount = 2;
+		st->dlight_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
+		if (st->dlight_vert_table == nil)
+		{
+			Com_Printf("ref_mtl: failed to create dlight vertex argument table: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
 	}
 
 	/* W4: single depth state for the whole world pass - less-than compare,
@@ -887,6 +964,17 @@ R_InitShaders(void)
 		if (st->depth_state == nil)
 		{
 			Com_Printf("ref_mtl: failed to create depth stencil state\n");
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		/* Dlights compare against the world depth but never write it, so
+		   the billboards cannot carve holes for later transparent passes. */
+		dsd.depthWriteEnabled = NO;
+		st->depth_state_nodwrite = [st->device newDepthStencilStateWithDescriptor:dsd];
+		if (st->depth_state_nodwrite == nil)
+		{
+			Com_Printf("ref_mtl: failed to create no-write depth stencil state\n");
 			R_ReleaseShaders(st);
 			return false;
 		}
@@ -912,12 +1000,13 @@ R_InitShaders(void)
 			[st->residency_set addAllocation:st->world_vertex_buffer[i]];
 			[st->residency_set addAllocation:st->world_lmap_vertex_buffer[i]];
 			[st->residency_set addAllocation:st->world_ubo[i]];
+			[st->residency_set addAllocation:st->dlight_vertex_buffer[i]];
 		}
 		[st->residency_set commit];
 		[st->queue addResidencySet:st->residency_set];
 	}
 
-	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky pipelines)\n");
+	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight pipelines)\n");
 
 	return true;
 }
@@ -1237,6 +1326,7 @@ RE_BeginFrame(float camera_separation)
 	st->world_vertex_offset[st->frame_slot] = 0;
 	st->world_lmap_vertex_offset[st->frame_slot] = 0;
 	st->world_ubo_offset[st->frame_slot] = 0;
+	st->dlight_vertex_offset[st->frame_slot] = 0;
 
 	// W4: the depth texture is sized to the drawable and recreated when
 	// the window (or its contentsScale) changes.
@@ -1398,8 +1488,13 @@ RE_RenderFrame(refdef_t *fd)
 
 	[st->encoder setDepthStencilState:st->depth_state];
 
+	/* W4: mark the surfaces hit by dynamic lights before the framecount
+	   advances in R_SetupFrame (matches the vk frame order). */
+	R_PushDlights();
+
 	R_SetupFrame();
 	R_DrawWorld();
+	R_RenderDlights();
 
 	[st->encoder endEncoding];
 	st->encoder = nil;
