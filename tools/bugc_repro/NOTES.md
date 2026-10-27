@@ -109,15 +109,44 @@ REFINED TRIGGER MODEL (replaces "MTL4 executing draws"):
 APP-CREATED texture. Writes to CAMetalLayer drawables and pure reads are
 safe; the classic queue is safe for the same passes.
 
-Mitigation impact: the clscene split (scene draws on classic queue,
-present stays on MTL4) is proven clean, but in ref_mtl it is ~95% of the
-full classic-port work (all world/UI encoders+bindings move anyway), so
-the port decision does not shrink; the full --hybrid remains the plan
-unless hyb_yes/direct_yes (round 4) change the calculus.
-Round 4 (running): hyb_yes = hybrid mitigation under framebufferOnly=YES
-(the W6 goal flag); direct_yes = repro analog of pre-W6 quake2 YES, which
-was ~10/12 poisoned — tests whether fbonly=YES makes the drawable itself
-behave like an app-created RT (secondary trigger).
+Round 4:
+- hyb_yes  — hybrid mitigation under framebufferOnly=YES: 0/18 CLEAN, live
+  display (bands+glyphs visible in captures; identical animated_diff values
+  are an artifact of the 6s-periodic animation at fixed 3s capture spacing).
+- direct_yes — MTL4 drawing into a framebufferOnly=YES drawable: 18/18
+  poisoned (2.8k-62k px), live. Reproduces the pre-W6 quake2 YES rate.
+  fbonly=YES turns even drawables into unsafe MTL4 targets.
+
+DECISION (2026-10-27): W6 (fbonly=YES) is only reachable with classic-queue
+draws. Mitigation = --hybrid shape in ref_mtl: classic MTLCommandQueue +
+classic encoders/bindings; MTL4Compiler-created pipelines are kept (they
+are plain id<MTLRenderPipelineState>); MTL4 queue, allocator ring and
+argument tables go away. Validated by quake2 sweep, then commit W6.
+
+Round 5 (quake2 game-level sweeps; yquake2 +map base1, fresh process per run,
+3 window captures per run at ~3s spacing, strict ±12 mask, display kept awake,
+game window raised frontmost before each capture):
+
+- ref_mtl classic-queue port + W6 (fbonly=YES, offscreen scene RT + present
+  pass): 0/42 poisoned (two sweeps: 0/24 and 0/18), live display
+  (animated_diff ~5-6k sampled px).
+- ref_vk (local ref_vk repo built at API 8, running through MoltenVK, classic
+  Metal API under the hood, r_validation=0 to avoid its validation abort):
+  3/30 poisoned (2/12 then 1/18), 44k-92k px per hit. The poison is the exact
+  same (234,51,247) constant with the same morphology (unaligned jagged runs,
+  not tile blocks).
+- Parity spot stats (paired first 18 mtl vs vk captures, 3px stride below the
+  titlebar): mean per-pixel triple-diff ~13/765, ~1.3-1.5% far pixels — that
+  is animation phase, no systematic color/brightness mismatch. Window titles
+  confirm "Metal 4 Render" vs "Vulkan Render" and the images match visually.
+
+IMPLICATION: the (234,51,247) poison is NOT confined to ref_mtl nor to the
+MTL4 API surface — an independent Vulkan renderer on the same machine/window
+path shows the identical signature at ~10% per game-level capture. The
+"MTL4-executed pass writing an app-created RT" trigger is what lifts the rate
+to 18/18 in the standalone repro; the underlying signature is system-level
+(AGX / display path), which argues driver-side rather than renderer misuse.
+The ref_mtl classic-queue shape is 0/42 at game level so far.
 
 ## Port sites in ref_mtl (mtl_main.m) for the chosen fix
 

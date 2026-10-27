@@ -5,7 +5,7 @@ MTL4CommandQueue executing render draws intermittently corrupts a Shared
 offscreen render-target texture; display shows constant (234,51,247) runs
 
 ## Metadata
-- macOS 27.x (build TBD), Apple Silicon GPU (AGXG13X family)
+- macOS 27.2 (build 26B118), MacBook Pro (M1 Max), Apple Silicon AGX GPU
 - Metal 4 API path: MTL4CommandQueue + MTL4CommandBuffer (reused, with
   beginCommandBufferWithAllocator:) + MTL4CommandAllocators +
   MTL4Compiler pipelines + MTL4ArgumentTable bindings + residency sets
@@ -78,6 +78,21 @@ drawable residency grants do not change the rate.
   MTL4CommandQueue supported? (noattach/noresset variants change the
   failure mode to a frozen display, so the manual model appears required
   but is not itself the trigger.)
+
+## Cross-renderer evidence (same poison signature without any MTL4 API use)
+
+The same Quake II client on the same machine, driven by an independent
+Vulkan renderer (ref_vk, running on MoltenVK — classic Metal API internally,
+no MTL4 queue/allocators/argument tables), also shows the corruption at
+game level: 3/30 window captures poisoned across two 6-run sweeps, with the
+EXACT same (234,51,247) constant and the same unaligned jagged-run
+morphology. A port of the reporting renderer (ref_mtl) to a classic
+MTLCommandQueue with everything else kept (offscreen scene RT + present
+pass, framebufferOnly=YES) measured 0/42 — i.e. the classic shape greatly
+reduces but the signature is not exclusive to the reporter's code. This
+strongly suggests an AGX/display-path-side fault rather than app misuse,
+with the MTL4-executes-writes-app-created-RT pattern as a rate amplifier
+(18/18 in the standalone repro).
 
 ## Do-not-remove notes
 - Without residency wiring the repro FREEZES instead (different bug); do
