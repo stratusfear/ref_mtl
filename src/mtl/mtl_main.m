@@ -506,6 +506,9 @@ MTL_BeginUIPass(void);
 static void
 MTL_EndUIPass(void);
 
+static void
+RE_ScreenShot_f(void);
+
 /*
 ==============
 RE_Init
@@ -536,6 +539,8 @@ RE_Init(void)
 	Draw_InitLocal();
 
 	ri.Vid_MenuInit();
+
+	ri.Cmd_AddCommand("screenshot", RE_ScreenShot_f);
 
 	Com_Printf("Successfully initialized Metal 4 refresher!\n");
 
@@ -574,7 +579,7 @@ RE_Shutdown(void)
 {
 	mtlstate_t *st = &mtl_state;
 
-	// no commands registered in W1
+	ri.Cmd_RemoveCommand("screenshot");
 	RE_ShutdownContext();
 
 	// W5d: StretchRaw's dynamic texture
@@ -2261,6 +2266,84 @@ R_DrawParticles(void)
 		[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
 		[st->encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:r_newrefdef.num_particles * 3];
+	}
+}
+
+/*
+==============
+RE_ScreenShot_f
+
+`screenshot [tga|bmp|png|jpg] [quality]` - the ref_vk Vk_ScreenShot_f
+equivalent. Metal render targets keep the topmost line at row 0 and the
+host's stbi writers want top-down RGBA, so the BGRA8Unorm scene texture
+(full drawable resolution) is byte-swapped to RGBA in place before it is
+handed to ri.Vid_WriteScreenshot.
+==============
+*/
+static void
+RE_ScreenShot_f(void)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (st->command_queue == nil || st->device == nil ||
+	    st->scene_texture == nil || st->scene_width <= 0 ||
+	    st->scene_height <= 0)
+	{
+		Com_Printf("%s: no scene rendered yet\n", __func__);
+		return;
+	}
+
+	@autoreleasepool {
+		const NSUInteger w = (NSUInteger)st->scene_width;
+		const NSUInteger h = (NSUInteger)st->scene_height;
+		const NSUInteger bytesPerRow = w * 4;
+		id<MTLCommandBuffer> cb = [st->command_queue commandBuffer];
+		id<MTLBuffer> staging = [st->device newBufferWithLength:
+		    bytesPerRow * h options:MTLResourceStorageModeShared];
+
+		if (cb == nil || staging == nil)
+		{
+			Com_Printf("%s: failed to allocate readback staging buffer\n",
+			    __func__);
+			return;
+		}
+
+		/* Enqueued after the current frame's command buffer on the same
+		   queue, so the blit runs once that frame has fully retired and
+		   the scene texture holds the last presented image. */
+		id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+		[blit copyFromTexture:st->scene_texture
+			sourceSlice:0
+			sourceLevel:0
+			sourceOrigin:MTLOriginMake(0, 0, 0)
+			sourceSize:MTLSizeMake(w, h, 1)
+			toBuffer:staging
+			destinationOffset:0
+			destinationBytesPerRow:bytesPerRow
+			destinationBytesPerImage:bytesPerRow * h];
+		[blit endEncoding];
+		[cb commit];
+		[cb waitUntilCompleted];
+
+		if ([cb error] != nil)
+		{
+			Com_Printf("%s: GPU readback failed: %s\n", __func__,
+			    [[cb error] localizedDescription].UTF8String);
+			return;
+		}
+
+		/* BGRA -> RGBA with opaque alpha (same conversion as the B-format
+		   branch of Vk_ScreenShot_f). */
+		byte *px = (byte *)[staging contents];
+		for (NSUInteger i = 0; i < w * h * 4; i += 4)
+		{
+			byte tmp = px[i];
+			px[i] = px[i + 2];
+			px[i + 2] = tmp;
+			px[i + 3] = 255;
+		}
+
+		ri.Vid_WriteScreenshot((int)w, (int)h, 4, px);
 	}
 }
 

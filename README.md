@@ -143,9 +143,14 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 - Verified: paired fresh captures of `ref_mtl` and `ref_vk`/`ref_gl1`
   on base1 and jail1; `WERR=1 make` builds clean with `-Werror`;
   `tools/fix_verify.sh` runs build + deploy + smoke as one gate.
+- **W6b (in progress): console commands.** `screenshot [tga|bmp|png|jpg]
+  [quality]` registers the ref_vk-equivalent command: blits the offscreen
+  scene texture to a shared staging buffer, converts BGRA->RGBA (Metal
+  targets are top-row-first, the host's stbi writers want top-down RGBA)
+  and hands it to `ri.Vid_WriteScreenshot` at full drawable resolution.
 - Feature parity remaining (W6b+): MSAA, pixel-size downscale,
   underwater warp, `SCR_TileClear` viewport scissor for
-  `viewsize < 100`, screenshots, and the remaining gamma gaps
+  `viewsize < 100`, and the remaining gamma gaps
   (`world_lmap_fragment` vs `ref_vk`).
 
 ### Intentionally not implemented (parity scope cuts)
