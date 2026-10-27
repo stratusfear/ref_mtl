@@ -548,24 +548,14 @@ RE_ShutdownContext
 
 Shuts down the window specific context (Metal view and layer). Called
 by the host before the window is destroyed (mode change) or the
-renderer is shut down. The device, queue, command buffer, allocators
-and shared event survive mode changes and are released in RE_Shutdown.
+renderer is shut down. The device, command queue and shaders survive
+mode changes and are released in RE_Shutdown.
 ==============
 */
 static void
 RE_ShutdownContext(void)
 {
 	mtlstate_t *st = &mtl_state;
-
-	if (st->layer != NULL && st->queue != nil)
-	{
-		CAMetalLayer *layer = (CAMetalLayer *)st->layer;
-
-		if (layer.residencySet != nil)
-		{
-			[st->queue removeResidencySet:layer.residencySet];
-		}
-	}
 
 	if (st->metal_view != NULL)
 	{
@@ -587,14 +577,9 @@ RE_Shutdown(void)
 	// no commands registered in W1
 	RE_ShutdownContext();
 
-	// W5d: StretchRaw's dynamic texture (still referenced by the residency
-	// set until it is released)
+	// W5d: StretchRaw's dynamic texture
 	if (raw_texture != nil)
 	{
-		if (st->residency_set != nil)
-		{
-			[st->residency_set removeAllocation:raw_texture];
-		}
 		[raw_texture release];
 		raw_texture = nil;
 	}
@@ -606,36 +591,22 @@ RE_Shutdown(void)
 	{
 		[st->pass_descriptor release];
 	}
-	if (st->color_attachment != nil)
-	{
-		[st->color_attachment release];
-	}
 	if (st->ui_pass_descriptor != nil)
 	{
 		[st->ui_pass_descriptor release];
 	}
-	if (st->ui_color_attachment != nil)
+	if (st->present_pass_descriptor != nil)
 	{
-		[st->ui_color_attachment release];
+		[st->present_pass_descriptor release];
 	}
 	if (st->command_buffer != nil)
 	{
 		[st->command_buffer release];
+		st->command_buffer = nil;
 	}
-	if (st->shared_event != nil)
+	if (st->command_queue != nil)
 	{
-		[st->shared_event release];
-	}
-	for (int i = 0; i < 3; i++)
-	{
-		if (st->allocators[i] != nil)
-		{
-			[st->allocators[i] release];
-		}
-	}
-	if (st->queue != nil)
-	{
-		[st->queue release];
+		[st->command_queue release];
 	}
 	if (st->device != nil)
 	{
@@ -674,15 +645,6 @@ R_ReleaseShaders(mtlstate_t *st)
 {
 	int i;
 
-	if (st->residency_set != nil)
-	{
-		if (st->queue != nil)
-		{
-			[st->queue removeResidencySet:st->residency_set];
-		}
-		[st->residency_set release];
-		st->residency_set = nil;
-	}
 	for (i = 0; i < 3; i++)
 	{
 		if (st->world_ubo[i] != nil)
@@ -731,30 +693,10 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->ui_color_vertex_buffer release];
 		st->ui_color_vertex_buffer = nil;
 	}
-	if (st->ui_tex_frag_table != nil)
+	if (st->pipeline_present != nil)
 	{
-		[st->ui_tex_frag_table release];
-		st->ui_tex_frag_table = nil;
-	}
-	if (st->ui_tint_frag_table != nil)
-	{
-		[st->ui_tint_frag_table release];
-		st->ui_tint_frag_table = nil;
-	}
-	if (st->ui_tex_vert_table != nil)
-	{
-		[st->ui_tex_vert_table release];
-		st->ui_tex_vert_table = nil;
-	}
-	if (st->ui_tint_vert_table != nil)
-	{
-		[st->ui_tint_vert_table release];
-		st->ui_tint_vert_table = nil;
-	}
-	if (st->ui_color_vert_table != nil)
-	{
-		[st->ui_color_vert_table release];
-		st->ui_color_vert_table = nil;
+		[st->pipeline_present release];
+		st->pipeline_present = nil;
 	}
 	if (st->pipeline_ui_tex != nil)
 	{
@@ -790,46 +732,13 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->depth_texture release];
 		st->depth_texture = nil;
+		st->depth_width = st->depth_height = 0;
 	}
-	if (st->lmap_frag_table != nil)
+	if (st->scene_texture != nil)
 	{
-		[st->lmap_frag_table release];
-		st->lmap_frag_table = nil;
-	}
-	if (st->lmap_vert_table != nil)
-	{
-		[st->lmap_vert_table release];
-		st->lmap_vert_table = nil;
-	}
-	if (st->plain_frag_table != nil)
-	{
-		[st->plain_frag_table release];
-		st->plain_frag_table = nil;
-	}
-	if (st->plain_vert_table != nil)
-	{
-		[st->plain_vert_table release];
-		st->plain_vert_table = nil;
-	}
-	if (st->dlight_vert_table != nil)
-	{
-		[st->dlight_vert_table release];
-		st->dlight_vert_table = nil;
-	}
-	if (st->flash_vert_table != nil)
-	{
-		[st->flash_vert_table release];
-		st->flash_vert_table = nil;
-	}
-	if (st->alias_frag_table != nil)
-	{
-		[st->alias_frag_table release];
-		st->alias_frag_table = nil;
-	}
-	if (st->alias_vert_table != nil)
-	{
-		[st->alias_vert_table release];
-		st->alias_vert_table = nil;
+		[st->scene_texture release];
+		st->scene_texture = nil;
+		st->scene_width = st->scene_height = 0;
 	}
 	if (st->pipeline_dlight != nil)
 	{
@@ -856,40 +765,15 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_alias release];
 		st->pipeline_alias = nil;
 	}
-	if (st->sprite_frag_table != nil)
-	{
-		[st->sprite_frag_table release];
-		st->sprite_frag_table = nil;
-	}
-	if (st->sprite_vert_table != nil)
-	{
-		[st->sprite_vert_table release];
-		st->sprite_vert_table = nil;
-	}
 	if (st->pipeline_sprite != nil)
 	{
 		[st->pipeline_sprite release];
 		st->pipeline_sprite = nil;
 	}
-	if (st->point_particle_vert_table != nil)
-	{
-		[st->point_particle_vert_table release];
-		st->point_particle_vert_table = nil;
-	}
 	if (st->pipeline_point_particle != nil)
 	{
 		[st->pipeline_point_particle release];
 		st->pipeline_point_particle = nil;
-	}
-	if (st->particle_frag_table != nil)
-	{
-		[st->particle_frag_table release];
-		st->particle_frag_table = nil;
-	}
-	if (st->particle_vert_table != nil)
-	{
-		[st->particle_vert_table release];
-		st->particle_vert_table = nil;
 	}
 	if (st->pipeline_particle != nil)
 	{
@@ -993,17 +877,12 @@ R_InitShaders(void)
 
 		for (i = 0; i < 3; i++)
 		{
-			MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+			MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-			MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-			vf.name = [NSString stringWithUTF8String:pipelines[i].vertex];
-			vf.library = st->library;
-			pd.vertexFunctionDescriptor = vf;
-
-			MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-			ff.name = [NSString stringWithUTF8String:pipelines[i].fragment];
-			ff.library = st->library;
-			pd.fragmentFunctionDescriptor = ff;
+			pd.vertexFunction = [st->library newFunctionWithName:
+			    [NSString stringWithUTF8String:pipelines[i].vertex]];
+			pd.fragmentFunction = [st->library newFunctionWithName:
+			    [NSString stringWithUTF8String:pipelines[i].fragment]];
 
 			/* Vertex layout: float3 position at offset 0, float2 uv at
 			   offset 12 (and float2 lmapuv at offset 20 for the lightmapped
@@ -1027,7 +906,7 @@ R_InitShaders(void)
 			pd.rasterSampleCount = 1;
 			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
-			id<MTLRenderPipelineState> pipeline = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+			id<MTLRenderPipelineState> pipeline = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 			if (pipeline == nil)
 			{
 				Com_Printf("ref_mtl: pipeline creation failed (%s): %s\n",
@@ -1049,17 +928,11 @@ R_InitShaders(void)
 	   color3), additive blend, no depth write. The fragment stage has no
 	   resource bindings, so only the vertex argument table exists. */
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"dlight_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"dlight_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"dlight_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1073,7 +946,6 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1081,7 +953,7 @@ R_InitShaders(void)
 		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-		st->pipeline_dlight = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_dlight = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_dlight == nil)
 		{
 			Com_Printf("ref_mtl: dlight pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1095,17 +967,11 @@ R_InitShaders(void)
 	   color-rect pipeline), no depth test or write. The six vertices are
 	   static; the color is written into the world UBO ring per frame. */
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"flash_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"flash_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"flash_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"flash_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat2;
@@ -1116,7 +982,6 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1124,7 +989,7 @@ R_InitShaders(void)
 		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-		st->pipeline_flash = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_flash = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_flash == nil)
 		{
 			Com_Printf("ref_mtl: flash pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1163,17 +1028,11 @@ R_InitShaders(void)
 	   the draws are line primitives with culling and depth test disabled
 	   (see R_DrawTriangleOutlines). */
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"dlight_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"dlight_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"dlight_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1188,7 +1047,7 @@ R_InitShaders(void)
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
-		st->pipeline_showtris = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_showtris = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_showtris == nil)
 		{
 			Com_Printf("ref_mtl: showtris pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1202,17 +1061,11 @@ R_InitShaders(void)
 	   translucent variant alpha-blends and skips depth writes, like the
 	   flash pipeline. */
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"alias_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"alias_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1230,7 +1083,7 @@ R_InitShaders(void)
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
-		st->pipeline_alias = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_alias = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_alias == nil)
 		{
 			Com_Printf("ref_mtl: alias pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1238,14 +1091,13 @@ R_InitShaders(void)
 			return false;
 		}
 
-		pd = [MTL4RenderPipelineDescriptor new];
-		pd.vertexFunctionDescriptor = vf;
-		pd.fragmentFunctionDescriptor = ff;
+		pd = [MTLRenderPipelineDescriptor new];
+		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
+		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1253,7 +1105,7 @@ R_InitShaders(void)
 		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-		st->pipeline_alias_translucent = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_alias_translucent = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_alias_translucent == nil)
 		{
 			Com_Printf("ref_mtl: alias translucent pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1261,26 +1113,7 @@ R_InitShaders(void)
 			return false;
 		}
 
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->alias_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->alias_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create alias vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxTextureBindCount = 1;
-		atd.maxBufferBindCount = 1;
-		st->alias_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->alias_frag_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create alias fragment argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	/* W5b: sprites (mod_sprite). Same 36-byte vertex layout as the alias
@@ -1288,17 +1121,11 @@ R_InitShaders(void)
 	   the smaller sprite_ubo_t (viewproj + gamma). Blending is always on,
 	   like ref_vk's sprite pipeline; depth state is set per draw. */
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"sprite_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"sprite_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"sprite_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1315,7 +1142,6 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1323,7 +1149,7 @@ R_InitShaders(void)
 		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-		st->pipeline_sprite = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_sprite = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_sprite == nil)
 		{
 			Com_Printf("ref_mtl: sprite pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1331,26 +1157,7 @@ R_InitShaders(void)
 			return false;
 		}
 
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->sprite_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->sprite_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create sprite vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxTextureBindCount = 1;
-		atd.maxBufferBindCount = 1;
-		st->sprite_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->sprite_frag_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create sprite fragment argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	/* W5c: particles. Textured mode reuses the sprite vertex function and
@@ -1359,17 +1166,11 @@ R_InitShaders(void)
 	   point size in the vertex shader; its fragment has no bindings at
 	   all. Both blend like the sprite pipeline (ref_vk default blendOpts). */
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"sprite_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"particle_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1386,7 +1187,6 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1394,7 +1194,7 @@ R_InitShaders(void)
 		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-		st->pipeline_particle = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_particle == nil)
 		{
 			Com_Printf("ref_mtl: particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1402,40 +1202,15 @@ R_InitShaders(void)
 			return false;
 		}
 
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->particle_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->particle_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create particle vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxTextureBindCount = 1;
-		atd.maxBufferBindCount = 1;
-		st->particle_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->particle_frag_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create particle fragment argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"particle_point_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"particle_point_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"particle_point_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_point_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1452,7 +1227,6 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1460,7 +1234,7 @@ R_InitShaders(void)
 		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-		st->pipeline_point_particle = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_point_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_point_particle == nil)
 		{
 			Com_Printf("ref_mtl: point particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1468,15 +1242,6 @@ R_InitShaders(void)
 			return false;
 		}
 
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->point_particle_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->point_particle_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create point particle vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	/* W5d: 2D UI (RE_Draw_*). Three pipelines over one static full-screen
@@ -1489,17 +1254,11 @@ R_InitShaders(void)
 	   uv per corner, the color quad only positions. No depth: the UI pass has
 	   no depth attachment. */
 	{
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"ui_tex_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"ui_tex_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"ui_tex_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"ui_tex_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat2;
@@ -1514,7 +1273,7 @@ R_InitShaders(void)
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
-		st->pipeline_ui_tex = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_ui_tex = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_ui_tex == nil)
 		{
 			Com_Printf("ref_mtl: ui tex pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1522,42 +1281,17 @@ R_InitShaders(void)
 			return false;
 		}
 
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->ui_tex_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->ui_tex_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create ui tex vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxTextureBindCount = 1;
-		atd.maxBufferBindCount = 1;
-		st->ui_tex_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->ui_tex_frag_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create ui tex fragment argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	{
 		/* tint path: same vertex function and quad, the fragment multiplies
 		   by the UBO color after gamma. */
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"ui_tex_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"ui_tex_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"ui_tint_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"ui_tint_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat2;
@@ -1572,7 +1306,7 @@ R_InitShaders(void)
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
-		st->pipeline_ui_tint = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_ui_tint = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_ui_tint == nil)
 		{
 			Com_Printf("ref_mtl: ui tint pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1580,43 +1314,18 @@ R_InitShaders(void)
 			return false;
 		}
 
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->ui_tint_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->ui_tint_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create ui tint vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxTextureBindCount = 1;
-		atd.maxBufferBindCount = 1;
-		st->ui_tint_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->ui_tint_frag_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create ui tint fragment argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	{
 		/* color path: the UBO color is output by the vertex stage and
 		   returned raw by the fragment, standard alpha blend. No fragment
 		   argument table (no resource bindings). */
-		MTL4RenderPipelineDescriptor *pd = [MTL4RenderPipelineDescriptor new];
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
-		MTL4LibraryFunctionDescriptor *vf = [MTL4LibraryFunctionDescriptor new];
-		vf.name = @"ui_color_vertex";
-		vf.library = st->library;
-		pd.vertexFunctionDescriptor = vf;
+		pd.vertexFunction = [st->library newFunctionWithName:@"ui_color_vertex"];
 
-		MTL4LibraryFunctionDescriptor *ff = [MTL4LibraryFunctionDescriptor new];
-		ff.name = @"ui_color_fragment";
-		ff.library = st->library;
-		pd.fragmentFunctionDescriptor = ff;
+		pd.fragmentFunction = [st->library newFunctionWithName:@"ui_color_fragment"];
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat2;
@@ -1627,7 +1336,6 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1635,7 +1343,7 @@ R_InitShaders(void)
 		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
-		st->pipeline_ui_color = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
+		st->pipeline_ui_color = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 		if (st->pipeline_ui_color == nil)
 		{
 			Com_Printf("ref_mtl: ui color pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1643,15 +1351,6 @@ R_InitShaders(void)
 			return false;
 		}
 
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->ui_color_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->ui_color_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create ui color vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	/* Static UI quads: the ref_vk CreateStaticBuffers texVerts/colorVerts
@@ -1732,67 +1431,11 @@ R_InitShaders(void)
 	   tables the surface (index 0), lightmap (index 1, lmap path) and the
 	   UBO (index 0). Bindings are updated before each draw. */
 	{
-		MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->plain_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->plain_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create plain vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxTextureBindCount = 1;
-		atd.maxBufferBindCount = 1;
-		st->plain_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->plain_frag_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create plain fragment argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->lmap_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->lmap_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create lmap vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxTextureBindCount = 2;
-		atd.maxBufferBindCount = 1;
-		st->lmap_frag_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->lmap_frag_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create lmap fragment argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->dlight_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->dlight_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create dlight vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 
-		atd = [MTL4ArgumentTableDescriptor new];
-		atd.maxBufferBindCount = 2;
-		st->flash_vert_table = [st->device newArgumentTableWithDescriptor:atd error:&err];
-		if (st->flash_vert_table == nil)
-		{
-			Com_Printf("ref_mtl: failed to create flash vertex argument table: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
 	}
 
 	/* W4: single depth state for the whole world pass - less-than compare,
@@ -1834,35 +1477,33 @@ R_InitShaders(void)
 		}
 	}
 
-	/* Metal 4 residency: GPU-visible resources must be part of a committed
-	   residency set attached to the queue, otherwise the GPU reads zeros
-	   and compute writes do not land - without any error. The layer's own
-	   residency set (which covers the drawables) is added in RE_InitContext;
-	   this one covers our world rings. */
+	/* W6: present pass pipeline (classic descriptor). Samples the
+	   offscreen scene texture and draws it to the drawable as a single
+	   full-screen quad over the static ui_color corners. No blending:
+	   the quad covers the whole drawable. */
 	{
-		MTLResidencySetDescriptor *rsd = [MTLResidencySetDescriptor new];
-		st->residency_set = [st->device newResidencySetWithDescriptor:rsd error:&err];
-		if (st->residency_set == nil)
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"present_vertex"];
+		pd.fragmentFunction = [st->library newFunctionWithName:@"present_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat2;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(uicolorvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+		st->pipeline_present = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_present == nil)
 		{
-			Com_Printf("ref_mtl: failed to create residency set: %s\n", err.localizedDescription.UTF8String);
+			Com_Printf("ref_mtl: present pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
 			R_ReleaseShaders(st);
 			return false;
 		}
-
-		for (i = 0; i < 3; i++)
-		{
-			[st->residency_set addAllocation:st->world_vertex_buffer[i]];
-			[st->residency_set addAllocation:st->world_lmap_vertex_buffer[i]];
-			[st->residency_set addAllocation:st->world_ubo[i]];
-			[st->residency_set addAllocation:st->dlight_vertex_buffer[i]];
-			[st->residency_set addAllocation:st->showtris_vertex_buffer[i]];
-			[st->residency_set addAllocation:st->alias_vertex_buffer[i]];
-		}
-		[st->residency_set addAllocation:st->flash_vertex_buffer];
-		[st->residency_set addAllocation:st->ui_tex_vertex_buffer];
-		[st->residency_set addAllocation:st->ui_color_vertex_buffer];
-		[st->residency_set commit];
-		[st->queue addResidencySet:st->residency_set];
 	}
 
 	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash/showtris/alias pipelines)\n");
@@ -1876,7 +1517,7 @@ RE_InitContext
 
 Called after the window was created. Creates the SDL Metal view and
 CAMetalLayer for this window, and (the first time) the Metal 4 device,
-command queue, command buffer, command allocators and shared event.
+command queue and render pass descriptors.
 ==============
 */
 static int
@@ -1920,47 +1561,31 @@ RE_InitContext(void *sdl_window)
 			return false;
 		}
 
-		id<MTL4CommandQueue> queue = [device newMTL4CommandQueue];
-		id<MTLSharedEvent> shared_event = [device newSharedEvent];
-		id<MTL4CommandBuffer> command_buffer = [device newCommandBuffer];
-		id<MTL4CommandAllocator> allocators[3];
-		int i;
+		/* Classic (MTL3-era) command queue: drawing through an MTL4
+		   queue with an app-created render target corrupts the
+		   displayed image on M3 (Bug C, tools/bugc_repro/NOTES.md).
+		   The pipelines are still MTL4Compiler-created and encode
+		   unchanged on classic command buffers and encoders. */
+		id<MTLCommandQueue> command_queue = [device newCommandQueue];
 
-		for (i = 0; i < 3; i++)
+		if (command_queue == nil)
 		{
-			allocators[i] = [device newCommandAllocator];
-		}
-
-		if (queue == nil || shared_event == nil || command_buffer == nil)
-		{
-			Com_Printf("ref_mtl: failed to create Metal 4 core objects (queue/event/command buffer)\n");
+			Com_Printf("ref_mtl: failed to create Metal command queue\n");
 			return false;
-		}
-		for (i = 0; i < 3; i++)
-		{
-			if (allocators[i] == nil)
-			{
-				Com_Printf("ref_mtl: failed to create command allocator %d\n", i);
-				return false;
-			}
 		}
 
 		st->device = device;
-		st->queue = queue;
-		st->shared_event = shared_event;
-		st->command_buffer = command_buffer;
-		for (i = 0; i < 3; i++)
-		{
-			st->allocators[i] = allocators[i];
-		}
+		st->command_queue = command_queue;
 
-		st->pass_descriptor = [MTL4RenderPassDescriptor new];
-		st->color_attachment = [[MTLRenderPassColorAttachmentDescriptor alloc] init];
+		st->pass_descriptor = [MTLRenderPassDescriptor new];
 
-		/* W5d: the 2D UI pass shares the drawable but has no depth
-		   attachment; it is opened lazily on the first RE_Draw_* call. */
-		st->ui_pass_descriptor = [MTL4RenderPassDescriptor new];
-		st->ui_color_attachment = [[MTLRenderPassColorAttachmentDescriptor alloc] init];
+		/* W5d: the 2D UI pass renders into the offscreen scene target
+		   but has no depth attachment; it is opened lazily on the
+		   first RE_Draw_* call of a frame. */
+		st->ui_pass_descriptor = [MTLRenderPassDescriptor new];
+
+		/* W6: final present pass, scene texture to drawable. */
+		st->present_pass_descriptor = [MTLRenderPassDescriptor new];
 	}
 
 	/* W3: runtime shader compilation and world rings. Guarded by the
@@ -1988,14 +1613,15 @@ RE_InitContext(void *sdl_window)
 	   RGBA8 framebuffer). An sRGB target would make the hardware
 	   sRGB-encode on write, brightening the whole image ~2x. */
 	layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-	/* Bug B fix: with framebufferOnly drawables (window server
-	   zero-copy scan-out) fresh processes intermittently displayed a
-	   per-process-random constant-magenta corruption under blended 2D
-	   UI draws: 10/12 fresh base1 runs reproduced it, while 0/12 runs
-	   with framebufferOnly=NO did. The corruption was not present in
-	   any CPU-side or shared-storage GPU texture, implicating the
-	   drawable's private storage lifetime during presentation. */
-	layer.framebufferOnly = NO;
+	/* W6 + Bug C mitigation: the scene is rendered into an offscreen
+	   texture and copied to the drawable by a single final present
+	   pass, so each drawable is the render target of exactly one pass
+	   and is never sampled or read back - the shape framebufferOnly =
+	   YES is designed for. Classic command encoding (see the
+	   mtlstate_t comment and tools/bugc_repro/NOTES.md) is what makes
+	   this display cleanly: MTL4 queues with an app-created render
+	   target poison the displayed image with a constant magenta. */
+	layer.framebufferOnly = YES;
 	layer.maximumDrawableCount = 3;
 
 	/* Retina: CAMetalLayer's default contentsScale on macOS is 1.0,
@@ -2012,19 +1638,12 @@ RE_InitContext(void *sdl_window)
 	}
 	layer.contentsScale = pixel_scale;
 
-	/* Keep the layer's residency set resident for all command buffers
-	   committed to this queue. */
-	if (layer.residencySet != nil)
-	{
-		[st->queue addResidencySet:layer.residencySet];
-	}
-
 	st->metal_view = metal_view;
 	st->layer = layer;
 	st->drawable = nil;
 	st->frame_number = 0;
 	st->frame_slot = 0;
-	memset(st->slot_done, 0, sizeof(st->slot_done));
+	memset(st->slot_busy, 0, sizeof(st->slot_busy));
 	st->frame_active = false;
 	st->pixel_scale = pixel_scale;
 
@@ -2164,7 +1783,7 @@ RE_BeginFrame(float camera_separation)
 {
 	mtlstate_t *st = &mtl_state;
 
-	if (st->queue == nil || st->command_buffer == nil || st->layer == NULL)
+	if (st->command_queue == nil || st->layer == NULL)
 	{
 		return; // not initialized
 	}
@@ -2172,20 +1791,24 @@ RE_BeginFrame(float camera_separation)
 	st->frame_number++;
 	st->frame_slot = (int)(st->frame_number % 3);
 
-	/* CPU gate: don't touch this slot's command allocator until the GPU
-	   is done with the last frame that used it. Skipped frames never
-	   signal, so slot_done only advances for frames that were rendered. */
-	if (st->slot_done[st->frame_slot] > 0)
+	/* CPU gate: don't reuse a slot's rings or overwrite an uncommitted
+	   command buffer while its frame is still in flight. The completion
+	   handler installed in RE_EndFrame clears the flag; wait at most
+	   about one second, then skip the frame. */
 	{
-		if (![st->shared_event waitUntilSignaledValue:st->slot_done[st->frame_slot] timeoutMS:1000])
+		int waited = 0;
+
+		while (st->slot_busy[st->frame_slot])
 		{
-			Com_DPrintf("ref_mtl: CPU gate timed out, skipping frame %llu\n",
-			           (unsigned long long)st->frame_number);
-			return;
+			if (++waited > 1000)
+			{
+				Com_DPrintf("ref_mtl: CPU gate timed out, skipping frame %llu\n",
+				           (unsigned long long)st->frame_number);
+				return;
+			}
+			SDL_Delay(1);
 		}
 	}
-
-	[st->allocators[st->frame_slot] reset];
 
 	id<CAMetalDrawable> drawable = [(CAMetalLayer *)st->layer nextDrawable];
 	if (drawable == nil)
@@ -2210,13 +1833,17 @@ RE_BeginFrame(float camera_separation)
 	if (st->depth_width != (int)drawable.texture.width ||
 	    st->depth_height != (int)drawable.texture.height)
 	{
-		MTLTextureDescriptor *dd;
+		MTLTextureDescriptor *dd, *sd;
 
 		if (st->depth_texture != nil)
 		{
-			[st->residency_set removeAllocation:st->depth_texture];
 			[st->depth_texture release];
 			st->depth_texture = nil;
+		}
+		if (st->scene_texture != nil)
+		{
+			[st->scene_texture release];
+			st->scene_texture = nil;
 		}
 
 		dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
@@ -2227,13 +1854,33 @@ RE_BeginFrame(float camera_separation)
 		dd.usage = MTLTextureUsageRenderTarget;
 		dd.storageMode = MTLStorageModeShared;
 		st->depth_texture = [st->device newTextureWithDescriptor:dd];
-		[st->residency_set addAllocation:st->depth_texture];
-		[st->residency_set commit];
+
+		/* W6: offscreen color target (default/Private storage: the CPU
+		   never reads it back, the GPU writes and samples it). */
+		sd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+		        MTLPixelFormatBGRA8Unorm
+		        width:drawable.texture.width
+		        height:drawable.texture.height
+		        mipmapped:NO];
+		sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+		st->scene_texture = [st->device newTextureWithDescriptor:sd];
+
 		st->depth_width = (int)drawable.texture.width;
 		st->depth_height = (int)drawable.texture.height;
+		st->scene_width = (int)drawable.texture.width;
+		st->scene_height = (int)drawable.texture.height;
 	}
 
-	[st->command_buffer beginCommandBufferWithAllocator:st->allocators[st->frame_slot]];
+	/* One classic command buffer per frame, retained until EndFrame
+	   commits and releases it. Mark the slot in flight; the completion
+	   handler added in RE_EndFrame clears it. */
+	st->command_buffer = [[st->command_queue commandBuffer] retain];
+	if (st->command_buffer == nil)
+	{
+		Com_DPrintf("ref_mtl: failed to create command buffer, skipping frame\n");
+		return;
+	}
+	st->slot_busy[st->frame_slot] = true;
 	st->frame_active = true;
 }
 
@@ -2269,26 +1916,61 @@ RE_EndFrame(void)
 	   buffer ends. */
 	MTL_EndUIPass();
 
-	[st->command_buffer endCommandBuffer];
-
-	/* The display may still be scanning out this drawable. */
-	[st->queue waitForDrawable:st->drawable];
-
+	/* W6: present pass. Draw the offscreen scene texture to the
+	   drawable as one full-screen quad. The drawable is the render
+	   target of exactly this pass; it is never sampled or loaded, the
+	   shape framebufferOnly = YES is designed for. */
+	if (st->drawable != nil && st->scene_texture != nil &&
+	    st->pipeline_present != nil && st->ui_color_vertex_buffer != nil)
 	{
-		id<MTL4CommandBuffer> cmdbuf = st->command_buffer;
-		[st->queue commit:&cmdbuf count:1];
+		id<MTLRenderCommandEncoder> present_encoder;
+
+		st->present_pass_descriptor.colorAttachments[0].texture =
+			st->drawable.texture;
+		st->present_pass_descriptor.colorAttachments[0].loadAction =
+			MTLLoadActionDontCare;
+		st->present_pass_descriptor.colorAttachments[0].storeAction =
+			MTLStoreActionStore;
+
+		present_encoder = [st->command_buffer renderCommandEncoderWithDescriptor:st->present_pass_descriptor];
+		if (present_encoder != nil)
+		{
+			[present_encoder setViewport:(MTLViewport){0.0, 0.0,
+			    (double)st->drawable.texture.width,
+			    (double)st->drawable.texture.height, 0.0, 1.0}];
+			[present_encoder setVertexBuffer:st->ui_color_vertex_buffer
+				offset:0 atIndex:0];
+			[present_encoder setFragmentTexture:st->scene_texture atIndex:0];
+			[present_encoder setRenderPipelineState:st->pipeline_present];
+			[present_encoder drawPrimitives:MTLPrimitiveTypeTriangle
+				vertexStart:0 vertexCount:6];
+			[present_encoder endEncoding];
+		}
 	}
 
-	/* Safe to present now, then actually present. */
-	[st->queue signalDrawable:st->drawable];
-	[st->drawable present];
+	/* Release this slot when the GPU is done with the frame's command
+	   buffer; the CPU gate in RE_BeginFrame polls the flag before
+	   reusing the slot three frames later. */
+	{
+		int slot = st->frame_slot;
 
-	/* GPU side: signal frame completion after all of its work. The
-	   CPU gate in RE_BeginFrame waits on this value before reusing the
-	   slot's allocator three frames later. */
-	[st->queue signalEvent:st->shared_event value:st->frame_number];
-	st->slot_done[st->frame_slot] = st->frame_number;
-	st->drawable = nil;
+		[st->command_buffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+			(void)cb;
+			mtl_state.slot_busy[slot] = false;
+		}];
+	}
+
+	/* Classic present-then-commit: the drawable goes to the compositor
+	   when this command buffer's work for it completes. */
+	if (st->drawable != nil)
+	{
+		[st->drawable present];
+		st->drawable = nil;
+	}
+
+	[st->command_buffer commit];
+	[st->command_buffer release];
+	st->command_buffer = nil;
 }
 
 /*
@@ -2341,8 +2023,7 @@ static void
 R_RenderFlash(void)
 {
 	mtlstate_t *st = &mtl_state;
-	size_t slot;
-	MTLGPUAddress ubo_addr;
+	size_t slot, ubo_off;
 	float *ubo;
 
 	if (!mtl_polyblend->value || !v_blend[3])
@@ -2361,20 +2042,18 @@ R_RenderFlash(void)
 		return;	/* ring exhausted, skip the flash */
 	}
 
-	ubo_addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
-	ubo = (float *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	ubo_off = st->world_ubo_offset[slot];
+	ubo = (float *)((byte *)st->world_ubo[slot].contents + ubo_off);
 	ubo[0] = v_blend[0];
 	ubo[1] = v_blend[1];
 	ubo[2] = v_blend[2];
 	ubo[3] = v_blend[3];
 	st->world_ubo_offset[slot] += sizeof(float) * 4;
 
-	[st->flash_vert_table setAddress:st->flash_vertex_buffer.gpuAddress atIndex:0];
-	[st->flash_vert_table setAddress:ubo_addr atIndex:1];
-
 	[st->encoder setDepthStencilState:st->depth_state_none];
 	[st->encoder setRenderPipelineState:st->pipeline_flash];
-	[st->encoder setArgumentTable:st->flash_vert_table atStages:MTLRenderStageVertex];
+	[st->encoder setVertexBuffer:st->flash_vertex_buffer offset:0 atIndex:0];
+	[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 
 	/* restore the world-pass encoder state */
@@ -2395,20 +2074,20 @@ R_RenderFlash(void)
 
 /*
  * Writes one particle_point_ubo_t into the slot's world UBO ring and
- * returns its GPU address (0 when the ring is exhausted).
+ * returns its ring offset (SIZE_MAX when the ring is exhausted).
  */
-static MTLGPUAddress
+static size_t
 MTL_EmitParticlePointUbo(size_t slot)
 {
 	mtlstate_t *st = &mtl_state;
 	particle_point_ubo_t *ubo;
-	MTLGPUAddress addr;
+	size_t ubo_off;
 
 	if (st->world_ubo_offset[slot] + sizeof(particle_point_ubo_t) > WORLD_UBO_RING_BYTES)
-		return 0;
+		return SIZE_MAX;
 
-	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
-	ubo = (particle_point_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	ubo_off = st->world_ubo_offset[slot];
+	ubo = (particle_point_ubo_t *)((byte *)st->world_ubo[slot].contents + ubo_off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
 	ubo->pointSize = mtl_particle_size->value;
 	ubo->pointScale = vid.width * viewsize->value / 102400;
@@ -2419,15 +2098,14 @@ MTL_EmitParticlePointUbo(size_t slot)
 	ubo->att_c = mtl_particle_att_c->value;
 	st->world_ubo_offset[slot] += sizeof(particle_point_ubo_t);
 
-	return addr;
+	return ubo_off;
 }
 
 static void
 R_DrawParticles(void)
 {
 	mtlstate_t *st = &mtl_state;
-	size_t slot, vstart;
-	MTLGPUAddress ubo_addr;
+	size_t slot, vstart, ubo_off;
 
 	if (!r_newrefdef.num_particles || st->encoder == nil)
 	{
@@ -2456,8 +2134,8 @@ R_DrawParticles(void)
 			return;	/* ring exhausted */
 		}
 
-		ubo_addr = MTL_EmitParticlePointUbo(slot);
-		if (ubo_addr == 0)
+		ubo_off = MTL_EmitParticlePointUbo(slot);
+		if (ubo_off == SIZE_MAX)
 		{
 			return;	/* UBO ring exhausted */
 		}
@@ -2481,12 +2159,10 @@ R_DrawParticles(void)
 		       visibleParticles, r_newrefdef.num_particles * sizeof(aliasvert_t));
 		st->alias_vertex_offset[slot] += r_newrefdef.num_particles * sizeof(aliasvert_t);
 
-		[st->point_particle_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-		[st->point_particle_vert_table setAddress:ubo_addr atIndex:1];
-
 		[st->encoder setRenderPipelineState:st->pipeline_point_particle];
 		[st->encoder setDepthStencilState:st->depth_state];
-		[st->encoder setArgumentTable:st->point_particle_vert_table atStages:MTLRenderStageVertex];
+		[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot] offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 		[st->encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:r_newrefdef.num_particles];
 	}
 	else
@@ -2516,8 +2192,8 @@ R_DrawParticles(void)
 			return;	/* ring exhausted */
 		}
 
-		ubo_addr = MTL_EmitSpriteUbo(slot);
-		if (ubo_addr == 0)
+		ubo_off = MTL_EmitSpriteUbo(slot);
+		if (ubo_off == SIZE_MAX)
 		{
 			return;	/* UBO ring exhausted */
 		}
@@ -2578,15 +2254,12 @@ R_DrawParticles(void)
 		       visibleParticles, r_newrefdef.num_particles * 3 * sizeof(aliasvert_t));
 		st->alias_vertex_offset[slot] += r_newrefdef.num_particles * 3 * sizeof(aliasvert_t);
 
-		[st->particle_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-		[st->particle_vert_table setAddress:ubo_addr atIndex:1];
-		[st->particle_frag_table setTexture:skin->mtl_texture.gpuResourceID atIndex:0];
-		[st->particle_frag_table setAddress:ubo_addr atIndex:0];
-
 		[st->encoder setRenderPipelineState:st->pipeline_particle];
 		[st->encoder setDepthStencilState:st->depth_state];
-		[st->encoder setArgumentTable:st->particle_vert_table atStages:MTLRenderStageVertex];
-		[st->encoder setArgumentTable:st->particle_frag_table atStages:MTLRenderStageFragment];
+		[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot] offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
+		[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
+		[st->encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:r_newrefdef.num_particles * 3];
 	}
 }
@@ -2605,7 +2278,8 @@ RE_RenderFrame(refdef_t *fd)
 {
 	mtlstate_t *st = &mtl_state;
 
-	if (!st->frame_active || st->drawable == nil || st->pipeline_plain == nil)
+	if (!st->frame_active || st->command_buffer == nil ||
+	    st->scene_texture == nil || st->pipeline_plain == nil)
 	{
 		return;
 	}
@@ -2625,11 +2299,12 @@ RE_RenderFrame(refdef_t *fd)
 		MTL_EndUIPass();
 	}
 
-	st->color_attachment.texture = st->drawable.texture;
-	st->color_attachment.loadAction = ui_before_world ? MTLLoadActionLoad : MTLLoadActionClear;
-	st->color_attachment.storeAction = MTLStoreActionStore;
-	st->color_attachment.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
-	st->pass_descriptor.colorAttachments[0] = st->color_attachment;
+	/* W6: the world pass renders into the offscreen scene texture,
+	   never into the drawable itself. */
+	st->pass_descriptor.colorAttachments[0].texture = st->scene_texture;
+	st->pass_descriptor.colorAttachments[0].loadAction = ui_before_world ? MTLLoadActionLoad : MTLLoadActionClear;
+	st->pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+	st->pass_descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 
 	st->pass_descriptor.depthAttachment.texture = st->depth_texture;
 	st->pass_descriptor.depthAttachment.level = 0;
@@ -2644,6 +2319,9 @@ RE_RenderFrame(refdef_t *fd)
 		return;
 	}
 
+	/* Classic encoders have no default viewport; set it explicitly. */
+	[st->encoder setViewport:(MTLViewport){0.0, 0.0,
+	    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
 	[st->encoder setDepthStencilState:st->depth_state];
 
 	/* W4: mark the surfaces hit by dynamic lights before the framecount
@@ -2659,11 +2337,6 @@ RE_RenderFrame(refdef_t *fd)
 
 	[st->encoder endEncoding];
 	st->encoder = nil;
-
-	/* Attach the residency set to this command buffer (Apple's MTL4
-	   template pattern); together with the queue-level set this makes
-	   the bound resources visible to the GPU. */
-	[st->command_buffer useResidencySet:st->residency_set];
 }
 
 /*
@@ -2694,17 +2367,24 @@ MTL_BeginUIPass(void)
 		return;		// already open
 	}
 
-	if (!st->frame_active || st->drawable == nil || st->pipeline_ui_tex == nil)
+	if (!st->frame_active || st->command_buffer == nil ||
+	    st->scene_texture == nil || st->pipeline_ui_tex == nil)
 	{
 		return;
 	}
 
-	st->ui_color_attachment.texture = st->drawable.texture;
-	st->ui_color_attachment.loadAction = MTLLoadActionLoad;
-	st->ui_color_attachment.storeAction = MTLStoreActionStore;
-	st->ui_pass_descriptor.colorAttachments[0] = st->ui_color_attachment;
+	/* W6: the UI pass loads (not clears) the offscreen scene target the
+	   world pass just stored to; no depth attachment. */
+	st->ui_pass_descriptor.colorAttachments[0].texture = st->scene_texture;
+	st->ui_pass_descriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
+	st->ui_pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
 
 	st->ui_encoder = [st->command_buffer renderCommandEncoderWithDescriptor:st->ui_pass_descriptor];
+	if (st->ui_encoder != nil)
+	{
+		[st->ui_encoder setViewport:(MTLViewport){0.0, 0.0,
+		    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
+	}
 }
 
 static void
@@ -2722,29 +2402,29 @@ MTL_EndUIPass(void)
 }
 
 /*
- * Writes one ui_ubo_t into the slot's world UBO ring and returns its GPU
- * address (0 when the ring is exhausted). The ring is a plain byte stream
+ * Writes one ui_ubo_t into the slot's world UBO ring and returns its
+ * ring offset (SIZE_MAX when the ring is exhausted). The ring is a plain byte stream
  * shared with the world UBOs; the offset advances by sizeof(ui_ubo_t) like
  * every other emitter.
  */
-static MTLGPUAddress
+static size_t
 MTL_EmitUiUbo(size_t slot, const ui_ubo_t *ubo)
 {
 	mtlstate_t *st = &mtl_state;
 	ui_ubo_t *dst;
-	MTLGPUAddress addr;
+	size_t ubo_off;
 
 	if (st->world_ubo_offset[slot] + sizeof(ui_ubo_t) > WORLD_UBO_RING_BYTES)
 	{
-		return 0;
+		return SIZE_MAX;
 	}
 
-	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
-	dst = (ui_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	ubo_off = st->world_ubo_offset[slot];
+	dst = (ui_ubo_t *)((byte *)st->world_ubo[slot].contents + ubo_off);
 	memcpy(dst, ubo, sizeof(ui_ubo_t));
 	st->world_ubo_offset[slot] += sizeof(ui_ubo_t);
 
-	return addr;
+	return ubo_off;
 }
 
 /*
@@ -2757,9 +2437,7 @@ MTL_DrawUiTex(image_t *image, const ui_ubo_t *ubo_in, qboolean tint)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot = (size_t)st->frame_slot;
-	MTLGPUAddress ubo_addr;
-	id<MTL4ArgumentTable> vert_table;
-	id<MTL4ArgumentTable> frag_table;
+	size_t ubo_off;
 	id<MTLRenderPipelineState> pipeline;
 
 	if (image == NULL || image->mtl_texture == nil)
@@ -2767,24 +2445,19 @@ MTL_DrawUiTex(image_t *image, const ui_ubo_t *ubo_in, qboolean tint)
 		return;
 	}
 
-	ubo_addr = MTL_EmitUiUbo(slot, ubo_in);
-	if (ubo_addr == 0)
+	ubo_off = MTL_EmitUiUbo(slot, ubo_in);
+	if (ubo_off == SIZE_MAX)
 	{
 		return;		// ring exhausted
 	}
 
-	vert_table = tint ? st->ui_tint_vert_table : st->ui_tex_vert_table;
-	frag_table = tint ? st->ui_tint_frag_table : st->ui_tex_frag_table;
 	pipeline = tint ? st->pipeline_ui_tint : st->pipeline_ui_tex;
 
-	[vert_table setAddress:st->ui_tex_vertex_buffer.gpuAddress atIndex:0];
-	[vert_table setAddress:ubo_addr atIndex:1];
-	[frag_table setTexture:image->mtl_texture.gpuResourceID atIndex:0];
-	[frag_table setAddress:ubo_addr atIndex:0];
-
 	[st->ui_encoder setRenderPipelineState:pipeline];
-	[st->ui_encoder setArgumentTable:vert_table atStages:MTLRenderStageVertex];
-	[st->ui_encoder setArgumentTable:frag_table atStages:MTLRenderStageFragment];
+	[st->ui_encoder setVertexBuffer:st->ui_tex_vertex_buffer offset:0 atIndex:0];
+	[st->ui_encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
+	[st->ui_encoder setFragmentTexture:image->mtl_texture atIndex:0];
+	[st->ui_encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
 	[st->ui_encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 
@@ -2798,19 +2471,17 @@ MTL_DrawUiColor(const ui_ubo_t *ubo_in)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot = (size_t)st->frame_slot;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 
-	ubo_addr = MTL_EmitUiUbo(slot, ubo_in);
-	if (ubo_addr == 0)
+	ubo_off = MTL_EmitUiUbo(slot, ubo_in);
+	if (ubo_off == SIZE_MAX)
 	{
 		return;		// ring exhausted
 	}
 
-	[st->ui_color_vert_table setAddress:st->ui_color_vertex_buffer.gpuAddress atIndex:0];
-	[st->ui_color_vert_table setAddress:ubo_addr atIndex:1];
-
 	[st->ui_encoder setRenderPipelineState:st->pipeline_ui_color];
-	[st->ui_encoder setArgumentTable:st->ui_color_vert_table atStages:MTLRenderStageVertex];
+	[st->ui_encoder setVertexBuffer:st->ui_color_vertex_buffer offset:0 atIndex:0];
+	[st->ui_encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 	[st->ui_encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 
@@ -3213,7 +2884,6 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 	if (raw_texture != nil &&
 	    (raw_texture_width != cols || raw_texture_height != rows))
 	{
-		[st->residency_set removeAllocation:raw_texture];
 		[raw_texture release];
 		raw_texture = nil;
 	}
@@ -3232,8 +2902,6 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 			free(raw_image32);
 			return;
 		}
-		[st->residency_set addAllocation:raw_texture];
-		[st->residency_set commit];
 		raw_texture_width = cols;
 		raw_texture_height = rows;
 	}

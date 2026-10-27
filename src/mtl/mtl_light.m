@@ -31,27 +31,27 @@ int r_dlightframecount;
 
 /*
  * Writes one dlight_ubo_t (viewproj only) into the slot's UBO ring and
- * returns its GPU address (0 when the ring is exhausted). The viewproj
- * UBOs share the world UBO ring - it is a plain byte stream consumed
- * sequentially within the frame. Used by the dlight quads and the
- * showtris outlines.
+ * returns its byte offset within the ring buffer (SIZE_MAX when
+ * exhausted). The viewproj UBOs share the world UBO ring - it is a
+ * plain byte stream consumed sequentially within the frame. Used by
+ * the dlight quads and the showtris outlines.
  */
-MTLGPUAddress
+size_t
 MTL_EmitViewProjUbo(size_t slot)
 {
 	mtlstate_t *st = &mtl_state;
 	dlight_ubo_t *ubo;
-	MTLGPUAddress addr;
+	size_t off;
 
 	if (st->world_ubo_offset[slot] + sizeof(dlight_ubo_t) > WORLD_UBO_RING_BYTES)
-		return 0;
+		return SIZE_MAX;
 
-	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
-	ubo = (dlight_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	off = st->world_ubo_offset[slot];
+	ubo = (dlight_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
 	st->world_ubo_offset[slot] += sizeof(dlight_ubo_t);
 
-	return addr;
+	return off;
 }
 
 /*
@@ -70,7 +70,7 @@ R_RenderDlight(dlight_t *light)
 	size_t slot;
 	dlightvert_t *dst;
 	size_t vstart;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 	int i, j, k;
 	float rad;
 
@@ -129,21 +129,22 @@ R_RenderDlight(dlight_t *light)
 	}
 	st->dlight_vertex_offset[slot] += 48 * sizeof(dlightvert_t);
 
-	ubo_addr = MTL_EmitViewProjUbo(slot);
-	if (ubo_addr == 0)
+	ubo_off = MTL_EmitViewProjUbo(slot);
+	if (ubo_off == SIZE_MAX)
 	{
 		return;
 	}
 
-	[st->dlight_vert_table setAddress:st->dlight_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-	[st->dlight_vert_table setAddress:ubo_addr atIndex:1];
+	[st->encoder setVertexBuffer:st->dlight_vertex_buffer[slot]
+		offset:vstart atIndex:0];
+	[st->encoder setVertexBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:1];
 
 	[st->encoder setDepthStencilState:st->depth_state_nodwrite];
 	[st->encoder setFrontFacingWinding:MTLWindingClockwise];
 	[st->encoder setCullMode:MTLCullModeFront];
 
 	[st->encoder setRenderPipelineState:st->pipeline_dlight];
-	[st->encoder setArgumentTable:st->dlight_vert_table atStages:MTLRenderStageVertex];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:48];
 
 	/* restore the world-pass encoder state for later draws */

@@ -28,6 +28,7 @@ struct WorldUbo
 // MSL 3.x removed the coord argument from the sampler constructor.
 constexpr sampler world_sampler(address::repeat, filter::linear, mip_filter::linear);
 constexpr sampler world_lmap_sampler(address::clamp_to_edge, filter::linear);
+constexpr sampler present_sampler(address::clamp_to_edge, filter::nearest);
 
 //==================================================================
 // Plain (unlightmapped) world polys. World-space vertices for the
@@ -463,4 +464,39 @@ fragment float4
 ui_color_fragment(ui_out in [[stage_in]])
 {
     return in.color;
+}
+
+//==================================================================
+// W6: Present pass. The world and UI passes render into an offscreen
+// scene texture; this final pass draws it to the layer drawable as a
+// single full-screen quad, so the drawable is touched by exactly one
+// render pass and only ever as a render target - the mode
+// framebufferOnly = YES requires and optimizes for. The quad reuses
+// the ui_color static full-screen corners (no UBO). uv is derived
+// from position: Metal NDC is y-up while texcoord row 0 is the top
+// (ndc.y = -1 maps to texel row H-1), and at 1:1 size the nearest
+// sampling with uv = (pos * 0.5 + 0.5)-with-flip is an exact
+// identity texel->pixel copy.
+//==================================================================
+
+struct present_in
+{
+    float2 position [[attribute(0)]];
+};
+
+vertex ui_out
+present_vertex(present_in in [[stage_in]])
+{
+    ui_out out;
+    out.position = float4(in.position, 0.0, 1.0);
+    out.uv = float2(in.position.x * 0.5 + 0.5, 0.5 - in.position.y * 0.5);
+    out.color = float4(1.0);
+    return out;
+}
+
+fragment float4
+present_fragment(ui_out in [[stage_in]],
+                 texture2d<float, access::sample> scene [[texture(0)]])
+{
+    return scene.sample(present_sampler, in.uv);
 }

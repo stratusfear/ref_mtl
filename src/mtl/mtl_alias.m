@@ -104,53 +104,53 @@ Alias_CmdvertRealloc(int count)
 
 /*
  * Writes one alias_ubo_t into the slot's world UBO ring and returns its
- * GPU address (0 when the ring is exhausted). The model matrix is in
- * model space (rotation + translation only); the vertex shader applies
- * viewproj * model.
+ * byte offset within the ring buffer (SIZE_MAX when exhausted). The
+ * model matrix is in model space (rotation + translation only); the
+ * vertex shader applies viewproj * model.
  */
-MTLGPUAddress
+size_t
 MTL_EmitAliasUbo(size_t slot, const float *model, float textured)
 {
 	mtlstate_t *st = &mtl_state;
 	alias_ubo_t *ubo;
-	MTLGPUAddress addr;
+	size_t off;
 
 	if (st->world_ubo_offset[slot] + sizeof(alias_ubo_t) > WORLD_UBO_RING_BYTES)
-		return 0;
+		return SIZE_MAX;
 
-	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
-	ubo = (alias_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	off = st->world_ubo_offset[slot];
+	ubo = (alias_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
 	memcpy(ubo->model, model, sizeof(float) * 16);
 	ubo->textured = textured;
 	st->world_ubo_offset[slot] += sizeof(alias_ubo_t);
 
-	return addr;
+	return off;
 }
 
 /*
  * Writes one sprite_ubo_t (viewproj + gamma) into the slot's world UBO
- * ring and returns its GPU address (0 when the ring is exhausted). Also
- * used by the textured particle path (W5c), which needs the same
- * viewproj + gamma UBO.
+ * ring and returns its byte offset within the ring buffer (SIZE_MAX
+ * when exhausted). Also used by the textured particle path (W5c),
+ * which needs the same viewproj + gamma UBO.
  */
-MTLGPUAddress
+size_t
 MTL_EmitSpriteUbo(size_t slot)
 {
 	mtlstate_t *st = &mtl_state;
 	sprite_ubo_t *ubo;
-	MTLGPUAddress addr;
+	size_t off;
 
 	if (st->world_ubo_offset[slot] + sizeof(sprite_ubo_t) > WORLD_UBO_RING_BYTES)
-		return 0;
+		return SIZE_MAX;
 
-	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
-	ubo = (sprite_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	off = st->world_ubo_offset[slot];
+	ubo = (sprite_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
 	ubo->gamma = 2.1f - vid_gamma->value;
 	st->world_ubo_offset[slot] += sizeof(sprite_ubo_t);
 
-	return addr;
+	return off;
 }
 
 /*
@@ -241,7 +241,7 @@ MTL_WriteAliasVert(aliasvert_t *dst, const alias_cmdvert_t *cv, dtrivertx_t *ver
  */
 static int
 MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
-    dtrivertx_t *verts, int num_xyz, MTLGPUAddress ubo_addr,
+    dtrivertx_t *verts, int num_xyz, size_t ubo_off,
     qboolean shell, qboolean translucent)
 {
 	mtlstate_t *st = &mtl_state;
@@ -332,15 +332,16 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 		}
 		st->alias_vertex_offset[slot] += (size_t)tri_count * sizeof(aliasvert_t);
 
-		[st->alias_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-		[st->alias_vert_table setAddress:ubo_addr atIndex:1];
-		[st->alias_frag_table setTexture:skin->mtl_texture.gpuResourceID atIndex:0];
-		[st->alias_frag_table setAddress:ubo_addr atIndex:0];
+		[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot]
+			offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:1];
+		[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
+		[st->encoder setFragmentBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:0];
 
 		[st->encoder setRenderPipelineState:translucent ? st->pipeline_alias_translucent : st->pipeline_alias];
 		[st->encoder setDepthStencilState:translucent ? st->depth_state_nodwrite : st->depth_state];
-		[st->encoder setArgumentTable:st->alias_vert_table atStages:MTLRenderStageVertex];
-		[st->encoder setArgumentTable:st->alias_frag_table atStages:MTLRenderStageFragment];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)tri_count];
 	}
 
@@ -368,7 +369,7 @@ MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
 	int num_mesh_nodes;
 	short *mesh_nodes;
 	qboolean shell, translucent;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 
 	frame = (daliasframe_t *)((byte *)paliashdr + paliashdr->ofs_frames
 	    + currententity->frame * paliashdr->framesize);
@@ -420,9 +421,9 @@ MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
 	shell = (currententity->flags & (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE)) != 0;
 	translucent = (currententity->flags & RF_TRANSLUCENT) != 0;
 
-	ubo_addr = MTL_EmitAliasUbo(mtl_state.frame_slot, modelMatrix,
+	ubo_off = MTL_EmitAliasUbo(mtl_state.frame_slot, modelMatrix,
 	    shell ? 0.f : (r_lightmap->value ? 0.f : 1.f));
-	if (ubo_addr == 0)
+	if (ubo_off == SIZE_MAX)
 		return;	/* UBO ring exhausted */
 
 	num_mesh_nodes = (paliashdr->ofs_skins - sizeof(dmdl_t)) / sizeof(short) / 2;
@@ -434,14 +435,14 @@ MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
 		{
 			if (MTL_DrawAliasGlcmds(order + mesh_nodes[i * 2],
 			    order + Q_min(paliashdr->num_glcmds, mesh_nodes[i * 2] + mesh_nodes[i * 2 + 1]),
-			    alpha, skin, verts, paliashdr->num_xyz, ubo_addr, shell, translucent))
+			    alpha, skin, verts, paliashdr->num_xyz, ubo_off, shell, translucent))
 				return;
 		}
 	}
 	else
 	{
 		MTL_DrawAliasGlcmds(order, order + paliashdr->num_glcmds,
-		    alpha, skin, verts, paliashdr->num_xyz, ubo_addr, shell, translucent);
+		    alpha, skin, verts, paliashdr->num_xyz, ubo_off, shell, translucent);
 	}
 }
 
@@ -787,7 +788,7 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 	image_t *skin;
 	size_t slot, vstart;
 	aliasvert_t *dst;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 	int i;
 	float quad[4][3];
 
@@ -829,8 +830,8 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 	if (vstart + 6 * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
 		return;	/* ring exhausted */
 
-	ubo_addr = MTL_EmitSpriteUbo(slot);
-	if (ubo_addr == 0)
+	ubo_off = MTL_EmitSpriteUbo(slot);
+	if (ubo_off == SIZE_MAX)
 		return;	/* UBO ring exhausted */
 
 	/* triangle list: p0,p1,p2 / p0,p2,p3 (ref_vk sprite quadVerts) */
@@ -858,15 +859,16 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 	}
 	st->alias_vertex_offset[slot] += 6 * sizeof(aliasvert_t);
 
-	[st->sprite_vert_table setAddress:st->alias_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-	[st->sprite_vert_table setAddress:ubo_addr atIndex:1];
-	[st->sprite_frag_table setTexture:skin->mtl_texture.gpuResourceID atIndex:0];
-	[st->sprite_frag_table setAddress:ubo_addr atIndex:0];
+	[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot]
+		offset:vstart atIndex:0];
+	[st->encoder setVertexBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:1];
+	[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
+	[st->encoder setFragmentBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:0];
 
 	[st->encoder setRenderPipelineState:st->pipeline_sprite];
 	[st->encoder setDepthStencilState:st->depth_state];
-	[st->encoder setArgumentTable:st->sprite_vert_table atStages:MTLRenderStageVertex];
-	[st->encoder setArgumentTable:st->sprite_frag_table atStages:MTLRenderStageFragment];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 

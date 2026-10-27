@@ -167,7 +167,7 @@ R_DrawTriangleOutlines(void)
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
 	dlightvert_t *dst;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 	int i, j;
 
 	static const float color[3] = { 1.f, 1.f, 1.f };
@@ -183,8 +183,8 @@ R_DrawTriangleOutlines(void)
 	}
 
 	slot = st->frame_slot;
-	ubo_addr = MTL_EmitViewProjUbo(slot);
-	if (ubo_addr == 0)
+	ubo_off = MTL_EmitViewProjUbo(slot);
+	if (ubo_off == SIZE_MAX)
 	{
 		return;	/* ring exhausted, skip the outlines */
 	}
@@ -232,9 +232,10 @@ R_DrawTriangleOutlines(void)
 					dst++;
 					st->showtris_vertex_offset[slot] += 4 * sizeof(dlightvert_t);
 
-					[st->dlight_vert_table setAddress:st->showtris_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-					[st->dlight_vert_table setAddress:ubo_addr atIndex:1];
-					[st->encoder setArgumentTable:st->dlight_vert_table atStages:MTLRenderStageVertex];
+					[st->encoder setVertexBuffer:st->showtris_vertex_buffer[slot]
+						offset:vstart atIndex:0];
+					[st->encoder setVertexBuffer:st->world_ubo[slot]
+						offset:ubo_off atIndex:1];
 					[st->encoder drawPrimitives:MTLPrimitiveTypeLine vertexStart:0 vertexCount:4];
 				}
 			}
@@ -931,8 +932,7 @@ static void LM_InitBlock( void )
 
 /*
  * Creates the GPU lightmap texture at `index` from a 128x128 RGBA buffer
- * (R_BuildLightMap output format, 4 bytes per pixel). The texture joins
- * the residency set so the GPU can see it.
+ * (R_BuildLightMap output format, 4 bytes per pixel).
  */
 static void
 MTL_CreateLightmapTexture(unsigned index, const byte *data)
@@ -959,8 +959,6 @@ MTL_CreateLightmapTexture(unsigned index, const byte *data)
 	        bytesPerRow:BLOCK_WIDTH * LIGHTMAP_BYTES
 	        bytesPerImage:BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES];
 
-	[st->residency_set addAllocation:texture];
-	[st->residency_set commit];
 	st->lightmap_textures[index] = texture;
 }
 
@@ -1238,22 +1236,23 @@ static const float s_identity_model[16] = {
 };
 
 /*
- * Writes one world_ubo_t into the slot's UBO ring and returns its GPU
- * address (0 when the ring is exhausted). A NULL model means world space
- * (identity); a NULL color is not expected from any caller.
+ * Writes one world_ubo_t into the slot's UBO ring and returns its byte
+ * offset within that ring's buffer (SIZE_MAX when the ring is
+ * exhausted). A NULL model means world space (identity); a NULL color
+ * is not expected from any caller.
  */
-static MTLGPUAddress
+static size_t
 MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 {
 	mtlstate_t *st = &mtl_state;
 	world_ubo_t *ubo;
-	MTLGPUAddress addr;
+	size_t off;
 
 	if (st->world_ubo_offset[slot] + sizeof(world_ubo_t) > WORLD_UBO_RING_BYTES)
-		return 0;
+		return SIZE_MAX;
 
-	addr = st->world_ubo[slot].gpuAddress + st->world_ubo_offset[slot];
-	ubo = (world_ubo_t *)((byte *)st->world_ubo[slot].contents + st->world_ubo_offset[slot]);
+	off = st->world_ubo_offset[slot];
+	ubo = (world_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
 	memcpy(ubo->model, model ? model : s_identity_model, sizeof(float) * 16);
 	memcpy(ubo->color, color, sizeof(float) * 4);
@@ -1261,7 +1260,7 @@ MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 	ubo->viewLightmaps = r_lightmap->value ? 1.f : 0.f;
 	st->world_ubo_offset[slot] += sizeof(world_ubo_t);
 
-	return addr;
+	return off;
 }
 
 /*
@@ -1300,7 +1299,7 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
 	polyvert_t *ring;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 
 	if (st->encoder == nil || texture == nil || p == NULL)
 		return;
@@ -1338,18 +1337,19 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 		}
 		st->world_vertex_offset[slot] += (size_t)count * sizeof(polyvert_t);
 
-		ubo_addr = MTL_EmitWorldUbo(slot, model, color);
-		if (ubo_addr == 0)
+		ubo_off = MTL_EmitWorldUbo(slot, model, color);
+		if (ubo_off == SIZE_MAX)
 			break;
 
-		[st->plain_vert_table setAddress:st->world_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-		[st->plain_vert_table setAddress:ubo_addr atIndex:1];
-		[st->plain_frag_table setTexture:texture.gpuResourceID atIndex:0];
-		[st->plain_frag_table setAddress:ubo_addr atIndex:0];
+		[st->encoder setVertexBuffer:st->world_vertex_buffer[slot]
+			offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:1];
+		[st->encoder setFragmentTexture:texture atIndex:0];
+		[st->encoder setFragmentBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:0];
 
 		[st->encoder setRenderPipelineState:sky ? st->pipeline_sky : st->pipeline_plain];
-		[st->encoder setArgumentTable:st->plain_vert_table atStages:MTLRenderStageVertex];
-		[st->encoder setArgumentTable:st->plain_frag_table atStages:MTLRenderStageFragment];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)count];
 	}
 }
@@ -1361,7 +1361,7 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	size_t slot;
 	polyvert_t *dst;
 	size_t vstart;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 
 	if (st->encoder == nil || texture == nil || verts == NULL)
 		return;
@@ -1383,18 +1383,19 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	}
 	st->world_vertex_offset[slot] += 6 * sizeof(polyvert_t);
 
-	ubo_addr = MTL_EmitWorldUbo(slot, model, color);
-	if (ubo_addr == 0)
+	ubo_off = MTL_EmitWorldUbo(slot, model, color);
+	if (ubo_off == SIZE_MAX)
 		return;
 
-	[st->plain_vert_table setAddress:st->world_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-	[st->plain_vert_table setAddress:ubo_addr atIndex:1];
-	[st->plain_frag_table setTexture:texture.gpuResourceID atIndex:0];
-	[st->plain_frag_table setAddress:ubo_addr atIndex:0];
+	[st->encoder setVertexBuffer:st->world_vertex_buffer[slot]
+		offset:vstart atIndex:0];
+	[st->encoder setVertexBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:1];
+	[st->encoder setFragmentTexture:texture atIndex:0];
+	[st->encoder setFragmentBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:0];
 
 	[st->encoder setRenderPipelineState:st->pipeline_sky];
-	[st->encoder setArgumentTable:st->plain_vert_table atStages:MTLRenderStageVertex];
-	[st->encoder setArgumentTable:st->plain_frag_table atStages:MTLRenderStageFragment];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 
@@ -1404,7 +1405,7 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
 	lmappolyvert_t *ring;
-	MTLGPUAddress ubo_addr;
+	size_t ubo_off;
 
 	if (st->encoder == nil || texture == nil || lmap == nil || p == NULL)
 		return;
@@ -1458,19 +1459,20 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 		}
 		st->world_lmap_vertex_offset[slot] += (size_t)count * sizeof(lmappolyvert_t);
 
-		ubo_addr = MTL_EmitWorldUbo(slot, model, color);
-		if (ubo_addr == 0)
+		ubo_off = MTL_EmitWorldUbo(slot, model, color);
+		if (ubo_off == SIZE_MAX)
 			break;
 
-		[st->lmap_vert_table setAddress:st->world_lmap_vertex_buffer[slot].gpuAddress + vstart atIndex:0];
-		[st->lmap_vert_table setAddress:ubo_addr atIndex:1];
-		[st->lmap_frag_table setTexture:texture.gpuResourceID atIndex:0];
-		[st->lmap_frag_table setTexture:lmap.gpuResourceID atIndex:1];
-		[st->lmap_frag_table setAddress:ubo_addr atIndex:0];
+		[st->encoder setVertexBuffer:st->world_lmap_vertex_buffer[slot]
+			offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:1];
+		[st->encoder setFragmentTexture:texture atIndex:0];
+		[st->encoder setFragmentTexture:lmap atIndex:1];
+		[st->encoder setFragmentBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:0];
 
 		[st->encoder setRenderPipelineState:st->pipeline_lmap];
-		[st->encoder setArgumentTable:st->lmap_vert_table atStages:MTLRenderStageVertex];
-		[st->encoder setArgumentTable:st->lmap_frag_table atStages:MTLRenderStageFragment];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)count];
 	}
 }

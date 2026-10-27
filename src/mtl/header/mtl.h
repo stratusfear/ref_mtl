@@ -358,9 +358,10 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 void MTL_FreeLightmaps (void);
 
 /* Writes one viewproj-only UBO (dlight_ubo_t, 64 bytes) into the slot's
- * world UBO ring and returns its GPU address (0 when the ring is
- * exhausted). Shared by the dlight quads and the showtris outlines. */
-MTLGPUAddress MTL_EmitViewProjUbo (size_t slot);
+ * world UBO ring and returns its byte offset within the ring buffer
+ * (SIZE_MAX when exhausted). Shared by the dlight quads and the
+ * showtris outlines. */
+size_t MTL_EmitViewProjUbo (size_t slot);
 
 void EmitWaterPolys (msurface_t *fa, image_t *texture,
 				   const float *modelMatrix, const float *color,
@@ -387,11 +388,12 @@ void R_DrawBrushModel (entity_t *currententity, const model_t *currentmodel);
  * (skipping the world at index 0) and dispatches by model type; mod_alias
  * is drawn by R_DrawAliasModel, mod_sprite by R_DrawSpriteModel.
  * MTL_EmitAliasUbo writes one alias_ubo_t into the slot's world UBO ring
- * and returns its GPU address (0 when the ring is exhausted).
+ * and returns its byte offset within the ring buffer (SIZE_MAX when
+ * exhausted).
  */
 void R_DrawEntitiesOnList (void);
-MTLGPUAddress MTL_EmitAliasUbo (size_t slot, const float *model, float textured);
-MTLGPUAddress MTL_EmitSpriteUbo (size_t slot);
+size_t MTL_EmitAliasUbo (size_t slot, const float *model, float textured);
+size_t MTL_EmitSpriteUbo (size_t slot);
 void R_DrawSpriteModel (entity_t *currententity, const model_t *currentmodel);
 
 //====================================================
@@ -437,13 +439,11 @@ void RE_SetSky (const char *name, float rotate, vec3_t axis);
  * from both SDL2 and SDL3 builds; the concrete types are
  * SDL_MetalView* (SDL3 >= 3.2 only) and CAMetalLayer*.
  *
- * W3 world rendering uses one shared argument table per pipeline stage
- * (four total). They are updated before each draw and snapshotted at
- * draw-encode time (verified by probe11/probe12). Buffer and texture
- * index spaces are separate within one table.
- *
- * Vertex/UBO data is written into per-slot ring buffers indexed by
- * frame_slot; the CPU gate (slot_done) guarantees a slot is only reused
+ * World/UI draws bind buffers and textures directly on the classic
+ * MTLRenderCommandEncoder (setVertexBuffer:offset:atIndex: etc.), one
+ * binding set per draw. UBO and vertex data live in per-slot ring
+ * buffers indexed by frame_slot; the CPU gate (slot_busy, driven by
+ * command-buffer completion handlers) guarantees a slot is only reused
  * after the GPU has finished with it, so per-frame offset resets are
  * safe. UBO space within a slot is consumed sequentially per draw.
  */
@@ -454,43 +454,39 @@ typedef struct mtlstate_s
 	void		*metal_view;	// SDL_MetalView*, non-NULL on SDL3 >= 3.2
 	void		*layer;		// CAMetalLayer*
 
-	// Metal 4 core objects (survive mode changes, freed in RE_Shutdown)
+	// Metal core objects (survive mode changes, freed in RE_Shutdown).
+	// Command encoding uses the classic (MTL3-era) queue/encoder API:
+	// drawing through MTL4 queues with an app-created render target
+	// corrupts the displayed image on M3 (Bug C, see tools/bugc_repro).
+	// Pipelines are still runtime-compiled with MTL4Compiler; those are
+	// plain id<MTLRenderPipelineState> and encode unchanged.
 	id<MTLDevice>			device;
-	id<MTL4CommandQueue>		queue;
-	id<MTL4CommandBuffer>		command_buffer;	// long-lived, reused every frame
-	id<MTL4CommandAllocator>	allocators[3];	// ring of command allocators
-	id<MTLSharedEvent>		shared_event;	// CPU/GPU sync for the ring
+	id<MTLCommandQueue>		command_queue;
+	id<MTLCommandBuffer>		command_buffer;	// one per frame (retained)
 
-	// render pass state (reused every frame)
-	MTL4RenderPassDescriptor		*pass_descriptor;
-	MTLRenderPassColorAttachmentDescriptor *color_attachment;
+	// render pass descriptors (reused every frame, attachments rebound)
+	MTLRenderPassDescriptor		*pass_descriptor;
 
 	// runtime-compiled shaders (survive mode changes, freed in RE_Shutdown)
 	id<MTL4Compiler>			compiler;	// MTL4Compiler, compiles MSL at runtime
 	id<MTLLibrary>			library;		// compiled quad.msl + world.msl
-	id<MTLResidencySet>		residency_set;	// makes GPU resources visible
 
-	// W3: world rendering pipelines and argument tables
+	// W3: world rendering pipelines. Bindings are set directly on the
+	// classic encoder per draw (buffer 0 = stage_in verts, buffer 1 =
+	// UBO; frag tex0 = surface, tex1 = lightmap, buffer 0 = UBO).
 	id<MTLRenderPipelineState>	pipeline_plain;	// world_plain_vertex + world_plain_fragment
 	id<MTLRenderPipelineState>	pipeline_lmap;	// world_lmap_vertex + world_lmap_fragment
 	id<MTLRenderPipelineState>	pipeline_sky;	// world_sky_vertex + world_plain_fragment
-	id<MTL4ArgumentTable>		plain_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		plain_frag_table;	// tex0 = surface, buf0 = UBO
-	id<MTL4ArgumentTable>		lmap_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		lmap_frag_table;	// tex0 = surface, tex1 = lightmap, buf0 = UBO
 
 	// W4: dynamic light billboard quads (additive, no depth write).
-	// The fragment stage has no resource bindings, so only the vertex
-	// argument table exists.
+	// The fragment stage has no resource bindings.
 	id<MTLRenderPipelineState>	pipeline_dlight;	// dlight_vertex + dlight_fragment
-	id<MTL4ArgumentTable>		dlight_vert_table;	// buf0 = stage_in verts, buf1 = UBO
 
 	// W4: view flash (R_PolyBlend): full-screen clip-space quad, uniform
 	// color from v_blend, standard alpha blend, no depth test or write.
 	// The six vertices are static; the color rides on the world UBO ring
 	// (16 bytes per frame).
 	id<MTLRenderPipelineState>	pipeline_flash;	// flash_vertex + flash_fragment
-	id<MTL4ArgumentTable>		flash_vert_table;	// buf0 = stage_in verts, buf1 = color UBO
 	id<MTLBuffer>			flash_vertex_buffer;	// static 6-vertex triangle list (8B each)
 
 	// W4: showtris (R_DrawTriangleOutlines): white line-strip outlines of
@@ -506,16 +502,12 @@ typedef struct mtlstate_s
 	// encoder state differs.
 	id<MTLRenderPipelineState>	pipeline_alias;		// alias_vertex + alias_fragment
 	id<MTLRenderPipelineState>	pipeline_alias_translucent;
-	id<MTL4ArgumentTable>		alias_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		alias_frag_table;	// tex0 = skin, buf0 = UBO
 
 	// W5b: sprites (mod_sprite). Reuses the alias vertex ring (same 36B
 	// pos3+uv2+color4 layout) and rides its UBO on the world UBO ring.
 	// Blending is always on, depth writes stay enabled, and the fragment
 	// discards alpha < 0.0666 (ref_vk basic.frag aTreshold).
 	id<MTLRenderPipelineState>	pipeline_sprite;	// sprite_vertex + sprite_fragment
-	id<MTL4ArgumentTable>		sprite_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		sprite_frag_table;	// tex0 = skin, buf0 = UBO
 
 	// W5c: particles. Textured mode (mtl_custom_particles 0 or 2) draws
 	// one triangle per particle (three 36B alias-ring vertices) with the
@@ -523,10 +515,7 @@ typedef struct mtlstate_s
 	// (1, default) draws one point per particle with a GPU-computed point
 	// size. UBOs ride on the world UBO ring.
 	id<MTLRenderPipelineState>	pipeline_particle;	// sprite_vertex + particle_fragment
-	id<MTL4ArgumentTable>		particle_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		particle_frag_table;	// tex0 = dot/square, buf0 = UBO
 	id<MTLRenderPipelineState>	pipeline_point_particle;	// particle_point_vertex + particle_point_fragment
-	id<MTL4ArgumentTable>		point_particle_vert_table;	// buf0 = stage_in verts, buf1 = UBO
 
 	// W5d: 2D UI (RE_Draw_*). Three pipelines over one static full-screen
 	// quad pair: the tex path samples a picture and applies gamma, the
@@ -534,29 +523,23 @@ typedef struct mtlstate_s
 	// path outputs the UBO color with standard alpha blending. All three
 	// share the 56-byte ui_ubo_t layout; the UBOs ride on the world UBO
 	// ring (8-byte aligned). Drawn in a second, color-only render pass
-	// that loads (not clears) the drawable, except when the world pass
+	// that loads (not clears) the scene target, except when the world pass
 	// has not run (plaque/cinematic frames) or a UI quad was drawn before
 	// it (TileClear with viewsize < 100), in which case the world pass
 	// must not clear either.
 	id<MTLRenderPipelineState>	pipeline_ui_tex;	// ui_tex_vertex + ui_tex_fragment
 	id<MTLRenderPipelineState>	pipeline_ui_tint;	// ui_tex_vertex + ui_tint_fragment
 	id<MTLRenderPipelineState>	pipeline_ui_color;	// ui_color_vertex + ui_color_fragment
-	id<MTL4ArgumentTable>		ui_tex_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		ui_tint_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		ui_color_vert_table;	// buf0 = stage_in verts, buf1 = UBO
-	id<MTL4ArgumentTable>		ui_tex_frag_table;	// tex0 = picture, buf0 = UBO
-	id<MTL4ArgumentTable>		ui_tint_frag_table;	// tex0 = picture, buf0 = UBO
 	id<MTLBuffer>			ui_tex_vertex_buffer;	// static 6-vertex triangle list (16B each)
 	id<MTLBuffer>			ui_color_vertex_buffer;	// static 6-vertex triangle list (8B each)
 
 	// W5d: UI render pass (color only, no depth), created in
 	// RE_InitContext and reused every frame; the encoder is created
 	// lazily on the first RE_Draw_* call of the frame.
-	MTL4RenderPassDescriptor		*ui_pass_descriptor;
-	MTLRenderPassColorAttachmentDescriptor *ui_color_attachment;
-	id<MTL4RenderCommandEncoder>	ui_encoder;
+	MTLRenderPassDescriptor		*ui_pass_descriptor;
+	id<MTLRenderCommandEncoder>	ui_encoder;
 
-	// W3: per-slot vertex/UBO rings (one per allocator slot)
+	// W3: per-slot vertex/UBO rings (one per frame slot)
 	id<MTLBuffer>			world_vertex_buffer[3];	// polyvert_t records (20B)
 	id<MTLBuffer>			world_lmap_vertex_buffer[3];	// lmappolyvert_t records (28B)
 	id<MTLBuffer>			world_ubo[3];		// world_ubo_t, consumed per draw
@@ -583,7 +566,7 @@ typedef struct mtlstate_s
 
 	// W3: per-frame render command encoder (created in RE_RenderFrame,
 	// ended there; world draw functions encode into it)
-	id<MTL4RenderCommandEncoder>	encoder;
+	id<MTLRenderCommandEncoder>	encoder;
 
 	// W3: depth buffer (recreated in RE_BeginFrame when the drawable
 	// size changes) and its compare/write state
@@ -594,11 +577,25 @@ typedef struct mtlstate_s
 	int				depth_width;
 	int				depth_height;
 
+	// W6: offscreen scene color texture. The world and UI passes render
+	// into it; a single final present pass (RE_EndFrame) samples it and
+	// draws it to the drawable as a full-screen quad. The drawable is
+	// then only ever a render target of exactly one pass, the shape
+	// framebufferOnly = YES expects. Recreated in RE_BeginFrame on
+	// drawable-size changes, like depth_texture.
+	id<MTLTexture>			scene_texture;
+	int				scene_width;
+	int				scene_height;
+
+	// W6: present pass and pipeline (color only, no depth, no blend).
+	MTLRenderPassDescriptor		*present_pass_descriptor;
+	id<MTLRenderPipelineState>		pipeline_present;	// present_vertex + present_fragment
+
 	// per-frame state
 	id<CAMetalDrawable>		drawable;		// current frame's drawable
 	uint64_t			frame_number;	// monotonically increasing
-	int				frame_slot;		// current slot in the allocator ring
-	uint64_t			slot_done[3];	// last signaled frame number per slot
+	int				frame_slot;		// current slot in the frame ring
+	qboolean				slot_busy[3];	// slot has a frame in flight (completion handler clears it)
 	qboolean			frame_active;	// frame in flight (Begin..End)
 	float			pixel_scale;	// layer contentsScale
 	float			inverse_intensity;	// 1.0 / mtl_intensity, texture modulation

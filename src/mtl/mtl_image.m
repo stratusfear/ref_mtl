@@ -501,8 +501,7 @@ W4: create the GPU texture for a loaded image. RGBA8Unorm shared storage,
 one texture per image (images are never freed during a session). Level 0
 is uploaded from texBuffer; the remaining mip levels are generated on the
 CPU with a 2x2 box filter into two ping-pong scratch buffers - texBuffer
-may be the original image data, so it is never written. The texture joins
-the residency set and is committed so the GPU can see it.
+may be the original image data, so it is never written.
 ================
 */
 static void
@@ -576,8 +575,6 @@ MTL_UploadTexture(image_t *image, byte *texBuffer, int width, int height,
 		free(scratch1);
 	}
 
-	[st->residency_set addAllocation:texture];
-	[st->residency_set commit];
 	image->mtl_texture = texture;
 }
 
