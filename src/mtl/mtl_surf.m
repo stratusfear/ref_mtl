@@ -61,9 +61,20 @@ static void		LM_UploadBlock( qboolean dynamic );
 static qboolean	LM_AllocBlock (int w, int h, int *x, int *y);
 
 /*
- * Uploads a w x h lightmap region at (x, y). src rows are packed with
- * src_stride bytes per row; when that differs from the texture row stride
- * (BLOCK_WIDTH * LIGHTMAP_BYTES) the block is staged first.
+ * Uploads a w x h lightmap region to texture position (x, y).
+ *
+ * Two source layouts are supported, matching gl1's two upload paths:
+ *   - compact buffer (src_stride != BLOCK_WIDTH*LIGHTMAP_BYTES): src is the
+ *     w x h region itself, packed with src_stride bytes per row, starting at
+ *     column 0. This is the dynamic-draw path (R_BuildLightMap into a small
+ *     temp buffer), equivalent to gl1's glTexSubImage2D(..., light_s,
+ *     light_t, smax, tmax, ..., temp).
+ *   - full-width buffer (src_stride == BLOCK_WIDTH*LIGHTMAP_BYTES): src is a
+ *     BLOCK_WIDTH-wide atlas and the region sits at column x of each row.
+ *     This is the load-time path (whole-buffer upload, x = y = 0).
+ *
+ * The destination offset (x, y) is applied only to MTLRegionMake2D, never to
+ * the source pointer for the compact layout.
  */
 static byte lmap_stage[BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES];
 
@@ -71,24 +82,38 @@ static void
 MTL_UploadLightmapRegion(id<MTLTexture> texture, const byte *src, int src_stride,
 	int x, int y, int w, int h)
 {
-	const byte *in = src + (size_t)x * LIGHTMAP_BYTES;
-	byte	*out = NULL;
+	byte	*out;
 	size_t	bytesPerRow = (size_t)w * LIGHTMAP_BYTES;
 	int		row;
 
-	if (src_stride != BLOCK_WIDTH * LIGHTMAP_BYTES)
+	if (src_stride == BLOCK_WIDTH * LIGHTMAP_BYTES)
 	{
-		out = lmap_stage;
-		for (row = 0; row < h; row++)
+		// Full-width atlas: region starts at column x of each row.
+		// Fast path when the whole buffer is uploaded (x == 0).
+		if (x == 0)
 		{
-			memcpy(out + (size_t)row * bytesPerRow,
-			       in + (size_t)row * src_stride, bytesPerRow);
+			out = (byte *)src;
+		}
+		else
+		{
+			out = lmap_stage;
+			for (row = 0; row < h; row++)
+			{
+				memcpy(out + (size_t)row * bytesPerRow,
+				       src + (size_t)(y + row) * src_stride + (size_t)x * LIGHTMAP_BYTES,
+				       bytesPerRow);
+			}
 		}
 	}
 	else
 	{
-		out = (byte *)in;
-		bytesPerRow = (size_t)src_stride;
+		// Compact buffer: src is the region, starting at column 0.
+		out = lmap_stage;
+		for (row = 0; row < h; row++)
+		{
+			memcpy(out + (size_t)row * bytesPerRow,
+			       src + (size_t)row * src_stride, bytesPerRow);
+		}
 	}
 
 	[texture replaceRegion:MTLRegionMake2D(x, y, w, h)
