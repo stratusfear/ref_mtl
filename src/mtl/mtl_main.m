@@ -1024,7 +1024,7 @@ R_InitShaders(void)
 			pd.vertexDescriptor = vd;
 
 			pd.rasterSampleCount = 1;
-			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 			id<MTLRenderPipelineState> pipeline = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
 			if (pipeline == nil)
@@ -1071,7 +1071,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
@@ -1114,7 +1114,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -1185,7 +1185,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_showtris = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
 		if (st->pipeline_showtris == nil)
@@ -1227,7 +1227,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_alias = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
 		if (st->pipeline_alias == nil)
@@ -1243,7 +1243,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -1313,7 +1313,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -1384,7 +1384,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -1450,7 +1450,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -1511,7 +1511,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_ui_tex = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
 		if (st->pipeline_ui_tex == nil)
@@ -1569,7 +1569,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_ui_tint = [st->compiler newRenderPipelineStateWithDescriptor:pd compilerTaskOptions:nil error:&err];
 		if (st->pipeline_ui_tint == nil)
@@ -1625,7 +1625,7 @@ R_InitShaders(void)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
@@ -1982,7 +1982,11 @@ RE_InitContext(void *sdl_window)
 	/* The layer must know its device before the first drawable is
 	   requested (macOS). */
 	layer.device = st->device;
-	layer.pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
+	/* Non-sRGB: the shaders emit final 8-bit display values (same
+	   convention as ref_vk's B8G8R8A8_UNORM swapchain and gl1's raw
+	   RGBA8 framebuffer). An sRGB target would make the hardware
+	   sRGB-encode on write, brightening the whole image ~2x. */
+	layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
 	layer.framebufferOnly = YES;
 	layer.maximumDrawableCount = 3;
 
