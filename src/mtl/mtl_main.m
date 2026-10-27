@@ -1988,7 +1988,14 @@ RE_InitContext(void *sdl_window)
 	   RGBA8 framebuffer). An sRGB target would make the hardware
 	   sRGB-encode on write, brightening the whole image ~2x. */
 	layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-	layer.framebufferOnly = YES;
+	/* Bug B fix: with framebufferOnly drawables (window server
+	   zero-copy scan-out) fresh processes intermittently displayed a
+	   per-process-random constant-magenta corruption under blended 2D
+	   UI draws: 10/12 fresh base1 runs reproduced it, while 0/12 runs
+	   with framebufferOnly=NO did. The corruption was not present in
+	   any CPU-side or shared-storage GPU texture, implicating the
+	   drawable's private storage lifetime during presentation. */
+	layer.framebufferOnly = NO;
 	layer.maximumDrawableCount = 3;
 
 	/* Retina: CAMetalLayer's default contentsScale on macOS is 1.0,
