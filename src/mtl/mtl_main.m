@@ -59,12 +59,6 @@ vec3_t	r_origin;
 float	r_view_matrix[16];
 float	r_projection_matrix[16];
 float	r_viewproj_matrix[16];
-// correction matrix for perspective in Metal 4 (see Mat_Perspective)
-static float r_metal_correction[16] = { 1.f, 0.f, 0.f, 0.f,
-                                        0.f, 1.f, 0.f, 0.f,
-                                        0.f, 0.f, .5f, .5f,
-                                        0.f, 0.f, 0.f, 1.f
-                                      };
 
 //
 // screen size info
@@ -193,9 +187,9 @@ R_Register(void)
 Matrix helpers (ported from ref_vk, row-major)
 
 The view matrix (see R_SetupFrame) puts +z "going up" of the Quake world
-along -z of the view space; the frustum matrix is then converted to the
-Metal 4 coordinate system (NDC x right, y up, depth [0..1]) by
-r_metal_correction.
+along -z of the view space. The projection matrices are emitted directly in
+the Metal 4 coordinate system (NDC x right, y up, depth [0..1], w = -view_z)
+for the row-vector convention used by Mat_Mul and the MSL float4x4.
 ==============
 */
 void Mat_Identity(float *matrix)
@@ -279,7 +273,7 @@ void Mat_Scale(float *matrix, float x, float y, float z)
 	Mat_Mul(matrix, s, matrix);
 }
 
-void Mat_Perspective(float *matrix, float *correction_matrix, float fovy, float aspect,
+void Mat_Perspective(float *matrix, float fovy, float aspect,
 	float zNear, float zFar)
 {
 	float xmin, xmax, ymin, ymax;
@@ -293,35 +287,42 @@ void Mat_Perspective(float *matrix, float *correction_matrix, float fovy, float 
 	xmin += -(2 * mtl_state.camera_separation) / zNear;
 	xmax += -(2 * mtl_state.camera_separation) / zNear;
 
-	float proj[16];
-	memset(proj, 0, sizeof(float) * 16);
-	proj[0] = 2.f * zNear / (xmax - xmin);
-	proj[2] = (xmax + xmin) / (xmax - xmin);
-	proj[5] = 2.f * zNear / (ymax - ymin);
-	proj[6] = (ymax + ymin) / (ymax - ymin);
-	proj[10] = -(zFar + zNear) / (zFar - zNear);
-	proj[11] = -1.f;
-	proj[14] = -2.f * zFar * zNear / (zFar - zNear);
-
-	// Convert projection matrix to Metal 4 coordinate system
-	Mat_Mul(proj, correction_matrix, matrix);
+	/*
+	** Metal 4 clip space, row-vector convention (p' = p * M, matching the
+	** Mat_Mul/MSL float4x4 application used everywhere in ref_mtl):
+	**   - w = -view_z (positive in front of the camera)
+	**   - z remapped from OpenGL's [-1,1] to Metal's [0,1] depth range
+	**     (z_ndc = (z_gl + 1) / 2), so the near plane is 0 and the far
+	**     plane is 1, matching the pass descriptor's depth clear of 1.0.
+	** The matrix is emitted directly in this form; no post-multiply
+	** correction is applied (a right-multiply by a z-remap matrix would
+	** leak into the w-row and skew every projected point).
+	*/
+	memset(matrix, 0, sizeof(float) * 16);
+	matrix[0] = 2.f * zNear / (xmax - xmin);
+	matrix[2] = (xmax + xmin) / (xmax - xmin);
+	matrix[5] = 2.f * zNear / (ymax - ymin);
+	matrix[6] = (ymax + ymin) / (ymax - ymin);
+	matrix[10] = -zFar / (zFar - zNear);
+	matrix[11] = -1.f;
+	matrix[14] = -zFar * zNear / (zFar - zNear);
 }
 
 void Mat_Ortho(float *matrix, float left, float right, float bottom, float top,
 			   float zNear, float zFar)
 {
-	float proj[16];
-	memset(proj, 0, sizeof(float) * 16);
-	proj[0] = 2.f / (right - left);
-	proj[3] = (right + left) / (right - left);
-	proj[5] = 2.f / (top - bottom);
-	proj[7] = (top + bottom) / (top - bottom);
-	proj[10] = -2.f / (zFar - zNear);
-	proj[11] = -(zFar + zNear) / (zFar - zNear);
-	proj[15] = 1.f;
-
-	// Convert projection matrix to Metal 4 coordinate system
-	Mat_Mul(proj, r_metal_correction, matrix);
+	/* Metal 4 clip space, row-vector convention (p' = p * M): w is
+	   constant 1, x/y map [left,right]/[bottom,top] to [-1,1], and z
+	   maps the near plane to 0 and the far plane to 1 (Metal depth).
+	   Translations live in row 3 (they multiply w). */
+	memset(matrix, 0, sizeof(float) * 16);
+	matrix[0] = 2.f / (right - left);
+	matrix[5] = 2.f / (top - bottom);
+	matrix[10] = -1.f / (zFar - zNear);
+	matrix[12] = (right + left) / (right - left);
+	matrix[13] = (top + bottom) / (top - bottom);
+	matrix[14] = -zNear / (zFar - zNear);
+	matrix[15] = 1.f;
 }
 
 /*
@@ -417,7 +418,7 @@ R_SetupFrame(void)
 			dist = r_newrefdef.width / tan(r_newrefdef.fov_x * M_PI / 360);
 		}
 
-		Mat_Perspective(r_projection_matrix, r_metal_correction,
+		Mat_Perspective(r_projection_matrix,
 			r_newrefdef.fov_y, (float)r_newrefdef.width / r_newrefdef.height, 4, dist);
 	}
 
