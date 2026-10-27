@@ -64,59 +64,66 @@ environment variables (they cannot be toggled at runtime):
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
 
-## Current status: W2 (runtime MSL compilation + first textured quad) — complete
+## Current status: W5d (2D UI) — complete
 
 - Full 27-slot `refexport_t` ABI implemented and load-tested against a
   freshly built SDL 3 host (`API_VERSION` 8).
 - `RE_InitContext` creates the Metal 4 device, `MTL4CommandQueue`,
   shared event, long-lived `MTL4CommandBuffer`, three command allocators
   (one per in-flight frame) and the SDL Metal view + `CAMetalLayer`
-  (`BGRA8Unorm_sRGB`, `framebufferOnly`, `maximumDrawableCount` 3,
-  Retina `contentsScale`). The device-side objects survive mode changes;
+  (`BGRA8Unorm` non-sRGB — the shaders emit final display values, same
+  convention as `ref_vk`'s `B8G8R8A8_UNORM` swapchain; `framebufferOnly`
+  disabled, see the Bug B note below; `maximumDrawableCount` 3, Retina
+  `contentsScale`). The device-side objects survive mode changes;
   `ShutdownContext` tears down only the view/layer, `RE_Shutdown`
   releases everything.
 - Frame sequence: `BeginFrame` (CPU gate via
   `MTLSharedEvent.waitUntilSignaledValue`, allocator reset,
   `nextDrawable`, `beginCommandBufferWithAllocator`) → `RenderFrame`
-  (clear pass + full-screen textured quad) → `EndWorldRenderpass`
-  (true) → `EndFrame` (`endCommandBuffer`, `waitForDrawable`, `commit`,
-  `signalDrawable`, `present`, GPU-side `signalEvent`).
+  (world encoder: clear color/depth + BSP world) → `EndWorldRenderpass`
+  (true) → 2D UI encoder (lazily opened by the first UI draw,
+  `loadAction=LOAD`, no depth attachment) → `EndFrame`
+  (`endCommandBuffer`, `waitForDrawable`, `commit`, `signalDrawable`,
+  `present`, GPU-side `signalEvent`).
 - **W2: runtime shader compilation and the first textured quad.**
-  `R_InitShaders` creates an `MTL4Compiler`, compiles the embedded
-  `quad.msl` (MSL 3.2) into a library, builds the render pipeline
-  (`MTL4RenderPipelineDescriptor` + `MTLVertexDescriptor`, stride 20:
-  float3 pos + float2 uv), and allocates the test resources: a
-  6-vertex full-screen quad buffer, a 64×64 red/blue checkerboard
-  texture (CPU-filled, `BGRA8Unorm_sRGB`), and one argument table per
-  stage (`MTL4ArgumentTable`, vertex buffer at index 0 / texture at
-  index 0). Bindings are attached with `setArgumentTable:atStages:` at
-  encode time. The quad samples the texture with a nearest,
-  clamp-to-edge constexpr sampler.
+  `R_InitShaders` creates an `MTL4Compiler`, compiles the embedded MSL
+  3.2 sources into libraries, and builds the render pipelines
+  (`MTL4RenderPipelineDescriptor` + `MTLVertexDescriptor`). Bindings
+  ride per-stage `MTL4ArgumentTable`s attached with
+  `setArgumentTable:atStages:` at encode time.
 - **Metal 4 residency sets.** GPU-visible resources must be part of a
   committed `MTLResidencySet` attached to the queue, otherwise the GPU
-  silently reads zeros (samples return `(0,0,0,0)`, compute writes do
-  not land, no error is reported). `R_InitShaders` creates the set for
-  the vertex buffer + test texture (`addAllocation:` → `commit` →
-  `queue addResidencySet:`); the layer's own residency set (drawables)
-  is added in `RE_InitContext`; the command buffer gets
-  `useResidencySet:` in `RE_RenderFrame` (Apple's MTL4 template
-  pattern).
-- Verified: clean `+quit` run (banner + "Successfully initialized Metal
-  4 refresher!" + "W2 shaders compiled", exit 0); live run under
-  `MTL_DEBUG_LAYER=1` + `MTL_SHADER_VALIDATION=1` with zero validation
-  errors; window capture pixel check — the drawable is a pixel-exact
-  red `(255,0,0)` / blue `(0,0,255)` checkerboard with the expected
-  8×8 cell geometry, confirming texture sampling, sRGB round-trip and
-  the residency path end-to-end.
-- Fallback verified: broken `api_version` and SDL major mismatch both
-  fall back to `ref_gl3` without crashing; a failed `R_InitShaders`
-  (e.g. MSL compile error) falls back cleanly and is retried on the
-  next mode change.
-- **No scene rendering yet.** Feature parity with `ref_vk` (BSP, alias
-  models, sprites, particles, decals, classic sky, water/animated
-  textures, CPU lightmaps + dlights, lightstyles, translucency, 2D UI,
-  MSAA, pixel-size downscale, underwater warp, screenshots) follows in
-  W3–W9.
+  silently reads zeros. The set covers every renderer-created buffer
+  and texture; the command buffer gets `useResidencySet:`.
+- **W3: BSP world.** Portals/vis culling, plain + lightmapped surface
+  chains with per-frame vertex/UBO rings (three slots, allocator-backed
+  ring buffers), lightstyles, sky (`skytexture` path), water/slimesky,
+  `r_fullbright`/`r_showtris`.
+- **W4: CPU lightmaps + dynamic lights.** Static lightmap atlas pages
+  uploaded once; per-page dynamic copies re-encoded when dlights touch
+  them (`mtl_dynamic`), dlight additive blend pass
+  (`mtl_flashblend`), `R_PushDlights` before `R_SetupFrame` (matching
+  `ref_vk` frame order).
+- **W5a–W5d: alias models, sprites, particles, 2D UI.** Alias/frame
+  interpolation (`r_lerpmodels`), sprites (oriented + `MTL_DRAW2D`
+  fixed-facing), particles (point + textured, `mtl_polyblend`), and the
+  2D UI pass: pics (`DrawStretchPic`), conchars via an 8×8 atlas,
+  crosshair, fades, HUD statusbar icons drawn as individual quads.
+- **Bug B (fixed): intermittent magenta corruption under blended UI
+  draws.** Symptom: fresh processes randomly (~80% of base1 runs) drew
+  constant-value magenta under the HUD icon/crosshair quads and one
+  small triangle; CPU-side texture scans were byte-identical to clean
+  runs, and with `framebufferOnly=NO` the drawable's own bytes read
+  back clean. A/B in one binary: 10/12 buggy captures with
+  `framebufferOnly=YES` vs 0/12 with `NO`. Root cause: the drawable's
+  private-storage lifetime under window-server zero-copy scan-out in
+  the MTL4 preview layer; the fix keeps `framebufferOnly=NO`.
+- Verified: paired fresh captures of `ref_mtl` and `ref_gl1` on base1
+  and jail1; `WERR=1 make` builds clean with `-Werror`.
+- Feature parity remaining (W6+): MSAA, pixel-size downscale,
+  underwater warp, `SCR_TileClear` viewport scissor for
+  `viewsize < 100`, screenshots, and the remaining gamma gaps
+  (`world_lmap_fragment` vs `ref_vk`).
 
 ### Intentionally not implemented (parity scope cuts)
 
