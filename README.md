@@ -65,7 +65,7 @@ environment variables (they cannot be toggled at runtime):
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
 
-## Current status: W6e (world pixel-size downscale parity) — complete
+## Current status: W6f (viewsize < 100 / TileClear parity) — complete
 
 - Full 27-slot `refexport_t` ABI implemented and load-tested against a
   freshly built SDL 3 host (`API_VERSION` 8).
@@ -209,10 +209,25 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   logical-resolution while ref_mtl's scene texture is
   device-resolution, so fractional block edges land on different
   sub-pixel grids; the interiors still match.
-- Feature parity remaining (W6b+): MSAA, `SCR_TileClear` viewport
-  scissor for `viewsize < 100` (which also covers the refdef-anchored
-  world viewport/scissor split `vk_pixel_size` uses for
-  `viewsize < 100`).
+- **W6f: viewsize < 100 / `SCR_TileClear` parity.** The world pass is
+  now anchored to the vrect (`r_newrefdef` rectangle, device-scaled,
+  divided by `mtl_pixel_size` like ref_vk's floor/ceil) with a
+  matching scissor rect, so the `SCR_TileClear` tiles the UI pass
+  drew into the scene texture before the world survive outside the
+  world view instead of being overdrawn. Second bug fixed on the way:
+  `MTL_BeginUIPass` ran the warp/postprocess chain on the pre-world
+  tile pass, burning the once-per-frame flag while `world_rendered`
+  was still false - every `viewsize < 100` frame lost the
+  postprocess stage (un-postprocessed gamma). ref_vk itself has a
+  nondeterministic field of uninitialized (magenta debug-fill)
+  texels inside its vrect at `viewsize < 100` (its RP_WORLD color
+  LOADOp); those pixels are undefined behavior we can't match.
+  Fresh paired jail1 pool captures at viewsize 50: vrect 1.08-1.09
+  (poison excluded), TileClear borders and status bar 0.00
+  pixel-exact, and 0.80 vrect with `pixel_size 2` (warp upscale +
+  resampled borders); viewsize-100 regression unchanged at the
+  1.64-1.78 noise floor.
+- Feature parity remaining (W6b+): MSAA (`r_msaa_samples`).
 
 ### Intentionally not implemented (parity scope cuts)
 
