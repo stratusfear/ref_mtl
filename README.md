@@ -65,7 +65,7 @@ environment variables (they cannot be toggled at runtime):
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
 
-## Current status: W6f (viewsize < 100 / TileClear parity) — complete
+## Current status: W7 (MSAA / `r_msaa_samples` parity) — complete
 
 - Full 27-slot `refexport_t` ABI implemented and load-tested against a
   freshly built SDL 3 host (`API_VERSION` 8).
@@ -227,7 +227,28 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   pixel-exact, and 0.80 vrect with `pixel_size 2` (warp upscale +
   resampled borders); viewsize-100 regression unchanged at the
   1.64-1.78 noise floor.
-- Feature parity remaining (W6b+): MSAA (`r_msaa_samples`).
+- **W7: MSAA parity (`r_msaa_samples`).** ref_mtl reads the same
+  `r_msaa_samples` cvar as ref_vk and picks the largest supported
+  power of two <= the requested value (`supportsTextureSampleCount`,
+  16->2 ladder; an M1 Max clamps 8 -> 4 exactly like ref_vk). Only the
+  world-pass pipelines are rebuilt at that `rasterSampleCount`
+  (`MTL_InitWorldPipelines`), mirroring ref_vk's RP_WORLD-only
+  sampleCount; UI/warp/postprocess/present stay 1-sample. The world
+  pass renders into multisampled BGRA + Depth32Float attachments and
+  resolves them into `scene_texture` with
+  `MTLStoreActionMultisampleResolve` (ref_vk's `pResolveAttachments`).
+  `MTL_UpdateMSAA` checks the cvar every frame from `BeginFrame` (the
+  host's video menu can change it without a mode change) and prints
+  ref_vk's "...MSAAx%d is used" banner. Because Metal's resolve
+  overwrites the whole resolve texture regardless of the world-pass
+  scissor, at `viewsize < 100` the pre-world TileClear contents are
+  saved before the world pass and blitted back outside the vrect
+  after it. Fresh paired jail1 pool captures: MSAAx4 on both
+  renderers 0.74-0.91 scene (better than the MSAA-off floor -
+  different sample patterns leave only edge noise), MSAA-off pair
+  1.76-1.97 at the floor with 0 poisoned pixels, viewsize 50 + MSAAx4
+  vrect 0.99-1.06 with 0.00-exact borders.
+- Feature parity remaining: none (W0-W7 complete).
 
 ### Intentionally not implemented (parity scope cuts)
 
