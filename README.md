@@ -65,7 +65,7 @@ environment variables (they cannot be toggled at runtime):
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
 
-## Current status: W6b (underwater world-warp pass) — complete
+## Current status: W6c (world postprocess pass) — complete
 
 - Full 27-slot `refexport_t` ABI implemented and load-tested against a
   freshly built SDL 3 host (`API_VERSION` 8).
@@ -164,9 +164,18 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   match ref_vk's `blendEnable = VK_TRUE` set (dlight, flash, translucent
   alias, sprite, both particle paths, UI color-rect); ref_vk's UI
   tex/tint pipelines default to blending off and ours match.
+- **W6c: world postprocess (`mtl_postprocess`).** ref_vk's
+  `postprocess.frag` parity: a full-screen pass, chained after the warp
+  stage in the same between-passes slot, samples the warp/plain scene
+  and writes `post_texture` with `pow(rgb * 1.5, 2.1 - vid_gamma)`.
+  This is ref_vk's world gamma source: its `polygon_lmap.frag` (like our
+  `world_lmap_fragment`) applies no pow itself. Like ref_vk the pass
+  always runs while the world rendered (the cvar-0 case is the shader's
+  passthrough branch). This closed the brightness gap: fresh paired
+  jail1 pool captures are now pixel-parity (center 85/54/33 both,
+  full-frame mean diff ~1.5 = frame-to-frame noise).
 - Feature parity remaining (W6b+): MSAA, pixel-size downscale,
-  `SCR_TileClear` viewport scissor for `viewsize < 100`, and the
-  remaining gamma gaps (`world_lmap_fragment` vs `ref_vk`).
+  `SCR_TileClear` viewport scissor for `viewsize < 100`.
 
 ### Intentionally not implemented (parity scope cuts)
 
