@@ -561,14 +561,17 @@ warp_fragment(warp_out in [[stage_in]],
 
     // The GLSL original clamps in pixel space and samples with
     // textureLod(); Metal's sample() wants normalized coords, so the
-    // texel-center clamp is expressed in normalized units here. For
-    // pixelSize == 1 this is exactly uv clamped to the half-texel border,
-    // i.e. a pixel-identical copy.
+    // clamp is expressed in normalized units here. vk clamps the
+    // unnormalized coord to [0, scrSize - 0.5] px before its
+    // S_NEAREST_UNNORMALIZED lookup; under nearest filtering that maps
+    // to texel floor(coord): lo stays 0 so the first device pixels map
+    // to texel 0 for any divisor (an lo of half-texel*divisor would
+    // shift the first divisor/2 columns onto the wrong texel), and hi
+    // sits one half-texel below the far edge. For pixelSize == 1 this
+    // is still a pixel-identical copy.
     uv /= ubo.pixelSize;
-    float2 h = float2(0.5) / scrSize;
-    float2 lo = h * ubo.pixelSize;
-    float2 hi = float2(1.0) - lo;
-    uv = clamp(uv, lo, hi);
+    float2 hi = float2(1.0) - float2(0.5) / scrSize;
+    uv = clamp(uv, float2(0.0), hi);
     return scene.sample(present_sampler, uv);
 }
 

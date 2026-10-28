@@ -79,6 +79,7 @@ cvar_t		*vid_gamma;
 cvar_t		*viewsize;
 static cvar_t	*mtl_underwater;	// W6b: underwater screen warp (vk_underwater parity)
 static cvar_t	*mtl_postprocess;	// W6c: world postprocess (vk_postprocess parity)
+static cvar_t	*mtl_pixel_size;	// W6e: world downscale (vk_pixel_size parity)
 
 cvar_t		*r_lefthand;
 cvar_t		*r_drawworld;
@@ -184,6 +185,7 @@ R_Register(void)
 	viewsize = ri.Cvar_Get("viewsize", "100", CVAR_ARCHIVE);
 	mtl_underwater = ri.Cvar_Get("mtl_underwater", "1", CVAR_ARCHIVE);
 	mtl_postprocess = ri.Cvar_Get("mtl_postprocess", "1", CVAR_ARCHIVE);
+	mtl_pixel_size = ri.Cvar_Get("mtl_pixel_size", "1", CVAR_ARCHIVE);
 }
 
 /*
@@ -2047,6 +2049,18 @@ RE_BeginFrame(float camera_separation)
 }
 
 /*
+ * ref_vk parity (vk_pixel_size): the world pass renders into a
+ * proportionally smaller viewport of the scene texture and the warp
+ * pass scales it back up. Values below 1 clamp to 1, exactly like the
+ * `divisor` ternary in vk_main.c.
+ */
+static float
+MTL_PixelDivisor(void)
+{
+	return mtl_pixel_size->value < 1.0f ? 1.0f : (float)mtl_pixel_size->value;
+}
+
+/*
 ==============
 MTL_RunWarpPass
 
@@ -2058,10 +2072,9 @@ latter via st->ui_target.
 
 Skipped when the world pass did not run (NOWORLDMODEL menus / culling
 skip). The warp stage additionally skips when there is no warp work at
-all (not submerged; pixel-size downscaling is not ported yet so
-pixelSize is always 1): the full pass would be a pixel-identical copy,
-skipping it is a visual no-op. The postprocess stage instead runs
-whenever the world produced content, like ref_vk.
+all (not submerged and mtl_pixel_size <= 1): the full pass would be a
+pixel-identical copy, skipping it is a visual no-op. The postprocess
+stage instead runs whenever the world produced content, like ref_vk.
 ==============
 */
 static void
@@ -2069,6 +2082,7 @@ MTL_RunWarpPass(void)
 {
 	mtlstate_t *st = &mtl_state;
 	float underwaterTime;
+	float divisor;
 
 	if (st->warp_done)
 	{
@@ -2087,8 +2101,12 @@ MTL_RunWarpPass(void)
 	underwaterTime = (mtl_underwater->value > 0 &&
 		(r_newrefdef.rdflags & RDF_UNDERWATER)) ? r_newrefdef.time : 0.f;
 
-	/* Warp stage: only when there is distortion work (see above). */
-	if (underwaterTime > 0.f &&
+	divisor = MTL_PixelDivisor();
+
+	/* Warp stage: only when there is distortion or upscale-restore work
+	   (ref_vk runs it unconditionally; a skipped mtl stage is a no-op
+	   only when the copy would be pixel-identical). */
+	if ((underwaterTime > 0.f || divisor > 1.f) &&
 	    st->frame_active && st->command_buffer != nil &&
 	    st->scene_texture != nil && st->warp_texture != nil &&
 	    st->pipeline_warp != nil && st->warp_ubo != nil &&
@@ -2106,7 +2124,7 @@ MTL_RunWarpPass(void)
 		ubo->scale = viewsize->value / 100.0f;
 		ubo->scrWidth = (float)st->scene_width;
 		ubo->scrHeight = (float)st->scene_height;
-		ubo->pixelSize = 1.0f;
+		ubo->pixelSize = divisor;
 		ubo->refdefX = (float)r_newrefdef.x * scaleX;
 		ubo->refdefY = (float)r_newrefdef.y * scaleY;
 		ubo->refdefW = (float)r_newrefdef.width * scaleX;
@@ -2389,7 +2407,10 @@ MTL_EmitParticlePointUbo(size_t slot)
 	ubo_off = st->world_ubo_offset[slot];
 	ubo = (particle_point_ubo_t *)((byte *)st->world_ubo[slot].contents + ubo_off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
-	ubo->pointSize = mtl_particle_size->value;
+	/* ref_vk parity (vk_main.c): particle point size scales down with
+	   mtl_pixel_size so the warp-pass upscale puts it back at the size
+	   the cvar asks for on screen. */
+	ubo->pointSize = mtl_particle_size->value / MTL_PixelDivisor();
 	ubo->pointScale = vid.width * viewsize->value / 102400;
 	ubo->minPointSize = mtl_particle_min_size->value;
 	ubo->maxPointSize = mtl_particle_max_size->value;
@@ -2700,9 +2721,15 @@ RE_RenderFrame(refdef_t *fd)
 		return;
 	}
 
-	/* Classic encoders have no default viewport; set it explicitly. */
+	/* Classic encoders have no default viewport; set it explicitly.
+	   ref_vk parity (vk_pixel_size): the world pass renders into a
+	   1/divisor viewport of the scene texture; the warp pass scales it
+	   back up. mtl keeps the world anchored at the texture origin (its
+	   world pass is unscissored; ref_vk divides its refdef-anchored
+	   viewport x/y the same way). */
 	[st->encoder setViewport:(MTLViewport){0.0, 0.0,
-	    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
+	    (double)st->scene_width / MTL_PixelDivisor(),
+	    (double)st->scene_height / MTL_PixelDivisor(), 0.0, 1.0}];
 	[st->encoder setDepthStencilState:st->depth_state];
 
 	/* W4: mark the surfaces hit by dynamic lights before the framecount
