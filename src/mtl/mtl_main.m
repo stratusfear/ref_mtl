@@ -946,6 +946,23 @@ R_InitShaders(void)
 			pd.rasterSampleCount = 1;
 			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
+			/* ref_vk parity: vk_drawPolyPipeline / vk_drawPolyWarpPipeline
+			   (this pipeline covers both roles) draw with blending enabled
+			   (SRC_ALPHA / ONE_MINUS_SRC_ALPHA); that is how the
+			   SURF_TRANS33/66 alpha-surface chain renders glass at
+			   color[3] = 0.33 / 0.66. Opaque chains pass alpha = 1, where
+			   the blend is the identity, exactly as in ref_vk. */
+			if (i == 0)
+			{
+				pd.colorAttachments[0].blendingEnabled = YES;
+				pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+				pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+				pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+				pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+				pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+				pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+			}
+
 			id<MTLRenderPipelineState> pipeline = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
 			if (pipeline == nil)
 			{
