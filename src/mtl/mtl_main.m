@@ -2715,6 +2715,13 @@ RE_RenderFrame(refdef_t *fd)
 	R_DrawEntitiesOnList();
 	R_RenderDlights();
 	R_DrawParticles();
+	/* ref_vk parity (vk_main.c calls R_DrawAlphaSurfaces() at this point):
+	   R_RecursiveWorldNode() only collects SURF_TRANS33/66 surfaces onto the
+	   r_alpha_surfaces chain; the chain has to be unwound - back to front,
+	   since the BSP walk was front to back - or every window and every
+	   liquid (baseq2 water/slime/lava are WARP + TRANS33/66) is missing
+	   from the frame. */
+	R_DrawAlphaSurfaces();
 	R_RenderFlash();
 
 	[st->encoder endEncoding];
