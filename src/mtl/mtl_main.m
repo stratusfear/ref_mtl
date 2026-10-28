@@ -77,6 +77,7 @@ static cvar_t	*r_customheight;
 cvar_t		*vid_fullscreen;
 cvar_t		*vid_gamma;
 cvar_t		*viewsize;
+static cvar_t	*mtl_underwater;	// W6b: underwater screen warp (vk_underwater parity)
 
 cvar_t		*r_lefthand;
 cvar_t		*r_drawworld;
@@ -180,6 +181,7 @@ R_Register(void)
 	vid_fullscreen = ri.Cvar_Get("vid_fullscreen", "0", CVAR_ARCHIVE);
 	vid_gamma = ri.Cvar_Get("vid_gamma", "1.0", CVAR_ARCHIVE);
 	viewsize = ri.Cvar_Get("viewsize", "100", CVAR_ARCHIVE);
+	mtl_underwater = ri.Cvar_Get("mtl_underwater", "1", CVAR_ARCHIVE);
 }
 
 /*
@@ -703,6 +705,22 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_present release];
 		st->pipeline_present = nil;
 	}
+	if (st->pipeline_warp != nil)
+	{
+		[st->pipeline_warp release];
+		st->pipeline_warp = nil;
+	}
+	if (st->warp_ubo != nil)
+	{
+		[st->warp_ubo release];
+		st->warp_ubo = nil;
+	}
+	if (st->warp_texture != nil)
+	{
+		[st->warp_texture release];
+		st->warp_texture = nil;
+	}
+	st->ui_target = nil;
 	if (st->pipeline_ui_tex != nil)
 	{
 		[st->pipeline_ui_tex release];
@@ -951,6 +969,7 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOne;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -987,6 +1006,7 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1103,6 +1123,7 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1147,6 +1168,7 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1192,6 +1214,7 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1232,6 +1255,7 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1341,6 +1365,7 @@ R_InitShaders(void)
 
 		pd.rasterSampleCount = 1;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
 		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
@@ -1506,6 +1531,44 @@ R_InitShaders(void)
 		if (st->pipeline_present == nil)
 		{
 			Com_Printf("ref_mtl: present pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* W6b: underwater world-warp pipeline (ref_vk world_warp parity).
+	   Same full-screen ui_colorvert corners as the present pass; samples
+	   the world color texture and writes the warped copy to warp_texture
+	   between the world and UI passes. Plus its 64-byte fragment UBO. */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"warp_vertex"];
+		pd.fragmentFunction = [st->library newFunctionWithName:@"warp_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat2;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(uicolorvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+		st->pipeline_warp = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_warp == nil)
+		{
+			Com_Printf("ref_mtl: warp pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		st->warp_ubo = [st->device newBufferWithLength:sizeof(mtl_warp_ubo_t)
+			options:MTLResourceStorageModeShared];
+		if (st->warp_ubo == nil)
+		{
+			Com_Printf("ref_mtl: failed to create warp UBO\n");
 			R_ReleaseShaders(st);
 			return false;
 		}
@@ -1833,6 +1896,13 @@ RE_BeginFrame(float camera_separation)
 	st->showtris_vertex_offset[st->frame_slot] = 0;
 	st->alias_vertex_offset[st->frame_slot] = 0;
 
+	// W6b: per-frame world-warp pass bookkeeping. ui_target stays nil
+	// (consumers fall back to scene_texture) so it can never dangle when
+	// the resize block below recreates the textures.
+	st->world_rendered = false;
+	st->warp_done = false;
+	st->ui_target = nil;
+
 	// W4: the depth texture is sized to the drawable and recreated when
 	// the window (or its contentsScale) changes.
 	if (st->depth_width != (int)drawable.texture.width ||
@@ -1870,6 +1940,14 @@ RE_BeginFrame(float camera_separation)
 		sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
 		st->scene_texture = [st->device newTextureWithDescriptor:sd];
 
+		/* W6b: the world-warp pass target (same format/usage); UI pass and
+		   present follow it via ui_target when the pass ran. */
+		if (st->warp_texture != nil)
+		{
+			[st->warp_texture release];
+		}
+		st->warp_texture = [st->device newTextureWithDescriptor:sd];
+
 		st->depth_width = (int)drawable.texture.width;
 		st->depth_height = (int)drawable.texture.height;
 		st->scene_width = (int)drawable.texture.width;
@@ -1891,13 +1969,110 @@ RE_BeginFrame(float camera_separation)
 
 /*
 ==============
+MTL_RunWarpPass
+
+W6b: the between-passes world warp (ref_vk RP_WORLD_WARP parity). While
+the view is submerged (RDF_UNDERWATER and mtl_underwater) the world view
+rectangle is sine-distorted: sample scene_texture, write the warped copy
+into warp_texture; the UI pass attaches and the present pass samples the
+latter via st->ui_target.
+
+Skipped when the world pass did not run (NOWORLDMODEL menus / culling
+skip) and when there is no warp work at all (not submerged; pixel-size
+downscaling is not ported yet so pixelSize is always 1): the full pass
+would be a pixel-identical copy, skipping it is a visual no-op.
+==============
+*/
+static void
+MTL_RunWarpPass(void)
+{
+	mtlstate_t *st = &mtl_state;
+	float underwaterTime;
+
+	if (st->warp_done)
+	{
+		return;
+	}
+	st->warp_done = true;
+
+	// default: UI and present keep using the (unwarped) scene texture
+	st->ui_target = st->scene_texture;
+
+	if (!st->world_rendered)
+	{
+		return;
+	}
+
+	underwaterTime = (mtl_underwater->value > 0 &&
+		(r_newrefdef.rdflags & RDF_UNDERWATER)) ? r_newrefdef.time : 0.f;
+	if (underwaterTime <= 0.f)
+	{
+		return;
+	}
+
+	if (!st->frame_active || st->command_buffer == nil ||
+	    st->scene_texture == nil || st->warp_texture == nil ||
+	    st->pipeline_warp == nil || st->warp_ubo == nil ||
+	    st->ui_color_vertex_buffer == nil)
+	{
+		return;
+	}
+
+	{
+		mtl_warp_ubo_t *ubo = (mtl_warp_ubo_t *)[st->warp_ubo contents];
+		/* refdef coordinates are in logical (vid.width/height) space; the
+		   pass works in device pixels. */
+		const float scaleX = (float)st->scene_width / (float)vid.width;
+		const float scaleY = (float)st->scene_height / (float)vid.height;
+		MTLRenderPassDescriptor *pd = [MTLRenderPassDescriptor renderPassDescriptor];
+		id<MTLRenderCommandEncoder> enc;
+
+		ubo->time = underwaterTime;
+		ubo->scale = viewsize->value / 100.0f;
+		ubo->scrWidth = (float)st->scene_width;
+		ubo->scrHeight = (float)st->scene_height;
+		ubo->pixelSize = 1.0f;
+		ubo->refdefX = (float)r_newrefdef.x * scaleX;
+		ubo->refdefY = (float)r_newrefdef.y * scaleY;
+		ubo->refdefW = (float)r_newrefdef.width * scaleX;
+		ubo->refdefH = (float)r_newrefdef.height * scaleY;
+
+		pd.colorAttachments[0].texture = st->warp_texture;
+		pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+		pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+		enc = [st->command_buffer renderCommandEncoderWithDescriptor:pd];
+		if (enc == nil)
+		{
+			Com_DPrintf("ref_mtl: failed to open world-warp encoder\n");
+			return;
+		}
+
+		[enc setViewport:(MTLViewport){0.0, 0.0,
+		    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
+		[enc setRenderPipelineState:st->pipeline_warp];
+		[enc setVertexBuffer:st->ui_color_vertex_buffer offset:0 atIndex:0];
+		[enc setFragmentBuffer:st->warp_ubo offset:0 atIndex:0];
+		[enc setFragmentTexture:st->scene_texture atIndex:0];
+		[enc drawPrimitives:MTLPrimitiveTypeTriangle
+			vertexStart:0 vertexCount:6];
+		[enc endEncoding];
+	}
+
+	st->ui_target = st->warp_texture;
+}
+
+/*
+==============
 RE_EndWorldRenderpass
 ==============
 */
 static qboolean
 RE_EndWorldRenderpass(void)
 {
-	// W1: the world pass (clear color) was rendered in RE_RenderFrame
+	/* W6b: the host calls this between world and 2D UI rendering, the
+	   same spot where ref_vk runs its RP_WORLD_WARP pass. */
+	MTL_RunWarpPass();
 	return true;
 }
 
@@ -1945,7 +2120,8 @@ RE_EndFrame(void)
 			    (double)st->drawable.texture.height, 0.0, 1.0}];
 			[present_encoder setVertexBuffer:st->ui_color_vertex_buffer
 				offset:0 atIndex:0];
-			[present_encoder setFragmentTexture:st->scene_texture atIndex:0];
+			[present_encoder setFragmentTexture:st->ui_target != nil ?
+			    st->ui_target : st->scene_texture atIndex:0];
 			[present_encoder setRenderPipelineState:st->pipeline_present];
 			[present_encoder drawPrimitives:MTLPrimitiveTypeTriangle
 				vertexStart:0 vertexCount:6];
@@ -2311,8 +2487,11 @@ RE_ScreenShot_f(void)
 		/* Enqueued after the current frame's command buffer on the same
 		   queue, so the blit runs once that frame has fully retired and
 		   the scene texture holds the last presented image. */
+		/* W6b: after a world-warp frame the composited image (warped
+		   world + UI) lives in warp_texture; the blit follows ui_target. */
 		id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-		[blit copyFromTexture:st->scene_texture
+		[blit copyFromTexture:st->ui_target != nil ?
+		    st->ui_target : st->scene_texture
 			sourceSlice:0
 			sourceLevel:0
 			sourceOrigin:MTLOriginMake(0, 0, 0)
@@ -2412,6 +2591,7 @@ RE_RenderFrame(refdef_t *fd)
 	R_PushDlights();
 
 	R_SetupFrame();
+
 	R_DrawWorld();
 	R_DrawEntitiesOnList();
 	R_RenderDlights();
@@ -2420,6 +2600,10 @@ RE_RenderFrame(refdef_t *fd)
 
 	[st->encoder endEncoding];
 	st->encoder = nil;
+
+	// W6b: the world pass produced content this frame; the warp pass
+	// (RE_EndWorldRenderpass) becomes eligible.
+	st->world_rendered = true;
 }
 
 /*
@@ -2456,9 +2640,18 @@ MTL_BeginUIPass(void)
 		return;
 	}
 
+	/* W6b: run the between-passes world warp now, matching ref_vk, which
+	   switches to the warp target from R_SetVulkan2D - the first 2D draw
+	   of the frame. The host never calls RE_EndWorldRenderpass on normal
+	   gameplay frames, so hooking only that entry point would leave the
+	   warp unused. Once-per-frame logic inside (warp_done). */
+	MTL_RunWarpPass();
+
 	/* W6: the UI pass loads (not clears) the offscreen scene target the
-	   world pass just stored to; no depth attachment. */
-	st->ui_pass_descriptor.colorAttachments[0].texture = st->scene_texture;
+	   world pass just stored to; no depth attachment. W6b: after the
+	   world-warp pass ran, that target is the warped copy. */
+	st->ui_pass_descriptor.colorAttachments[0].texture =
+		st->ui_target != nil ? st->ui_target : st->scene_texture;
 	st->ui_pass_descriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
 	st->ui_pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
 

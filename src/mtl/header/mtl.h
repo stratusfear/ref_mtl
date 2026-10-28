@@ -131,6 +131,22 @@ typedef struct
 	float position[2];
 } uicolorvert_t;				// 8 bytes
 
+/* W6b: fragment UBO for the underwater world-warp pass; mirrors
+   warp_ubo_t in shaders/world.msl (padded to 64 bytes). */
+typedef struct
+{
+	float time;				// @0, 0 = no warp
+	float scale;				// @4, viewsize / 100
+	float scrWidth;				// @8
+	float scrHeight;				// @12
+	float pixelSize;				// @16, >= 1 upscale restore
+	float refdefX;				// @20, world-view rect, device px
+	float refdefY;				// @24
+	float refdefW;				// @28
+	float refdefH;				// @32
+	float pad[7];
+} mtl_warp_ubo_t;				// 64 bytes
+
 typedef struct
 {
 	float position[3];
@@ -590,6 +606,19 @@ typedef struct mtlstate_s
 	// W6: present pass and pipeline (color only, no depth, no blend).
 	MTLRenderPassDescriptor		*present_pass_descriptor;
 	id<MTLRenderPipelineState>		pipeline_present;	// present_vertex + present_fragment
+
+	/* W6b: underwater world-warp pass (ref_vk RP_WORLD_WARP/world_warp.frag
+	   parity). Runs between the world and UI passes when the view is
+	   submerged: samples scene_texture, writes the warped image into
+	   warp_texture, and the UI pass + present switch their attachment /
+	   source to it (ui_target). Skipped (ui_target stays scene_texture)
+	   when there is no warp work to do, which is a visual no-op. */
+	id<MTLTexture>			warp_texture;
+	id<MTLRenderPipelineState>		pipeline_warp;	// warp_vertex + warp_fragment
+	id<MTLBuffer>			warp_ubo;	// mtl_warp_ubo_t, written per frame
+	id<MTLTexture>			ui_target;	// warp_texture or scene_texture (not owned)
+	qboolean			world_rendered;	// world pass ran this frame
+	qboolean			warp_done;		// warp pass decided this frame
 
 	// per-frame state
 	id<CAMetalDrawable>		drawable;		// current frame's drawable

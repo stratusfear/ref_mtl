@@ -500,3 +500,74 @@ present_fragment(ui_out in [[stage_in]],
 {
     return scene.sample(present_sampler, in.uv);
 }
+
+// ---------------------------------------------------------------------------
+// W6b: underwater world-warp pass, the ref_vk world_warp.vert/frag port.
+// Full-screen quad (same ui_colorvert corners as the present pass) that
+// samples the world color texture and, while the view is submerged, applies
+// the sine distortion inside the world-view rectangle. Also handles the
+// pixel-size upscale restore (pixelSize > 1) for later parity work.
+// uv maps the quad to top-row-first texture space, matching Metal render
+// target orientation, so fragCoord-equivalent == uv * scrSize.
+// ---------------------------------------------------------------------------
+
+struct warp_ubo_t
+{
+    float    time;      // @0  (underwater time; 0 = no warp)
+    float    scale;     // @4  (viewsize / 100)
+    float    scrWidth;  // @8
+    float    scrHeight; // @12
+    float    pixelSize; // @16 (>= 1)
+    float    refdefX;   // @20 world-view rect in device pixels
+    float    refdefY;   // @24
+    float    refdefW;   // @28
+    float    refdefH;   // @32
+};
+
+struct warp_out
+{
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex warp_out
+warp_vertex(present_in in [[stage_in]])
+{
+    warp_out out;
+    out.position = float4(in.position, 0.0, 1.0);
+    out.uv = float2(in.position.x * 0.5 + 0.5, 0.5 - in.position.y * 0.5);
+    return out;
+}
+
+fragment float4
+warp_fragment(warp_out in [[stage_in]],
+              constant warp_ubo_t &ubo [[buffer(0)]],
+              texture2d<float, access::sample> scene [[texture(0)]])
+{
+    const float PI = 3.14159265;
+    float2 scrSize = float2(ubo.scrWidth, ubo.scrHeight);
+    float2 fragCoord = in.uv * scrSize;
+    float2 uv = in.uv;
+
+    if (ubo.time > 0 && fragCoord.x > ubo.refdefX && fragCoord.x < ubo.refdefX + ubo.refdefW &&
+        fragCoord.y > ubo.refdefY && fragCoord.y < ubo.refdefY + ubo.refdefH)
+    {
+        float sx = ubo.scale - abs(ubo.scrWidth  / 2.0 - fragCoord.x) * 2.0 / ubo.scrWidth;
+        float sy = ubo.scale - abs(ubo.scrHeight / 2.0 - fragCoord.y) * 2.0 / ubo.scrHeight;
+        float xShift = 2.0 * ubo.time + uv.y * PI * 10;
+        float yShift = 2.0 * ubo.time + uv.x * PI * 10;
+        uv += float2(sin(xShift) * sx, sin(yShift) * sy) * 0.00666;
+    }
+
+    // The GLSL original clamps in pixel space and samples with
+    // textureLod(); Metal's sample() wants normalized coords, so the
+    // texel-center clamp is expressed in normalized units here. For
+    // pixelSize == 1 this is exactly uv clamped to the half-texel border,
+    // i.e. a pixel-identical copy.
+    uv /= ubo.pixelSize;
+    float2 h = float2(0.5) / scrSize;
+    float2 lo = h * ubo.pixelSize;
+    float2 hi = float2(1.0) - lo;
+    uv = clamp(uv, lo, hi);
+    return scene.sample(present_sampler, uv);
+}
