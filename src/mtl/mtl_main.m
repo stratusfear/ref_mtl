@@ -2691,10 +2691,8 @@ RE_RenderFrame(refdef_t *fd)
 	/* W5d: if the 2D UI opened a pass before the world (SCR_TileClear runs
 	   before V_RenderView when viewsize < 100), end it first so the two
 	   passes do not overlap, and LOAD the color attachment so the tiles the
-	   UI just drew survive outside the (unclipped) world region. Depth still
-	   clears. ref_mtl does not scissor the world to the vrect, so this is
-	   cosmetically a no-op today; it matches ref_vk and future-proofs a
-	   later viewport clip. */
+	   UI just drew survive outside the world region (the world pass is now
+	   scissored to the vrect, matching ref_vk). Depth still clears. */
 	qboolean ui_before_world = (st->ui_encoder != nil);
 	if (ui_before_world)
 	{
@@ -2722,14 +2720,32 @@ RE_RenderFrame(refdef_t *fd)
 	}
 
 	/* Classic encoders have no default viewport; set it explicitly.
-	   ref_vk parity (vk_pixel_size): the world pass renders into a
-	   1/divisor viewport of the scene texture; the warp pass scales it
-	   back up. mtl keeps the world anchored at the texture origin (its
-	   world pass is unscissored; ref_vk divides its refdef-anchored
-	   viewport x/y the same way). */
-	[st->encoder setViewport:(MTLViewport){0.0, 0.0,
-	    (double)st->scene_width / MTL_PixelDivisor(),
-	    (double)st->scene_height / MTL_PixelDivisor(), 0.0, 1.0}];
+	   ref_vk parity (R_SetupVulkan viewport + RE_RenderFrame scissor):
+	   the world is anchored to the vrect (the r_newrefdef rectangle) of
+	   the scene texture and scissor-clipped to it, so the SCR_TileClear
+	   tiles the UI pass drew before the world survive outside the
+	   world view. With mtl_pixel_size > 1 both are additionally divided
+	   by the divisor - floor on the offsets, ceil on the extents, like
+	   ref_vk - and the warp pass puts everything back at full size
+	   (its uv /= pixelSize sampling addresses exactly this
+	   refdef/divisor-anchored content). At viewsize 100 the vrect is
+	   the full screen, which is the same rectangle the pass used
+	   before. */
+	{
+		const double divisor = (double)MTL_PixelDivisor();
+		const double scX = (double)st->scene_width / (double)vid.width;
+		const double scY = (double)st->scene_height / (double)vid.height;
+		const double x0 = floor((double)r_newrefdef.x * scX);
+		const double x1 = ceil((double)(r_newrefdef.x + r_newrefdef.width) * scX);
+		const double y0 = floor((double)r_newrefdef.y * scY);
+		const double y1 = ceil((double)(r_newrefdef.y + r_newrefdef.height) * scY);
+
+		[st->encoder setViewport:(MTLViewport){x0 / divisor, y0 / divisor,
+		    (x1 - x0) / divisor, (y1 - y0) / divisor, 0.0, 1.0}];
+		[st->encoder setScissorRect:(MTLScissorRect){
+		    (NSUInteger)floor(x0 / divisor), (NSUInteger)floor(y0 / divisor),
+		    (NSUInteger)ceil((x1 - x0) / divisor), (NSUInteger)ceil((y1 - y0) / divisor)}];
+	}
 	[st->encoder setDepthStencilState:st->depth_state];
 
 	/* W4: mark the surfaces hit by dynamic lights before the framecount
@@ -2797,8 +2813,19 @@ MTL_BeginUIPass(void)
 	   switches to the warp target from R_SetVulkan2D - the first 2D draw
 	   of the frame. The host never calls RE_EndWorldRenderpass on normal
 	   gameplay frames, so hooking only that entry point would leave the
-	   warp unused. Once-per-frame logic inside (warp_done). */
-	MTL_RunWarpPass();
+	   warp unused. Once-per-frame logic inside (warp_done).
+
+	   Only after the world actually rendered, though: SCR_TileClear's
+	   tiles arrive here BEFORE the world pass when viewsize < 100
+	   (ref_vk routes those draws into the RP_WORLD pipeline instead,
+	   vk_mesh.c, and runs the warp chain later from
+	   RE_EndWorldRenderpass). Running the chain here would burn
+	   warp_done with world_rendered still false and leave the whole
+	   frame without the warp/postprocess stages. */
+	if (st->world_rendered)
+	{
+		MTL_RunWarpPass();
+	}
 
 	/* W6: the UI pass loads (not clears) the offscreen scene target the
 	   world pass just stored to; no depth attachment. W6b: after the
