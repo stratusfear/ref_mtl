@@ -612,6 +612,32 @@ typedef struct mtlstate_s
 	int				scene_width;
 	int				scene_height;
 
+	/* W7: world-pass MSAA (r_msaa_samples, ref_vk's vk_msaa +
+	   vk_msaaColorbuffer parity). msaa_sample_count is 1 when the
+	   world pass renders straight into scene_texture / depth_texture;
+	   > 1 adds a multisampled color + depth attachment and the world
+	   pass resolves it into scene_texture
+	   (MTLStoreActionMultisampleResolve, ref_vk's pResolveAttachments
+	   from vk_msaaColorbuffer into vk_colorbuffer). The world
+	   pipelines are rebuilt at the matching rasterSampleCount;
+	   pipeline_sample_count tracks the count they were built for. The
+	   UI / warp / postprocess / present side always runs at 1 sample
+	   off the resolved texture, like ref_vk's single-sample
+	   vk_colorbuffer / vk_ui_depthbuffer. msaa_save_texture holds the
+	   pre-world scene (SCR_TileClear tiles at viewsize < 100) across
+	   the resolve, which overwrites the whole resolve texture
+	   regardless of the scissor rect. world_vx/vy/vw/vh are the
+	   device-pixel world viewport/scissor rectangle of the frame. */
+	id<MTLTexture>			msaa_color_texture;
+	id<MTLTexture>			msaa_depth_texture;
+	id<MTLTexture>			msaa_save_texture;
+	NSUInteger			msaa_sample_count;
+	NSUInteger			pipeline_sample_count;
+	int				world_vx;
+	int				world_vy;
+	int				world_vw;
+	int				world_vh;
+
 	// W6: present pass and pipeline (color only, no depth, no blend).
 	MTLRenderPassDescriptor		*present_pass_descriptor;
 	id<MTLRenderPipelineState>		pipeline_present;	// present_vertex + present_fragment

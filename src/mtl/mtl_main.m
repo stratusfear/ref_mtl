@@ -80,6 +80,7 @@ cvar_t		*viewsize;
 static cvar_t	*mtl_underwater;	// W6b: underwater screen warp (vk_underwater parity)
 static cvar_t	*mtl_postprocess;	// W6c: world postprocess (vk_postprocess parity)
 static cvar_t	*mtl_pixel_size;	// W6e: world downscale (vk_pixel_size parity)
+static cvar_t	*mtl_msaa;		// W7: world MSAA (vk_msaa parity)
 
 cvar_t		*r_lefthand;
 cvar_t		*r_drawworld;
@@ -186,6 +187,14 @@ R_Register(void)
 	mtl_underwater = ri.Cvar_Get("mtl_underwater", "1", CVAR_ARCHIVE);
 	mtl_postprocess = ri.Cvar_Get("mtl_postprocess", "1", CVAR_ARCHIVE);
 	mtl_pixel_size = ri.Cvar_Get("mtl_pixel_size", "1", CVAR_ARCHIVE);
+	/* W7: ref_vk registers the same host-side MSAA cvar (vk_main.c:
+	   Cvar_Get("r_msaa_samples", "0", CVAR_ARCHIVE)); negative values
+	   are clamped away there, keep the identical clamp. */
+	mtl_msaa = ri.Cvar_Get("r_msaa_samples", "0", CVAR_ARCHIVE);
+	if (mtl_msaa->value < 0)
+	{
+		ri.Cvar_SetValue("r_msaa_samples", 0);
+	}
 }
 
 /*
@@ -506,6 +515,12 @@ R_SetMode(void);
 static void
 R_ReleaseShaders(mtlstate_t *st);
 
+static qboolean
+MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount);
+
+static void
+MTL_ReleaseMSAADrawBuffers(mtlstate_t *st);
+
 /* W5d: 2D UI pass (see the definitions before RE_Draw_FindPic). */
 static void
 MTL_BeginUIPass(void);
@@ -597,6 +612,11 @@ RE_Shutdown(void)
 
 	// W2: shaders and test resources
 	R_ReleaseShaders(st);
+
+	/* W7: the MSAA sample-count bookkeeping resets with the context;
+	   RE_InitContext rebuilds the world pipelines at 1 sample. */
+	st->msaa_sample_count = 1;
+	st->pipeline_sample_count = 1;
 
 	if (st->pass_descriptor != nil)
 	{
@@ -782,6 +802,15 @@ R_ReleaseShaders(mtlstate_t *st)
 		st->scene_texture = nil;
 		st->scene_width = st->scene_height = 0;
 	}
+	/* W7: MSAA attachments and the pre-world save copy ride along with
+	   the scene/depth textures (recreated by MTL_UpdateMSAA / the
+	   BeginFrame resize block). */
+	MTL_ReleaseMSAADrawBuffers(st);
+	if (st->msaa_save_texture != nil)
+	{
+		[st->msaa_save_texture release];
+		st->msaa_save_texture = nil;
+	}
 	if (st->pipeline_dlight != nil)
 	{
 		[st->pipeline_dlight release];
@@ -850,59 +879,26 @@ R_ReleaseShaders(mtlstate_t *st)
 }
 
 /*
-=============
-R_InitShaders
+============
+MTL_InitWorldPipelines
 
-W3: create the MTL4Compiler, compile the embedded world.msl into a
-library, build the three world render pipelines (plain / lightmapped /
-sky), the four shared argument tables, and the per-slot vertex/UBO
-rings.
+W7: all world-pass render pipelines, created at the given raster sample
+count. ref_vk parity: MSAA (r_msaa_samples) only affects the world
+render pass (RP_WORLD), so the world pipelines are rebuilt when the
+sample count changes while the UI / warp / postprocess / present
+pipelines stay at 1 sample.
 
-Called once from RE_InitContext, right after the device is created;
-everything here survives mode changes. Returns false on any failure -
-the host then falls back to the next renderer in r_order.
-=============
+The creation blocks were factored out of R_InitShaders verbatim; the
+only changes are `pd.rasterSampleCount = sampleCount;` and the failure
+returns. Called with sampleCount 1 from R_InitShaders and again from
+MTL_UpdateMSAA when r_msaa_samples changes.
+============
 */
 static qboolean
-R_InitShaders(void)
+MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 {
-	mtlstate_t *st = &mtl_state;
 	NSError *err = nil;
 	int i;
-
-	/* MTL4Compiler - the Metal 4 runtime compiler. */
-	{
-		MTL4CompilerDescriptor *cd = [MTL4CompilerDescriptor new];
-		cd.label = @"ref_mtl";
-
-		st->compiler = [st->device newCompilerWithDescriptor:cd error:&err];
-		if (st->compiler == nil)
-		{
-			Com_Printf("ref_mtl: failed to create MTL4Compiler: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-	}
-
-	/* Compile the embedded MSL source into a library. */
-	{
-		MTLCompileOptions *opts = [MTLCompileOptions new];
-		opts.languageVersion = MTLLanguageVersion3_2;
-
-		MTL4LibraryDescriptor *ld = [MTL4LibraryDescriptor new];
-		ld.source = [NSString stringWithUTF8String:world];
-		ld.options = opts;
-		ld.name = @"ref_mtl.world";
-
-		st->library = [st->compiler newLibraryWithDescriptor:ld error:&err];
-		if (st->library == nil)
-		{
-			Com_Printf("ref_mtl: MSL compilation failed:\n%s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-	}
-
 	/* Render pipelines. All three share the plain fragment shader;
 	   only the vertex stages and the argument tables differ. */
 	{
@@ -945,7 +941,7 @@ R_InitShaders(void)
 			vd.layouts[0].stride = pipelines[i].stride;
 			pd.vertexDescriptor = vd;
 
-			pd.rasterSampleCount = 1;
+			pd.rasterSampleCount = sampleCount;
 			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 			/* ref_vk parity: vk_drawPolyPipeline / vk_drawPolyWarpPipeline
@@ -1003,7 +999,7 @@ R_InitShaders(void)
 		vd.layouts[0].stride = sizeof(dlightvert_t);
 		pd.vertexDescriptor = vd;
 
-		pd.rasterSampleCount = 1;
+		pd.rasterSampleCount = sampleCount;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
@@ -1040,7 +1036,7 @@ R_InitShaders(void)
 		vd.layouts[0].stride = sizeof(flashvert_t);
 		pd.vertexDescriptor = vd;
 
-		pd.rasterSampleCount = 1;
+		pd.rasterSampleCount = sampleCount;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -1057,6 +1053,490 @@ R_InitShaders(void)
 			R_ReleaseShaders(st);
 			return false;
 		}
+	}
+
+	/* W4: showtris (R_DrawTriangleOutlines). Reuses the dlight vertex and
+	   fragment functions (same 24B pos+color layout, same viewproj UBO);
+	   the differences live in the pipeline/encoder state - no blend, and
+	   the draws are line primitives with culling and depth test disabled
+	   (see R_DrawTriangleOutlines). */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
+
+		pd.fragmentFunction = [st->library newFunctionWithName:@"dlight_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat3;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(dlightvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+		st->pipeline_showtris = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_showtris == nil)
+		{
+			Com_Printf("ref_mtl: showtris pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* W5a: alias models. 36-byte vertices (pos3 + uv2 + color4), one UBO
+	   per model (alias_ubo_t, shared by all of the model's draws). The
+	   translucent variant alpha-blends and skips depth writes, like the
+	   flash pipeline. */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
+
+		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+		st->pipeline_alias = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_alias == nil)
+		{
+			Com_Printf("ref_mtl: alias pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		pd = [MTLRenderPipelineDescriptor new];
+		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
+		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_alias_translucent = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_alias_translucent == nil)
+		{
+			Com_Printf("ref_mtl: alias translucent pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+
+	}
+
+	/* W5b: sprites (mod_sprite). Same 36-byte vertex layout as the alias
+	   models (the CPU writes color = white * alpha per vertex); the UBO is
+	   the smaller sprite_ubo_t (viewproj + gamma). Blending is always on,
+	   like ref_vk's sprite pipeline; depth state is set per draw. */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
+
+		pd.fragmentFunction = [st->library newFunctionWithName:@"sprite_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_sprite = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_sprite == nil)
+		{
+			Com_Printf("ref_mtl: sprite pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+
+	}
+
+	/* W5c: particles. Textured mode reuses the sprite vertex function and
+	   UBO (viewproj + gamma); only the fragment threshold differs (0.5,
+	   ref_vk basic.frag aTreshold). Point mode computes the attenuated
+	   point size in the vertex shader; its fragment has no bindings at
+	   all. Both blend like the sprite pipeline (ref_vk default blendOpts). */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
+
+		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_particle == nil)
+		{
+			Com_Printf("ref_mtl: particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+
+	}
+
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"particle_point_vertex"];
+
+		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_point_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat2;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.attributes[2].format = MTLVertexFormatFloat4;
+		vd.attributes[2].offset = 20;
+		vd.attributes[2].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(aliasvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_point_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_point_particle == nil)
+		{
+			Com_Printf("ref_mtl: point particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+	}
+	return true;
+}
+
+/*
+============
+MTL_ReleaseWorldPipelines
+
+W7: drop the world-pass pipelines for an MSAA sample-count rebuild.
+Same block of states R_ReleaseShaders releases (that one additionally
+frees the library, the rings and the UI side, which stay).
+============
+*/
+static void
+MTL_ReleaseWorldPipelines(mtlstate_t *st)
+{
+	id<MTLRenderPipelineState> *pps[] = {
+		&st->pipeline_plain,
+		&st->pipeline_lmap,
+		&st->pipeline_sky,
+		&st->pipeline_dlight,
+		&st->pipeline_flash,
+		&st->pipeline_showtris,
+		&st->pipeline_alias,
+		&st->pipeline_alias_translucent,
+		&st->pipeline_sprite,
+		&st->pipeline_particle,
+		&st->pipeline_point_particle,
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(pps) / sizeof(pps[0]); i++)
+	{
+		if (*pps[i] != nil)
+		{
+			[*pps[i] release];
+			*pps[i] = nil;
+		}
+	}
+}
+
+/*
+============
+MTL_DesiredSampleCount
+
+W7: the MSAA sample count for the world pass from r_msaa_samples,
+mirroring ref_vk's GetSampleCount(): walk the power-of-two ladder down
+from 16 and take the largest count that is both requested (value >=
+count) and supported by the device for the scene color format
+(ref_vk: framebufferColorSampleLimits). Values < 2 (0 = off) give 1.
+============
+*/
+static NSUInteger
+MTL_DesiredSampleCount(void)
+{
+	NSUInteger value;
+
+	if (mtl_msaa == nil || (int)mtl_msaa->value < 2)
+	{
+		return 1;
+	}
+
+	for (value = 16; value >= 2; value >>= 1)
+	{
+		if ((int)mtl_msaa->value >= (int)value &&
+		    [mtl_state.device supportsTextureSampleCount:value])
+		{
+			return value;
+		}
+	}
+	return 1;
+}
+
+/*
+============
+MTL_CreateMSAADrawBuffers / MTL_ReleaseMSAADrawBuffers
+
+W7: the multisampled world attachments (ref_vk CreateDrawBuffers with
+sampleCount > 1: vk_msaaColorbuffer plus a multisampled vk_depthbuffer,
+while vk_colorbuffer and vk_ui_depthbuffer stay single-sample). Sized
+like scene_texture / depth_texture.
+============
+*/
+static void
+MTL_ReleaseMSAADrawBuffers(mtlstate_t *st)
+{
+	if (st->msaa_color_texture != nil)
+	{
+		[st->msaa_color_texture release];
+		st->msaa_color_texture = nil;
+	}
+	if (st->msaa_depth_texture != nil)
+	{
+		[st->msaa_depth_texture release];
+		st->msaa_depth_texture = nil;
+	}
+}
+
+static qboolean
+MTL_CreateMSAADrawBuffers(mtlstate_t *st, NSUInteger sampleCount)
+{
+	MTLTextureDescriptor *d;
+
+	d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+	        MTLPixelFormatBGRA8Unorm
+	        width:(NSUInteger)st->scene_width
+	        height:(NSUInteger)st->scene_height
+	        mipmapped:NO];
+	d.textureType = MTLTextureType2DMultisample;	// 2D rejects sampleCount
+	d.usage = MTLTextureUsageRenderTarget;
+	d.storageMode = MTLStorageModeShared;
+	d.sampleCount = sampleCount;
+	st->msaa_color_texture = [st->device newTextureWithDescriptor:d];
+	if (st->msaa_color_texture == nil)
+	{
+		Com_Printf("ref_mtl: failed to create %ux MSAA color texture\n",
+			(unsigned int)sampleCount);
+		return false;
+	}
+
+	d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+	        MTLPixelFormatDepth32Float
+	        width:(NSUInteger)st->depth_width
+	        height:(NSUInteger)st->depth_height
+	        mipmapped:NO];
+	d.textureType = MTLTextureType2DMultisample;
+	d.usage = MTLTextureUsageRenderTarget;
+	d.storageMode = MTLStorageModeShared;
+	d.sampleCount = sampleCount;
+	st->msaa_depth_texture = [st->device newTextureWithDescriptor:d];
+	if (st->msaa_depth_texture == nil)
+	{
+		Com_Printf("ref_mtl: failed to create %ux MSAA depth texture\n",
+			(unsigned int)sampleCount);
+		MTL_ReleaseMSAADrawBuffers(st);
+		return false;
+	}
+
+	return true;
+}
+
+/*
+============
+MTL_UpdateMSAA
+
+W7: rebuild the world-pass pipelines and multisampled attachments when
+r_msaa_samples changes. ref_vk handles the same cvar through
+R_SetMode() (it clears vk_msaa->modified) with the render passes and
+draw buffers rebuilt in QVk_RecreateSwapchain() -> R_InitVulkan(),
+which prints "...MSAAx%d is used" from GetSampleCount(). Checked every
+frame here instead: the pipeline/texture swap is cheap, and the host's
+video menu may set the cvar without a mode change. Called from
+RE_BeginFrame before the frame's command buffer / encoders exist.
+============
+*/
+static void
+MTL_UpdateMSAA(mtlstate_t *st)
+{
+	NSUInteger want = MTL_DesiredSampleCount();
+
+	if (want == st->msaa_sample_count && st->pipeline_sample_count == want)
+	{
+		return;
+	}
+
+	MTL_ReleaseWorldPipelines(st);
+	MTL_ReleaseMSAADrawBuffers(st);
+
+	if (!MTL_InitWorldPipelines(st, want))
+	{
+		Com_Printf("ref_mtl: rebuilding world pipelines for %ux MSAA failed\n",
+			(unsigned int)want);
+		st->msaa_sample_count = st->pipeline_sample_count = 1;
+		if (!MTL_InitWorldPipelines(st, 1))
+		{
+			st->pipeline_sample_count = 0;
+		}
+		return;
+	}
+	st->pipeline_sample_count = want;
+
+	if (want > 1 && MTL_CreateMSAADrawBuffers(st, want))
+	{
+		st->msaa_sample_count = want;
+		Com_Printf("...MSAAx%d is used\n", (int)want);
+	}
+	else
+	{
+		st->msaa_sample_count = 1;
+		if (want > 1)
+		{
+			Com_Printf("ref_mtl: %ux MSAA draw buffers failed, running without MSAA\n",
+				(unsigned int)want);
+		}
+	}
+}
+
+/*
+=============
+R_InitShaders
+
+W3: create the MTL4Compiler, compile the embedded world.msl into a
+library, build the three world render pipelines (plain / lightmapped /
+sky), the four shared argument tables, and the per-slot vertex/UBO
+rings.
+
+Called once from RE_InitContext, right after the device is created;
+everything here survives mode changes. Returns false on any failure -
+the host then falls back to the next renderer in r_order.
+=============
+*/
+static qboolean
+R_InitShaders(void)
+{
+	mtlstate_t *st = &mtl_state;
+	NSError *err = nil;
+	int i;
+
+	/* MTL4Compiler - the Metal 4 runtime compiler. */
+	{
+		MTL4CompilerDescriptor *cd = [MTL4CompilerDescriptor new];
+		cd.label = @"ref_mtl";
+
+		st->compiler = [st->device newCompilerWithDescriptor:cd error:&err];
+		if (st->compiler == nil)
+		{
+			Com_Printf("ref_mtl: failed to create MTL4Compiler: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* Compile the embedded MSL source into a library. */
+	{
+		MTLCompileOptions *opts = [MTLCompileOptions new];
+		opts.languageVersion = MTLLanguageVersion3_2;
+
+		MTL4LibraryDescriptor *ld = [MTL4LibraryDescriptor new];
+		ld.source = [NSString stringWithUTF8String:world];
+		ld.options = opts;
+		ld.name = @"ref_mtl.world";
+
+		st->library = [st->compiler newLibraryWithDescriptor:ld error:&err];
+		if (st->library == nil)
+		{
+			Com_Printf("ref_mtl: MSL compilation failed:\n%s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* W7: world-pass pipelines at the current MSAA sample count. */
+	if (!MTL_InitWorldPipelines(st, 1))
+	{
+		R_ReleaseShaders(st);
+		return false;
+	}
+	st->pipeline_sample_count = 1;
 
 		/* Static full-screen quad: two triangles in the mtl convention
 		   (triangle list, no index buffers). Winding is irrelevant - the
@@ -1081,7 +1561,6 @@ R_InitShaders(void)
 				dst[i].position[1] = corners[i * 2 + 1];
 			}
 		}
-	}
 
 	/* W4: showtris (R_DrawTriangleOutlines). Reuses the dlight vertex and
 	   fragment functions (same 24B pos+color layout, same viewproj UBO);
@@ -2029,11 +2508,28 @@ RE_BeginFrame(float camera_separation)
 		}
 		st->post_texture = [st->device newTextureWithDescriptor:sd];
 
+		/* W7: the multisampled world attachments follow the same
+		   resize; they're only live while MSAA is on. */
+		if (st->msaa_sample_count > 1)
+		{
+			MTL_ReleaseMSAADrawBuffers(st);
+			if (!MTL_CreateMSAADrawBuffers(st, st->msaa_sample_count))
+			{
+				st->msaa_sample_count = 1;
+			}
+		}
+
 		st->depth_width = (int)drawable.texture.width;
 		st->depth_height = (int)drawable.texture.height;
 		st->scene_width = (int)drawable.texture.width;
 		st->scene_height = (int)drawable.texture.height;
 	}
+
+	/* W7: r_msaa_samples changes rebuild the world pipelines and the
+	   multisampled attachments. Runs after the resize block above so
+	   the scene/depth dimensions are valid, and before this frame's
+	   command buffer is created. */
+	MTL_UpdateMSAA(st);
 
 	/* One classic command buffer per frame, retained until EndFrame
 	   commits and releases it. Mark the slot in flight; the completion
@@ -2700,17 +3196,89 @@ RE_RenderFrame(refdef_t *fd)
 	}
 
 	/* W6: the world pass renders into the offscreen scene texture,
-	   never into the drawable itself. */
-	st->pass_descriptor.colorAttachments[0].texture = st->scene_texture;
-	st->pass_descriptor.colorAttachments[0].loadAction = ui_before_world ? MTLLoadActionLoad : MTLLoadActionClear;
-	st->pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-	st->pass_descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+	   never into the drawable itself. W7: with MSAA (r_msaa_samples)
+	   it renders into the multisampled attachments instead and the
+	   pass resolves into scene_texture, ref_vk's vk_msaaColorbuffer +
+	   multisampled vk_depthbuffer with pResolveAttachments into
+	   vk_colorbuffer (vk_common.c). The resolve store action replaces
+	   the whole resolve texture regardless of the scissor rect, so
+	   the pre-world UI content (SCR_TileClear at viewsize < 100) is
+	   saved and restored around the pass; ref_vk's resolve only
+	   touches the render area and keeps vk_colorbuffer's tiles. */
+	qboolean msaa = (st->msaa_sample_count > 1 &&
+	                  st->msaa_color_texture != nil &&
+	                  st->msaa_depth_texture != nil);
 
-	st->pass_descriptor.depthAttachment.texture = st->depth_texture;
+	/* W7: the resolve overwrites the whole scene texture, so keep the
+	   pre-world tiles (drawn outside the world view at viewsize <
+	   100) in a copy that is restored after the pass. */
+	if (msaa && ui_before_world)
+	{
+		if (st->msaa_save_texture == nil ||
+		    (int)st->msaa_save_texture.width != st->scene_width ||
+		    (int)st->msaa_save_texture.height != st->scene_height)
+		{
+			MTLTextureDescriptor *sd = [MTLTextureDescriptor
+			    texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+			    width:(NSUInteger)st->scene_width
+			    height:(NSUInteger)st->scene_height
+			    mipmapped:NO];
+			sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+
+			[st->msaa_save_texture release];
+			st->msaa_save_texture = [st->device newTextureWithDescriptor:sd];
+		}
+
+		if (st->msaa_save_texture == nil)
+		{
+			msaa = false;
+		}
+	}
+
+	if (msaa)
+	{
+		st->pass_descriptor.colorAttachments[0].texture = st->msaa_color_texture;
+		st->pass_descriptor.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+		st->pass_descriptor.colorAttachments[0].storeAction =
+			MTLStoreActionMultisampleResolve;
+		st->pass_descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+		st->pass_descriptor.colorAttachments[0].resolveTexture = st->scene_texture;
+		st->pass_descriptor.colorAttachments[0].resolveLevel = 0;
+		st->pass_descriptor.colorAttachments[0].resolveSlice = 0;
+
+		st->pass_descriptor.depthAttachment.texture = st->msaa_depth_texture;
+	}
+	else
+	{
+		st->pass_descriptor.colorAttachments[0].texture = st->scene_texture;
+		st->pass_descriptor.colorAttachments[0].loadAction = ui_before_world ? MTLLoadActionLoad : MTLLoadActionClear;
+		st->pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+		st->pass_descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+		st->pass_descriptor.colorAttachments[0].resolveTexture = nil;
+
+		st->pass_descriptor.depthAttachment.texture = st->depth_texture;
+	}
 	st->pass_descriptor.depthAttachment.level = 0;
 	st->pass_descriptor.depthAttachment.loadAction = MTLLoadActionClear;
 	st->pass_descriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
 	st->pass_descriptor.depthAttachment.clearDepth = 1.0;
+
+	if (msaa && ui_before_world)
+	{
+		id<MTLBlitCommandEncoder> save =
+			[st->command_buffer blitCommandEncoder];
+		[save copyFromTexture:st->scene_texture
+			sourceSlice:0
+			sourceLevel:0
+			sourceOrigin:MTLOriginMake(0, 0, 0)
+			sourceSize:MTLSizeMake((NSUInteger)st->scene_width,
+			    (NSUInteger)st->scene_height, 1)
+			toTexture:st->msaa_save_texture
+			destinationSlice:0
+			destinationLevel:0
+			destinationOrigin:MTLOriginMake(0, 0, 0)];
+		[save endEncoding];
+	}
 
 	st->encoder = [st->command_buffer renderCommandEncoderWithDescriptor:st->pass_descriptor];
 	if (st->encoder == nil)
@@ -2745,6 +3313,14 @@ RE_RenderFrame(refdef_t *fd)
 		[st->encoder setScissorRect:(MTLScissorRect){
 		    (NSUInteger)floor(x0 / divisor), (NSUInteger)floor(y0 / divisor),
 		    (NSUInteger)ceil((x1 - x0) / divisor), (NSUInteger)ceil((y1 - y0) / divisor)}];
+
+		/* W7: the rectangle the world actually covers, in scene-texture
+		   pixels (the scissor is always the whole rectangle: the
+		   divisor only scales it, both edges round the same way). */
+		st->world_vx = (int)floor(x0 / divisor);
+		st->world_vy = (int)floor(y0 / divisor);
+		st->world_vw = (int)ceil((x1 - x0) / divisor);
+		st->world_vh = (int)ceil((y1 - y0) / divisor);
 	}
 	[st->encoder setDepthStencilState:st->depth_state];
 
@@ -2769,6 +3345,45 @@ RE_RenderFrame(refdef_t *fd)
 
 	[st->encoder endEncoding];
 	st->encoder = nil;
+
+	/* W7: the MSAA resolve overwrote the whole scene texture; put the
+	   pre-world tiles back everywhere the world pass did not draw
+	   (the four rectangles around the world view). */
+	if (msaa && ui_before_world)
+	{
+		const NSUInteger w = (NSUInteger)st->scene_width;
+		const NSUInteger h = (NSUInteger)st->scene_height;
+		const NSUInteger x0 = (NSUInteger)MAX(0, MIN(st->world_vx, (int)w));
+		const NSUInteger y0 = (NSUInteger)MAX(0, MIN(st->world_vy, (int)h));
+		const NSUInteger x1 = (NSUInteger)MAX(0, MIN(st->world_vx + st->world_vw, (int)w));
+		const NSUInteger y1 = (NSUInteger)MAX(0, MIN(st->world_vy + st->world_vh, (int)h));
+		id<MTLBlitCommandEncoder> restore =
+			[st->command_buffer blitCommandEncoder];
+
+		/* top, bottom, left, right (half-open, covers everything
+		   outside the world rectangle exactly once) */
+		[restore copyFromTexture:st->msaa_save_texture
+			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+			sourceSize:MTLSizeMake(w, y0, 1)
+			toTexture:st->scene_texture
+			destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+		[restore copyFromTexture:st->msaa_save_texture
+			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y1, 0)
+			sourceSize:MTLSizeMake(w, h - y1, 1)
+			toTexture:st->scene_texture
+			destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y1, 0)];
+		[restore copyFromTexture:st->msaa_save_texture
+			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y0, 0)
+			sourceSize:MTLSizeMake(x0, y1 - y0, 1)
+			toTexture:st->scene_texture
+			destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y0, 0)];
+		[restore copyFromTexture:st->msaa_save_texture
+			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x1, y0, 0)
+			sourceSize:MTLSizeMake(w - x1, y1 - y0, 1)
+			toTexture:st->scene_texture
+			destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x1, y0, 0)];
+		[restore endEncoding];
+	}
 
 	// W6b: the world pass produced content this frame; the warp pass
 	// (RE_EndWorldRenderpass) becomes eligible.
