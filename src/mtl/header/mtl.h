@@ -440,6 +440,13 @@ qboolean MTL_ImageHasFreeSpace(void);
 void MTL_ImageList_f (void);
 
 //====================================================
+// Console info (W9, ref_vk's Vk_Strings_f / Vk_Mem_f parity)
+//====================================================
+
+void Mtl_Strings_f (void);
+void Mtl_Mem_f (void);
+
+//====================================================
 // Models
 //====================================================
 
@@ -499,6 +506,7 @@ typedef struct mtlstate_s
 	// runtime-compiled shaders (survive mode changes, freed in RE_Shutdown)
 	id<MTL4Compiler>			compiler;	// MTL4Compiler, compiles MSL at runtime
 	id<MTLLibrary>			library;		// compiled quad.msl + world.msl
+	const char			*msl_version;	// MSL language version compiled for
 
 	// W3: world rendering pipelines. Bindings are set directly on the
 	// classic encoder per draw (buffer 0 = stage_in verts, buffer 1 =
@@ -680,6 +688,12 @@ typedef struct mtlstate_s
 	int				frame_slot;		// current slot in the frame ring
 	qboolean				slot_busy[3];	// slot has a frame in flight (completion handler clears it)
 	qboolean			frame_active;	// frame in flight (Begin..End)
+	/* W9: ring consumption of the last completed frame, plus lifetime
+	   maxima, snapshotted in RE_EndFrame before RE_BeginFrame resets
+	   the per-slot offsets; reported by the "mtl_mem" command (ring
+	   order: world vertex, world lmap, UBO, dlight, showtris, alias). */
+	size_t			ring_usage[6];
+	size_t			ring_usage_max[6];
 	float			pixel_scale;	// layer contentsScale
 	float			inverse_intensity;	// 1.0 / mtl_intensity, texture modulation
 	float			camera_separation;	// RE_BeginFrame argument, stereo

@@ -561,7 +561,16 @@ RE_Init(void)
 
 	ri.Vid_MenuInit();
 
+	/* W9: startup device dump, ref_vk's Vk_Strings_f() parity. The
+	   device, layer and shaders all exist by now (R_SetMode above ran
+	   RE_InitContext + R_InitShaders). */
+	Mtl_Strings_f();
+
 	ri.Cmd_AddCommand("screenshot", RE_ScreenShot_f);
+	ri.Cmd_AddCommand("mtl_strings", Mtl_Strings_f);
+	ri.Cmd_AddCommand("mtl_mem", Mtl_Mem_f);
+	ri.Cmd_AddCommand("imagelist", MTL_ImageList_f);
+	ri.Cmd_AddCommand("modellist", Mod_Modellist_f);
 
 	Com_Printf("Successfully initialized Metal 4 refresher!\n");
 
@@ -1538,6 +1547,7 @@ R_InitShaders(void)
 			R_ReleaseShaders(st);
 			return false;
 		}
+		st->msl_version = "3.2";
 	}
 
 	/* W7: world-pass pipelines at the current MSAA sample count. */
@@ -2167,7 +2177,7 @@ R_InitShaders(void)
 		}
 	}
 
-	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash/showtris/alias pipelines)\n");
+	Com_DPrintf("ref_mtl: shaders compiled (see 'mtl_strings' for the pipeline list)\n");
 
 	return true;
 }
@@ -2355,6 +2365,181 @@ RE_IsVSyncActive(void)
 	}
 
 	return false;
+}
+
+/*
+==============
+R_CountPipelines
+
+W9: number of runtime-compiled render pipelines currently live in the
+renderer state (reported by Mtl_Strings_f).
+==============
+*/
+static int
+R_CountPipelines(void)
+{
+	mtlstate_t *st = &mtl_state;
+	id<MTLRenderPipelineState> *p[] = {
+		&st->pipeline_plain,
+		&st->pipeline_lmap,
+		&st->pipeline_sky,
+		&st->pipeline_dlight,
+		&st->pipeline_flash,
+		&st->pipeline_showtris,
+		&st->pipeline_alias,
+		&st->pipeline_alias_translucent,
+		&st->pipeline_sprite,
+		&st->pipeline_particle,
+		&st->pipeline_point_particle,
+		&st->pipeline_ui_tex,
+		&st->pipeline_ui_tint,
+		&st->pipeline_ui_color,
+		&st->pipeline_warp,
+		&st->pipeline_postprocess,
+		&st->pipeline_present,
+	};
+	int n = 0;
+	size_t i;
+
+	for (i = 0; i < sizeof(p) / sizeof(p[0]); i++)
+	{
+		if (*p[i] != nil)
+		{
+			n++;
+		}
+	}
+
+	return n;
+}
+
+/*
+==============
+Mtl_Strings_f
+
+W9: dump Metal device / shader / swapchain information to the console,
+ref_vk's Vk_Strings_f() parity. Printed once at startup and available
+as the "mtl_strings" command.
+==============
+*/
+void
+Mtl_Strings_f(void)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (st->device == nil)
+	{
+		Com_Printf("ref_mtl: no Metal device (renderer not initialized)\n");
+		return;
+	}
+
+	@autoreleasepool {
+		id<MTLDevice> dev = st->device;
+		NSArray<id<MTLDevice>> *all = MTLCopyAllDevices();
+		NSUInteger i;
+
+		Com_Printf("------------------------------------\n");
+		Com_Printf("Metal devices found:\n");
+		for (i = 0; i < all.count; i++)
+		{
+			qboolean used = all[i].registryID == dev.registryID;
+
+			Com_Printf("%s#%d: %s\n",
+				all.count > 1 && used ? "*  " : "   ",
+				(int)i, all[i].name.UTF8String);
+		}
+		[all release];
+
+		Com_Printf("Using device:\n");
+		Com_Printf("   name: %s\n", dev.name.UTF8String);
+		Com_Printf("   registryID: 0x%lX\n", (unsigned long)dev.registryID);
+		Com_Printf("   architecture: %s\n", dev.architecture.name.UTF8String);
+		Com_Printf("   GPU families: Metal4 %s, Metal3 %s\n",
+			[dev supportsFamily:MTLGPUFamilyMetal4] ? "yes" : "no",
+			[dev supportsFamily:MTLGPUFamilyMetal3] ? "yes" : "no");
+		Com_Printf("   unified memory: %s\n", dev.hasUnifiedMemory ? "yes" : "no");
+		Com_Printf("   recommendedMaxWorkingSetSize: %llu MB\n",
+			(unsigned long long)(dev.recommendedMaxWorkingSetSize / (1024 * 1024)));
+		Com_Printf("   max threads per threadgroup: %llu\n",
+			(unsigned long long)dev.maxThreadsPerThreadgroup.width);
+		Com_Printf("   supported texture sample counts:");
+		for (i = 1; i <= 8; i <<= 1)
+		{
+			if ([dev supportsTextureSampleCount:i])
+			{
+				Com_Printf(" %d", (int)i);
+			}
+		}
+		Com_Printf("\n");
+		Com_Printf("   allocated on device: %llu MB\n",
+			(unsigned long long)(dev.currentAllocatedSize / (1024 * 1024)));
+
+		Com_Printf("Shaders: MTL4Compiler runtime compilation, MSL language version %s\n",
+			st->msl_version != NULL ? st->msl_version : "unknown");
+		Com_Printf("   shader libraries: %d, render pipelines: %d\n",
+			st->library != nil ? 1 : 0, R_CountPipelines());
+
+		Com_Printf("Mode: %dx%d", vid.width, vid.height);
+		if (st->msaa_sample_count > 1)
+		{
+			Com_Printf(" (MSAAx%d)", (int)st->msaa_sample_count);
+		}
+		Com_Printf("\n");
+		Com_Printf("Present: CAMetalLayer, BGRA8, drawables: %d, vsync: %s\n",
+			st->layer != NULL ?
+			    (int)((CAMetalLayer *)st->layer).maximumDrawableCount : 0,
+			RE_IsVSyncActive() ? "on" : "off");
+	}
+}
+
+/*
+==============
+Mtl_Mem_f
+
+W9: per-frame ring-buffer usage of the current frame slot plus the
+device-wide allocation, ref_vk's Vk_Mem_f() parity. Command "mtl_mem".
+==============
+*/
+static void
+Mtl_RingStats(const char *name, size_t used, size_t max, size_t size)
+{
+	Com_Printf("%-12s : %u/%ukB (%.1f%% max: %ukB)\n", name,
+		(unsigned)(used / 1024), (unsigned)(size / 1024),
+		size ? 100.0 * (double)used / (double)size : 0.0,
+		(unsigned)(max / 1024));
+}
+
+void
+Mtl_Mem_f(void)
+{
+	mtlstate_t *st = &mtl_state;
+	static const char *names[6] = {
+		"World vertex", "World lmap", "Uniform",
+		"Dlight", "Showtris", "Alias/sprite"
+	};
+	static const size_t sizes[6] = {
+		WORLD_VERTEX_RING_BYTES, WORLD_LMAP_VERTEX_RING_BYTES,
+		WORLD_UBO_RING_BYTES, DLIGHT_VERTEX_RING_BYTES,
+		SHOWTRIS_VERTEX_RING_BYTES, ALIAS_VERTEX_RING_BYTES
+	};
+	size_t total = 0;
+	int i;
+
+	Com_Printf("\nDynamic ring buffer stats (last frame, 3 slots rotating):\n");
+	for (i = 0; i < 6; i++)
+	{
+		Mtl_RingStats(names[i], st->ring_usage[i], st->ring_usage_max[i],
+			sizes[i]);
+		total += sizes[i];
+	}
+
+	Com_Printf("Rings resident: %.1f MB (3 slots x 6 rings)\n",
+		(double)total * 3 / (1024.0 * 1024.0));
+
+	if (st->device != nil)
+	{
+		Com_Printf("Allocated on device: %llu MB\n",
+			(unsigned long long)(st->device.currentAllocatedSize / (1024 * 1024)));
+	}
 }
 
 /*
@@ -2804,13 +2989,24 @@ RE_EndFrame(void)
 
 	/* Release this slot when the GPU is done with the frame's command
 	   buffer; the CPU gate in RE_BeginFrame polls the flag before
-	   reusing the slot three frames later. */
+	   reusing the slot three frames later. W9: report GPU-side command
+	   buffer errors through Com_Printf so they reach the console and
+	   the terminal log, like ref_vk's error paths. */
 	{
 		int slot = st->frame_slot;
+		unsigned long long frame = (unsigned long long)st->frame_number;
 
 		[st->command_buffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-			(void)cb;
-			mtl_state.slot_busy[slot] = false;
+			@autoreleasepool {
+				NSError *err = [cb error];
+
+				if (err != nil)
+				{
+					Com_Printf("ref_mtl: GPU error in frame %llu command buffer: %s\n",
+						frame, err.localizedDescription.UTF8String);
+				}
+				mtl_state.slot_busy[slot] = false;
+			}
 		}];
 	}
 
@@ -2820,6 +3016,30 @@ RE_EndFrame(void)
 	{
 		[st->drawable present];
 		st->drawable = nil;
+	}
+
+	/* W9: snapshot this frame's ring consumption before the next
+	   RE_BeginFrame resets the slot offsets, so "mtl_mem" can report
+	   real per-frame usage (ref_vk's vk_config.*_buffer_usage). */
+	{
+		size_t used[6] = {
+			st->world_vertex_offset[st->frame_slot],
+			st->world_lmap_vertex_offset[st->frame_slot],
+			st->world_ubo_offset[st->frame_slot],
+			st->dlight_vertex_offset[st->frame_slot],
+			st->showtris_vertex_offset[st->frame_slot],
+			st->alias_vertex_offset[st->frame_slot]
+		};
+		int i;
+
+		for (i = 0; i < 6; i++)
+		{
+			st->ring_usage[i] = used[i];
+			if (used[i] > st->ring_usage_max[i])
+			{
+				st->ring_usage_max[i] = used[i];
+			}
+		}
 	}
 
 	[st->command_buffer commit];
