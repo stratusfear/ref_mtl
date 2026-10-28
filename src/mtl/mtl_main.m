@@ -415,11 +415,11 @@ R_SetupFrame(void)
 
 		if (r_farsee->value)
 		{
-			dist = 4096;
+			dist = 8192;
 		}
 		else
 		{
-			dist = r_newrefdef.width / tan(r_newrefdef.fov_x * M_PI / 360);
+			dist = 4096;
 		}
 
 		Mat_Perspective(r_projection_matrix,
