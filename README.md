@@ -65,7 +65,7 @@ environment variables (they cannot be toggled at runtime):
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
 
-## Current status: W6d (translucent surfaces + skybox parity) — complete
+## Current status: W6e (world pixel-size downscale parity) — complete
 
 - Full 27-slot `refexport_t` ABI implemented and load-tested against a
   freshly built SDL 3 host (`API_VERSION` 8).
@@ -194,8 +194,25 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   paired cool1 sky captures (looking up, yaw 324 / pitch -70): top-200
   row means (212.8, 84.3, 5.6) vk vs (213.7, 81.4, 7.1) mtl, sky-band
   region |diff| 2.1.
-- Feature parity remaining (W6b+): MSAA, pixel-size downscale,
-  `SCR_TileClear` viewport scissor for `viewsize < 100`.
+- **W6e: world pixel-size downscale (`mtl_pixel_size`).** The
+  `vk_pixel_size` port: a `CVAR_ARCHIVE` cvar (default 1) renders the
+  world pass into a 1/divisor viewport of the scene texture; the warp
+  stage (which now also runs whenever the divisor is > 1) restores
+  full size with `uv /= pixelSize` and a clamp that matches vk's
+  unnormalized `S_NEAREST_UNNORMALIZED` lookup exactly (texel =
+  `floor(coord)`, so the lower clamp is 0, not half-texel*divisor);
+  particle point size divides by the divisor in the particle UBO.
+  Fresh paired jail1 pool captures, scene-region best-shift mean
+  |diff|: divisor 2 -> 0.98, divisor 3 -> 1.01-1.13, at or below the
+  divisor-1 noise floor (1.78). Fractional divisors sit slightly
+  above the floor (~2.6 at 1.5) because vk renders at
+  logical-resolution while ref_mtl's scene texture is
+  device-resolution, so fractional block edges land on different
+  sub-pixel grids; the interiors still match.
+- Feature parity remaining (W6b+): MSAA, `SCR_TileClear` viewport
+  scissor for `viewsize < 100` (which also covers the refdef-anchored
+  world viewport/scissor split `vk_pixel_size` uses for
+  `viewsize < 100`).
 
 ### Intentionally not implemented (parity scope cuts)
 
