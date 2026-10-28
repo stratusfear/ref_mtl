@@ -78,6 +78,7 @@ cvar_t		*vid_fullscreen;
 cvar_t		*vid_gamma;
 cvar_t		*viewsize;
 static cvar_t	*mtl_underwater;	// W6b: underwater screen warp (vk_underwater parity)
+static cvar_t	*mtl_postprocess;	// W6c: world postprocess (vk_postprocess parity)
 
 cvar_t		*r_lefthand;
 cvar_t		*r_drawworld;
@@ -182,6 +183,7 @@ R_Register(void)
 	vid_gamma = ri.Cvar_Get("vid_gamma", "1.0", CVAR_ARCHIVE);
 	viewsize = ri.Cvar_Get("viewsize", "100", CVAR_ARCHIVE);
 	mtl_underwater = ri.Cvar_Get("mtl_underwater", "1", CVAR_ARCHIVE);
+	mtl_postprocess = ri.Cvar_Get("mtl_postprocess", "1", CVAR_ARCHIVE);
 }
 
 /*
@@ -719,6 +721,21 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->warp_texture release];
 		st->warp_texture = nil;
+	}
+	if (st->pipeline_postprocess != nil)
+	{
+		[st->pipeline_postprocess release];
+		st->pipeline_postprocess = nil;
+	}
+	if (st->post_ubo != nil)
+	{
+		[st->post_ubo release];
+		st->post_ubo = nil;
+	}
+	if (st->post_texture != nil)
+	{
+		[st->post_texture release];
+		st->post_texture = nil;
 	}
 	st->ui_target = nil;
 	if (st->pipeline_ui_tex != nil)
@@ -1574,6 +1591,44 @@ R_InitShaders(void)
 		}
 	}
 
+	/* W6c: world postprocess pipeline (ref_vk postprocess.frag parity).
+	   Reuses the warp pass full-screen corners (warp_vertex); samples the
+	   warp stage output and writes post_texture. Plus its 64-byte
+	   fragment UBO. */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"warp_vertex"];
+		pd.fragmentFunction = [st->library newFunctionWithName:@"postprocess_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat2;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(uicolorvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = 1;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+
+		st->pipeline_postprocess = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (st->pipeline_postprocess == nil)
+		{
+			Com_Printf("ref_mtl: postprocess pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		st->post_ubo = [st->device newBufferWithLength:sizeof(mtl_post_ubo_t)
+			options:MTLResourceStorageModeShared];
+		if (st->post_ubo == nil)
+		{
+			Com_Printf("ref_mtl: failed to create postprocess UBO\n");
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
 	Com_Printf("ref_mtl: W3 shaders compiled (plain/lmap/sky/dlight/flash/showtris/alias pipelines)\n");
 
 	return true;
@@ -1948,6 +2003,13 @@ RE_BeginFrame(float camera_separation)
 		}
 		st->warp_texture = [st->device newTextureWithDescriptor:sd];
 
+		/* W6c: the world postprocess pass target (same format/usage). */
+		if (st->post_texture != nil)
+		{
+			[st->post_texture release];
+		}
+		st->post_texture = [st->device newTextureWithDescriptor:sd];
+
 		st->depth_width = (int)drawable.texture.width;
 		st->depth_height = (int)drawable.texture.height;
 		st->scene_width = (int)drawable.texture.width;
@@ -1978,9 +2040,11 @@ into warp_texture; the UI pass attaches and the present pass samples the
 latter via st->ui_target.
 
 Skipped when the world pass did not run (NOWORLDMODEL menus / culling
-skip) and when there is no warp work at all (not submerged; pixel-size
-downscaling is not ported yet so pixelSize is always 1): the full pass
-would be a pixel-identical copy, skipping it is a visual no-op.
+skip). The warp stage additionally skips when there is no warp work at
+all (not submerged; pixel-size downscaling is not ported yet so
+pixelSize is always 1): the full pass would be a pixel-identical copy,
+skipping it is a visual no-op. The postprocess stage instead runs
+whenever the world produced content, like ref_vk.
 ==============
 */
 static void
@@ -2005,19 +2069,13 @@ MTL_RunWarpPass(void)
 
 	underwaterTime = (mtl_underwater->value > 0 &&
 		(r_newrefdef.rdflags & RDF_UNDERWATER)) ? r_newrefdef.time : 0.f;
-	if (underwaterTime <= 0.f)
-	{
-		return;
-	}
 
-	if (!st->frame_active || st->command_buffer == nil ||
-	    st->scene_texture == nil || st->warp_texture == nil ||
-	    st->pipeline_warp == nil || st->warp_ubo == nil ||
-	    st->ui_color_vertex_buffer == nil)
-	{
-		return;
-	}
-
+	/* Warp stage: only when there is distortion work (see above). */
+	if (underwaterTime > 0.f &&
+	    st->frame_active && st->command_buffer != nil &&
+	    st->scene_texture != nil && st->warp_texture != nil &&
+	    st->pipeline_warp != nil && st->warp_ubo != nil &&
+	    st->ui_color_vertex_buffer != nil)
 	{
 		mtl_warp_ubo_t *ubo = (mtl_warp_ubo_t *)[st->warp_ubo contents];
 		/* refdef coordinates are in logical (vid.width/height) space; the
@@ -2057,9 +2115,53 @@ MTL_RunWarpPass(void)
 		[enc drawPrimitives:MTLPrimitiveTypeTriangle
 			vertexStart:0 vertexCount:6];
 		[enc endEncoding];
+
+		st->ui_target = st->warp_texture;
 	}
 
-	st->ui_target = st->warp_texture;
+	/* Postprocess stage (ref_vk postprocess.frag parity): samples the
+	   warp stage's output (or the plain scene when the warp stage was
+	   skipped) and writes post_texture with pow(rgb * 1.5,
+	   2.1 - vid_gamma). This is the world gamma source for parity: the
+	   lightmapped world fragment (world_lmap_fragment, like vk's
+	   polygon_lmap.frag) applies no pow() itself, and ref_vk restores it
+	   here, over the whole world image. The shaders that do pow
+	   themselves (plain world, models, sprites, particles, UI) get the
+	   same second pow on the world image in both renderers. */
+	if (st->frame_active && st->command_buffer != nil &&
+	    st->pipeline_postprocess != nil && st->post_ubo != nil &&
+	    st->post_texture != nil && st->ui_color_vertex_buffer != nil)
+	{
+		mtl_post_ubo_t *ubo = (mtl_post_ubo_t *)[st->post_ubo contents];
+		MTLRenderPassDescriptor *pd = [MTLRenderPassDescriptor renderPassDescriptor];
+		id<MTLRenderCommandEncoder> enc;
+
+		ubo->postprocess = mtl_postprocess->value > 0 ? 1.0f : 0.0f;
+		ubo->gamma = 2.1f - vid_gamma->value;
+
+		pd.colorAttachments[0].texture = st->post_texture;
+		pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+		pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+		enc = [st->command_buffer renderCommandEncoderWithDescriptor:pd];
+		if (enc == nil)
+		{
+			Com_DPrintf("ref_mtl: failed to open postprocess encoder\n");
+			return;
+		}
+
+		[enc setViewport:(MTLViewport){0.0, 0.0,
+		    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
+		[enc setRenderPipelineState:st->pipeline_postprocess];
+		[enc setVertexBuffer:st->ui_color_vertex_buffer offset:0 atIndex:0];
+		[enc setFragmentBuffer:st->post_ubo offset:0 atIndex:0];
+		[enc setFragmentTexture:st->ui_target atIndex:0];
+		[enc drawPrimitives:MTLPrimitiveTypeTriangle
+			vertexStart:0 vertexCount:6];
+		[enc endEncoding];
+
+		st->ui_target = st->post_texture;
+	}
 }
 
 /*

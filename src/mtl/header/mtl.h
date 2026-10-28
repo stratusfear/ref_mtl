@@ -147,6 +147,15 @@ typedef struct
 	float pad[7];
 } mtl_warp_ubo_t;				// 64 bytes
 
+/* W6c: fragment UBO for the world postprocess pass; mirrors post_ubo_t
+   in shaders/world.msl (padded to 64 bytes). */
+typedef struct
+{
+	float postprocess;			// @0, mtl_postprocess flag, 0 = copy
+	float gamma;				// @4, 2.1 - vid_gamma
+	float pad[14];
+} mtl_post_ubo_t;				// 64 bytes
+
 typedef struct
 {
 	float position[3];
@@ -616,7 +625,14 @@ typedef struct mtlstate_s
 	id<MTLTexture>			warp_texture;
 	id<MTLRenderPipelineState>		pipeline_warp;	// warp_vertex + warp_fragment
 	id<MTLBuffer>			warp_ubo;	// mtl_warp_ubo_t, written per frame
-	id<MTLTexture>			ui_target;	// warp_texture or scene_texture (not owned)
+	/* W6c: world postprocess pass (ref_vk postprocess.frag parity). Runs
+	   after the warp stage, unconditionally while a world pass produced
+	   content: samples ui_target (warped or plain scene), writes
+	   post_texture; gamma + 1.5 intensity bump for the whole world image. */
+	id<MTLTexture>			post_texture;
+	id<MTLRenderPipelineState>		pipeline_postprocess;	// warp_vertex + postprocess_fragment
+	id<MTLBuffer>			post_ubo;	// mtl_post_ubo_t, written per frame
+	id<MTLTexture>			ui_target;	// post/warp/scene texture (not owned)
 	qboolean			world_rendered;	// world pass ran this frame
 	qboolean			warp_done;		// warp pass decided this frame
 

@@ -571,3 +571,34 @@ warp_fragment(warp_out in [[stage_in]],
     uv = clamp(uv, lo, hi);
     return scene.sample(present_sampler, uv);
 }
+
+// ---------------------------------------------------------------------------
+// W6c: world postprocess, the ref_vk postprocess.frag port. Runs right
+// after the warp pass (same full-screen quad, warp_vertex reused) and
+// before the UI pass, sampling whatever ui_target points at. ref_vk's
+// lightmapped world fragment (polygon_lmap.frag, like our
+// world_lmap_fragment) applies no pow() itself - this pass is where the
+// reference renderer gets its world gamma and the 1.5 color-intensity
+// bump. The mtl_postprocess 0 case is the shader-side passthrough branch
+// (vk still draws the pipeline then; skipping the pass there would be a
+// pixel-identical no-op).
+// ---------------------------------------------------------------------------
+
+struct post_ubo_t
+{
+    float    postprocess;   // @0  (0 = passthrough copy)
+    float    gamma;         // @4  (2.1 - vid_gamma)
+};
+
+fragment float4
+postprocess_fragment(warp_out in [[stage_in]],
+                     constant post_ubo_t &ubo [[buffer(0)]],
+                     texture2d<float, access::sample> scene [[texture(0)]])
+{
+    float4 c = scene.sample(present_sampler, in.uv);
+    if (ubo.postprocess > 0.0)
+    {
+        return float4(pow(c.rgb * 1.5, float3(ubo.gamma)), 1.0);
+    }
+    return c;
+}
