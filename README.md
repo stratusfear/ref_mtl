@@ -65,7 +65,7 @@ environment variables (they cannot be toggled at runtime):
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
 
-## Current status: W6c (world postprocess pass) — complete
+## Current status: W6d (translucent surfaces + skybox parity) — complete
 
 - Full 27-slot `refexport_t` ABI implemented and load-tested against a
   freshly built SDL 3 host (`API_VERSION` 8).
@@ -174,6 +174,26 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   passthrough branch). This closed the brightness gap: fresh paired
   jail1 pool captures are now pixel-parity (center 85/54/33 both,
   full-frame mean diff ~1.5 = frame-to-frame noise).
+- **W6d: translucent-surface (SURF_TRANS33/66) parity.** Two gaps: the
+  world pipeline chain (`pipeline_plain`, the SURF_TRANS33/66 glass and
+  liquid workhorse) was missing `blendingEnabled`, and `RE_RenderFrame`
+  never called `R_DrawAlphaSurfaces()` — `R_RecursiveWorldNode()` only
+  collects alpha surfaces onto `r_alpha_surfaces`; the chain has to be
+  unwound back-to-front (the BSP walk is front-to-back), matching
+  `ref_vk`'s call site between `R_DrawParticles()` and
+  `R_RenderFlash()`. Fresh paired cool1 water-viewpoint captures:
+  scene-region mean |diff| 5.2, every channel within a couple of units.
+- **W6d: skybox parity (`R_DrawSkyBox`).** The sky quads sit at
+  MakeSkyVec's fixed 2300-unit distance. ref_mtl's perspective far
+  plane was `width / tan(fov_x)` (~640 at 640 px, fov 90), so the quads
+  fell beyond far and Metal clipped them — black sky. ref_vk's far
+  plane is a constant 4096 (8192 with `r_farsee`); ref_mtl now uses the
+  same values. Sky depth needs no special state: at 2300 the quads land
+  at depth ~0.999, under the 1.0 clear, so the plain world Less
+  compare passes them (exactly like ref_vk). Fresh
+  paired cool1 sky captures (looking up, yaw 324 / pitch -70): top-200
+  row means (212.8, 84.3, 5.6) vk vs (213.7, 81.4, 7.1) mtl, sky-band
+  region |diff| 2.1.
 - Feature parity remaining (W6b+): MSAA, pixel-size downscale,
   `SCR_TileClear` viewport scissor for `viewsize < 100`.
 
