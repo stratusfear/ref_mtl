@@ -65,7 +65,7 @@ environment variables (they cannot be toggled at runtime):
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
 
-## Current status: W6a (offscreen scene RT + present pass) — complete
+## Current status: W6b (underwater world-warp pass) — complete
 
 - Full 27-slot `refexport_t` ABI implemented and load-tested against a
   freshly built SDL 3 host (`API_VERSION` 8).
@@ -148,10 +148,25 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   scene texture to a shared staging buffer, converts BGRA->RGBA (Metal
   targets are top-row-first, the host's stbi writers want top-down RGBA)
   and hands it to `ri.Vid_WriteScreenshot` at full drawable resolution.
+- **W6b: underwater world warp (`mtl_underwater`).** ref_vk's
+  `RP_WORLD_WARP` parity: a full-screen pass samples `scene_texture`
+  through the ported `world_warp.frag` math and writes `warp_texture`
+  while the view is submerged; the UI pass, the present pass and the
+  screenshot blit follow `st->ui_target`. The pass runs from
+  `MTL_BeginUIPass` (the first 2D draw, like ref_vk's `R_SetVulkan2D`
+  hook — the host never calls `RE_EndWorldRenderpass` on normal
+  gameplay frames) and from `RE_EndWorldRenderpass` on the menu/loading
+  paths, once per frame.
+- **Blend-state fix (found via the warp):** blended pipelines set Metal
+  blend factors but never `blendingEnabled`, so they silently stayed
+  opaque (`One, Zero`) — the view-flash quad replaced the scene instead
+  of tinting it (underwater "black world" symptom). Seven pipelines now
+  match ref_vk's `blendEnable = VK_TRUE` set (dlight, flash, translucent
+  alias, sprite, both particle paths, UI color-rect); ref_vk's UI
+  tex/tint pipelines default to blending off and ours match.
 - Feature parity remaining (W6b+): MSAA, pixel-size downscale,
-  underwater warp, `SCR_TileClear` viewport scissor for
-  `viewsize < 100`, and the remaining gamma gaps
-  (`world_lmap_fragment` vs `ref_vk`).
+  `SCR_TileClear` viewport scissor for `viewsize < 100`, and the
+  remaining gamma gaps (`world_lmap_fragment` vs `ref_vk`).
 
 ### Intentionally not implemented (parity scope cuts)
 
