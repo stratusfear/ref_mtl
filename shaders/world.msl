@@ -26,6 +26,8 @@ struct WorldUbo
 };
 
 // MSL 3.x removed the coord argument from the sampler constructor.
+// W8: the UI tex/tint fragments no longer use world_sampler; they take a
+// per-draw [[sampler(0)]] argument bound from ui_sampler_{nearest,linear}.
 constexpr sampler world_sampler(address::repeat, filter::linear, mip_filter::linear);
 constexpr sampler world_lmap_sampler(address::clamp_to_edge, filter::linear);
 constexpr sampler present_sampler(address::clamp_to_edge, filter::nearest);
@@ -439,9 +441,10 @@ ui_color_vertex(ui_color_in in [[stage_in]],
 fragment float4
 ui_tex_fragment(ui_out in [[stage_in]],
                 texture2d<float, access::sample> tex [[texture(0)]],
-                constant UiUbo *ubo [[buffer(0)]])
+                constant UiUbo *ubo [[buffer(0)]],
+                sampler ui_sampler [[sampler(0)]])
 {
-    float4 c = tex.sample(world_sampler, in.uv) * in.color;
+    float4 c = tex.sample(ui_sampler, in.uv) * in.color;
     if (c.a < 0.666)
         discard_fragment();
     c.rgb = pow(c.rgb, float3(ubo->gamma));
@@ -451,9 +454,10 @@ ui_tex_fragment(ui_out in [[stage_in]],
 fragment float4
 ui_tint_fragment(ui_out in [[stage_in]],
                  texture2d<float, access::sample> tex [[texture(0)]],
-                 constant UiUbo *ubo [[buffer(0)]])
+                 constant UiUbo *ubo [[buffer(0)]],
+                 sampler ui_sampler [[sampler(0)]])
 {
-    float4 c = tex.sample(world_sampler, in.uv) * in.color;
+    float4 c = tex.sample(ui_sampler, in.uv) * in.color;
     if (c.a < 0.666)
         discard_fragment();
     c.rgb = pow(c.rgb, float3(ubo->gamma)) * ubo->color.rgb;

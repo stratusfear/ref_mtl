@@ -595,10 +595,26 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 	byte		*texBuffer = NULL;
 	int		upload_width, upload_height;
 	uint32_t	mipcount = 1;
+	const char	*nolerplist = r_nolerp_list->string;
+	const char	*lerplist = r_lerp_list->string;
 
-	/* W3.0: the r_nolerp_list / r_lerp_list filtering was dropped with the
-	   dead utils block, so no lerp scaling is ever applied. */
-	qboolean	nolerp = true;
+	/* W8: same per-texture filtering decision as ref_vk's Vk_LoadPic.
+	   Textures on r_nolerp_list (by default the conchars/ch* font pics)
+	   get the nearest UI sampler at draw time instead of the linear one,
+	   which is what keeps HUD and console text hard-edged at non-integer
+	   display scales. */
+	qboolean	nolerp = false;
+
+	if (r_2D_unfiltered->value && type == it_pic)
+	{
+		// if r_2D_unfiltered is true(ish), nolerp should usually be true,
+		// *unless* the texture is on the r_lerp_list
+		nolerp = (lerplist == NULL) || Utils_FilenameFiltered(name, lerplist, ' ');
+	}
+	else if (nolerplist != NULL)
+	{
+		nolerp = Utils_FilenameFiltered(name, nolerplist, ' ');
+	}
 
 	{
 		int		i;
@@ -634,6 +650,7 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 	image->registration_sequence = registration_sequence;
 	image->mtl_texture = nil;
 	image->type = type;
+	image->nolerp = nolerp;
 	if (realwidth && realheight)
 	{
 		image->width = realwidth;

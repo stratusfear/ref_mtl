@@ -775,6 +775,16 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_ui_color release];
 		st->pipeline_ui_color = nil;
 	}
+	if (st->ui_sampler_nearest != nil)
+	{
+		[st->ui_sampler_nearest release];
+		st->ui_sampler_nearest = nil;
+	}
+	if (st->ui_sampler_linear != nil)
+	{
+		[st->ui_sampler_linear release];
+		st->ui_sampler_linear = nil;
+	}
 	if (st->depth_state_none != nil)
 	{
 		[st->depth_state_none release];
@@ -1786,6 +1796,36 @@ R_InitShaders(void)
 			return false;
 		}
 
+	}
+
+	/* W8: the two UI sampling states. Nearest (no mip) for nolerp-listed
+	   textures (conchars/ch* fonts by default), linear+mip for everything
+	   else, matching ref_vk's S_NEAREST vs vk_current_sampler split. */
+	{
+		MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+
+		sd.minFilter = MTLSamplerMinMagFilterNearest;
+		sd.magFilter = MTLSamplerMinMagFilterNearest;
+		sd.mipFilter = MTLSamplerMipFilterNearest;
+		sd.normalizedCoordinates = YES;
+		st->ui_sampler_nearest = [st->device newSamplerStateWithDescriptor:sd];
+		if (st->ui_sampler_nearest == nil)
+		{
+			Com_Printf("ref_mtl: ui nearest sampler creation failed\n");
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		sd.minFilter = MTLSamplerMinMagFilterLinear;
+		sd.magFilter = MTLSamplerMinMagFilterLinear;
+		sd.mipFilter = MTLSamplerMipFilterLinear;
+		st->ui_sampler_linear = [st->device newSamplerStateWithDescriptor:sd];
+		if (st->ui_sampler_linear == nil)
+		{
+			Com_Printf("ref_mtl: ui linear sampler creation failed\n");
+			R_ReleaseShaders(st);
+			return false;
+		}
 	}
 
 	/* W5d: 2D UI (RE_Draw_*). Three pipelines over one static full-screen
@@ -3528,6 +3568,8 @@ MTL_DrawUiTex(image_t *image, const ui_ubo_t *ubo_in, qboolean tint)
 	[st->ui_encoder setVertexBuffer:st->ui_tex_vertex_buffer offset:0 atIndex:0];
 	[st->ui_encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 	[st->ui_encoder setFragmentTexture:image->mtl_texture atIndex:0];
+	[st->ui_encoder setFragmentSamplerState:(image->nolerp ? st->ui_sampler_nearest
+	                                               : st->ui_sampler_linear) atIndex:0];
 	[st->ui_encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
 	[st->ui_encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }

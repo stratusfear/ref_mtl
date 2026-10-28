@@ -74,6 +74,10 @@ typedef struct image_s
 	int registration_sequence;          /* 0 = free */
 	struct msurface_s *texturechain;    /* for sort-by-texture world drawing */
 	id<MTLTexture> mtl_texture;         /* Metal 4 texture (nil until uploaded) */
+	qboolean nolerp;                    /* W8: sampled with the nearest UI
+	                                       sampler, per r_nolerp_list /
+	                                       r_lerp_list / r_2D_unfiltered
+	                                       (mirrors vk_image.c) */
 } image_t;
 
 #define MAX_MTLTEXTURES	1024
@@ -557,6 +561,14 @@ typedef struct mtlstate_s
 	id<MTLRenderPipelineState>	pipeline_ui_color;	// ui_color_vertex + ui_color_fragment
 	id<MTLBuffer>			ui_tex_vertex_buffer;	// static 6-vertex triangle list (16B each)
 	id<MTLBuffer>			ui_color_vertex_buffer;	// static 6-vertex triangle list (8B each)
+
+	// W8: per-draw UI sampling, mirroring ref_vk's per-texture sampler
+	// choice (nolerp textures -> nearest, everything else -> linear with
+	// mip). Bound onto the ui tex/tint shaders' [[sampler(0)]] argument;
+	// the choice comes from image_t.nolerp, set at load time from
+	// r_nolerp_list / r_lerp_list / r_2D_unfiltered.
+	id<MTLSamplerState>		ui_sampler_nearest;
+	id<MTLSamplerState>		ui_sampler_linear;
 
 	// W5d: UI render pass (color only, no depth), created in
 	// RE_InitContext and reused every frame; the encoder is created
