@@ -123,7 +123,8 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   system-level corruption later isolated as Bug C; `framebufferOnly=NO`
   was only a rate-reducing workaround. With the classic-queue port,
   `framebufferOnly=YES` is back and the corruption is gone.
-- **Bug C (mitigated upstream: Apple feedback filed): intermittent
+- **Bug C (mitigated; Apple Feedback drafted in `tools/bugc_repro/
+  FEEDBACK_DRAFT.md`, not filed): intermittent
   constant-(234,51,247) display corruption.** With an MTL4 command
   queue executing render passes whose render target is an app-created
   texture (offscreen scene RT + present copy, or the direct-to-drawable
@@ -283,6 +284,19 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   textures on resize, MSAA color load action preserves UI already in
   the scene, larger lightmap temp buffer, alignment cast fix,
   MAXLIGHTMAPS style guards).
+- Third review round H1-H3: H1 fixed (with `mtl_pixel_size` >1 and
+  viewsize <100 the warp pass's 1:1 passthrough composited raw
+  down-scaled world texels into the left/top TileClear border bands;
+  the pre-world tile save now also feeds a border restore after the
+  warp/postprocess stages, MSAA and non-MSAA alike, A/B band MAD
+  ~8-10 -> unaffected-border baseline ~6); H2 accepted as a known limitation: the
+  static lightmap `replaceRegion:` rebuild on return to base lighting
+  can race in-flight frames (see G4), showing at most a one-frame
+  flicker at the transition - per-slot staging for 256 full static
+  textures was judged not worth hiding that; H3 tooling: the
+  `fix_verify.sh` smoke now maps `jail1` (the old `dm1` was absent
+  from the installed paks, making the map-content check inert) and
+  fails on `Can't find`.
 
 ### Intentionally not implemented (parity scope cuts)
 

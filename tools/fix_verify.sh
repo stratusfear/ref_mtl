@@ -16,11 +16,11 @@ mv "$ROOT/yquake2/build-sdl3/release/ref_mtl.dylib.tmp" \
 echo "== build yquake2 =="
 ( cd "$ROOT/yquake2" && make -C build-sdl3 >/dev/null )
 
-echo "== smoke run: 20s of dm1 under mtl_w0_test =="
+echo "== smoke run: 20s of jail1 under mtl_w0_test =="
 LOG=/tmp/fix_verify_game.log
 caffeinate -i -w $$ &
 "$ROOT/yquake2/build-sdl3/release/quake2" -cfgdir mtl_w0_test \
-  +map dm1 +timedemo demo1 >$LOG 2>&1 &
+  +map jail1 >$LOG 2>&1 &
 GPID=$!
 sleep 20
 kill $GPID 2>/dev/null || true
@@ -28,8 +28,11 @@ if [ ! -s $LOG ]; then
   echo "FAIL: game log is empty, game did not start"
   exit 1
 fi
-if grep -qiE "segmentation|signal [0-9]|ref_mtl:.*fail|failed to create|couldn't load" $LOG; then
-  echo "FAIL: errors in game log:"; grep -iE "segmentation|signal [0-9]|ref_mtl:.*fail|failed to create|couldn't load" $LOG
+# H3: the old dm1 was absent from the installed paks, so the map load
+# silently fell back to the menu and the content part of the smoke was
+# inert; map a real bundled map and fail on a missing map.
+if grep -qiE "segmentation|signal [0-9]|ref_mtl:.*fail|failed to create|couldn't load|Can't find" $LOG; then
+  echo "FAIL: errors in game log:"; grep -iE "segmentation|signal [0-9]|ref_mtl:.*fail|failed to create|couldn't load|Can't find" $LOG
   exit 1
 fi
 grep -E "ref_mtl" $LOG | tail -3
