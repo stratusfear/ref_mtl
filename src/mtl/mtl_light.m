@@ -43,13 +43,14 @@ MTL_EmitViewProjUbo(size_t slot)
 	dlight_ubo_t *ubo;
 	size_t off;
 
-	if (st->world_ubo_offset[slot] + sizeof(dlight_ubo_t) > WORLD_UBO_RING_BYTES)
+	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(dlight_ubo_t)) > WORLD_UBO_RING_BYTES)
 		return SIZE_MAX;
 
 	off = st->world_ubo_offset[slot];
 	ubo = (dlight_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
-	st->world_ubo_offset[slot] += sizeof(dlight_ubo_t);
+	/* F4: advance keeps the next ring offset 16-byte aligned */
+	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(dlight_ubo_t));
 
 	return off;
 }

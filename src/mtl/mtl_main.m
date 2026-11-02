@@ -3157,7 +3157,7 @@ MTL_EmitParticlePointUbo(size_t slot)
 	particle_point_ubo_t *ubo;
 	size_t ubo_off;
 
-	if (st->world_ubo_offset[slot] + sizeof(particle_point_ubo_t) > WORLD_UBO_RING_BYTES)
+	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(particle_point_ubo_t)) > WORLD_UBO_RING_BYTES)
 		return SIZE_MAX;
 
 	ubo_off = st->world_ubo_offset[slot];
@@ -3173,7 +3173,8 @@ MTL_EmitParticlePointUbo(size_t slot)
 	ubo->att_a = mtl_particle_att_a->value;
 	ubo->att_b = mtl_particle_att_b->value;
 	ubo->att_c = mtl_particle_att_c->value;
-	st->world_ubo_offset[slot] += sizeof(particle_point_ubo_t);
+	/* F4: advance keeps the next ring offset 16-byte aligned */
+	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(particle_point_ubo_t));
 
 	return ubo_off;
 }
@@ -3745,7 +3746,7 @@ MTL_EmitUiUbo(size_t slot, const ui_ubo_t *ubo)
 	ui_ubo_t *dst;
 	size_t ubo_off;
 
-	if (st->world_ubo_offset[slot] + sizeof(ui_ubo_t) > WORLD_UBO_RING_BYTES)
+	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(ui_ubo_t)) > WORLD_UBO_RING_BYTES)
 	{
 		return SIZE_MAX;
 	}
@@ -3753,7 +3754,8 @@ MTL_EmitUiUbo(size_t slot, const ui_ubo_t *ubo)
 	ubo_off = st->world_ubo_offset[slot];
 	dst = (ui_ubo_t *)((byte *)st->world_ubo[slot].contents + ubo_off);
 	memcpy(dst, ubo, sizeof(ui_ubo_t));
-	st->world_ubo_offset[slot] += sizeof(ui_ubo_t);
+	/* F4: advance keeps the next ring offset 16-byte aligned */
+	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(ui_ubo_t));
 
 	return ubo_off;
 }

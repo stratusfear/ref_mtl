@@ -246,6 +246,13 @@ typedef struct
 #define WORLD_VERTEX_RING_BYTES		(4 * 1024 * 1024)
 #define WORLD_LMAP_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 #define WORLD_UBO_RING_BYTES		(512 * 1024)
+
+/* F4: the offset given to set*Buffer:offset:atIndex: for a struct
+   argument must be a multiple of 16 bytes; MTL_DEBUG_LAYER enforces
+   this with a hard abort. The world UBO ring carries records of
+   52-152 bytes, so every ring advance is rounded up with this macro to
+   keep the next record's offset aligned. */
+#define MTL_UBO_ALIGN(x)			((size_t)(((x) + 15u) & ~15u))
 #define DLIGHT_VERTEX_RING_BYTES	(256 * 1024)
 #define SHOWTRIS_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 #define ALIAS_VERTEX_RING_BYTES		(4 * 1024 * 1024)

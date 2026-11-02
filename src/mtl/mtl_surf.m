@@ -1248,7 +1248,7 @@ MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 	world_ubo_t *ubo;
 	size_t off;
 
-	if (st->world_ubo_offset[slot] + sizeof(world_ubo_t) > WORLD_UBO_RING_BYTES)
+	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(world_ubo_t)) > WORLD_UBO_RING_BYTES)
 		return SIZE_MAX;
 
 	off = st->world_ubo_offset[slot];
@@ -1258,7 +1258,8 @@ MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 	memcpy(ubo->color, color, sizeof(float) * 4);
 	ubo->gamma = 2.1f - vid_gamma->value;
 	ubo->viewLightmaps = r_lightmap->value ? 1.f : 0.f;
-	st->world_ubo_offset[slot] += sizeof(world_ubo_t);
+	/* F4: advance keeps the next ring offset 16-byte aligned */
+	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(world_ubo_t));
 
 	return off;
 }
