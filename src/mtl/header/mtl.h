@@ -686,14 +686,14 @@ typedef struct mtlstate_s
 	   when there is no warp work to do, which is a visual no-op. */
 	id<MTLTexture>			warp_texture;
 	id<MTLRenderPipelineState>		pipeline_warp;	// warp_vertex + warp_fragment
-	id<MTLBuffer>			warp_ubo;	// mtl_warp_ubo_t, written per frame
+	/* G3: the former warp_ubo / post_ubo single-slot buffers are gone;
+	   the pass parameters travel inline via setFragmentBytes. */
 	/* W6c: world postprocess pass (ref_vk postprocess.frag parity). Runs
 	   after the warp stage, unconditionally while a world pass produced
 	   content: samples ui_target (warped or plain scene), writes
 	   post_texture; gamma + 1.5 intensity bump for the whole world image. */
 	id<MTLTexture>			post_texture;
 	id<MTLRenderPipelineState>		pipeline_postprocess;	// warp_vertex + postprocess_fragment
-	id<MTLBuffer>			post_ubo;	// mtl_post_ubo_t, written per frame
 	id<MTLTexture>			ui_target;	// post/warp/scene texture (not owned)
 	qboolean			world_rendered;	// world pass ran this frame
 	qboolean			warp_done;		// warp pass decided this frame

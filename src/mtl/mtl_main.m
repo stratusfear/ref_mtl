@@ -750,11 +750,6 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_warp release];
 		st->pipeline_warp = nil;
 	}
-	if (st->warp_ubo != nil)
-	{
-		[st->warp_ubo release];
-		st->warp_ubo = nil;
-	}
 	if (st->warp_texture != nil)
 	{
 		[st->warp_texture release];
@@ -764,11 +759,6 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->pipeline_postprocess release];
 		st->pipeline_postprocess = nil;
-	}
-	if (st->post_ubo != nil)
-	{
-		[st->post_ubo release];
-		st->post_ubo = nil;
 	}
 	if (st->post_texture != nil)
 	{
@@ -2024,15 +2014,9 @@ R_InitShaders(void)
 			R_ReleaseShaders(st);
 			return false;
 		}
-
-		st->warp_ubo = [st->device newBufferWithLength:sizeof(mtl_warp_ubo_t)
-			options:MTLResourceStorageModeShared];
-		if (st->warp_ubo == nil)
-		{
-			Com_Printf("ref_mtl: failed to create warp UBO\n");
-			R_ReleaseShaders(st);
-			return false;
-		}
+		/* G3: warp parameters now travel as inline setFragmentBytes
+		   data; the single shared warp_ubo it used to bind raced with
+		   in-flight command buffers, so it is gone. */
 	}
 
 	/* W6c: world postprocess pipeline (ref_vk postprocess.frag parity).
@@ -2066,15 +2050,7 @@ R_InitShaders(void)
 			R_ReleaseShaders(st);
 			return false;
 		}
-
-		st->post_ubo = [st->device newBufferWithLength:sizeof(mtl_post_ubo_t)
-			options:MTLResourceStorageModeShared];
-		if (st->post_ubo == nil)
-		{
-			Com_Printf("ref_mtl: failed to create postprocess UBO\n");
-			R_ReleaseShaders(st);
-			return false;
-		}
+		/* G3: see the warp pass, the postprocess UBO is inline too */
 	}
 
 	Com_DPrintf("ref_mtl: shaders compiled (see 'mtl_strings' for the pipeline list)\n");
@@ -2748,10 +2724,16 @@ MTL_RunWarpPass(void)
 	if ((underwaterTime > 0.f || divisor > 1.f) &&
 	    st->frame_active && st->command_buffer != nil &&
 	    st->scene_texture != nil && st->warp_texture != nil &&
-	    st->pipeline_warp != nil && st->warp_ubo != nil &&
+	    st->pipeline_warp != nil &&
 	    st->ui_color_vertex_buffer != nil)
 	{
-		mtl_warp_ubo_t *ubo = (mtl_warp_ubo_t *)[st->warp_ubo contents];
+		/* G3: the pass parameters are copied into this command buffer
+		   at encode time (setFragmentBytes), like ref_vk's push
+		   constants. A single shared warp_ubo rewritten in place every
+		   frame raced with the 1-2 older command buffers still in
+		   flight (wrong underwater phase, one-frame viewsize /
+		   pixel_size glitches). */
+		mtl_warp_ubo_t ubo;
 		/* refdef coordinates are in logical (vid.width/height) space; the
 		   pass works in device pixels. */
 		const float scaleX = (float)st->scene_width / (float)vid.width;
@@ -2759,15 +2741,15 @@ MTL_RunWarpPass(void)
 		MTLRenderPassDescriptor *pd = [MTLRenderPassDescriptor renderPassDescriptor];
 		id<MTLRenderCommandEncoder> enc;
 
-		ubo->time = underwaterTime;
-		ubo->scale = viewsize->value / 100.0f;
-		ubo->scrWidth = (float)st->scene_width;
-		ubo->scrHeight = (float)st->scene_height;
-		ubo->pixelSize = divisor;
-		ubo->refdefX = (float)r_newrefdef.x * scaleX;
-		ubo->refdefY = (float)r_newrefdef.y * scaleY;
-		ubo->refdefW = (float)r_newrefdef.width * scaleX;
-		ubo->refdefH = (float)r_newrefdef.height * scaleY;
+		ubo.time = underwaterTime;
+		ubo.scale = viewsize->value / 100.0f;
+		ubo.scrWidth = (float)st->scene_width;
+		ubo.scrHeight = (float)st->scene_height;
+		ubo.pixelSize = divisor;
+		ubo.refdefX = (float)r_newrefdef.x * scaleX;
+		ubo.refdefY = (float)r_newrefdef.y * scaleY;
+		ubo.refdefW = (float)r_newrefdef.width * scaleX;
+		ubo.refdefH = (float)r_newrefdef.height * scaleY;
 
 		pd.colorAttachments[0].texture = st->warp_texture;
 		pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -2784,7 +2766,7 @@ MTL_RunWarpPass(void)
 		    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
 		[enc setRenderPipelineState:st->pipeline_warp];
 		[enc setVertexBuffer:st->ui_color_vertex_buffer offset:0 atIndex:0];
-		[enc setFragmentBuffer:st->warp_ubo offset:0 atIndex:0];
+		[enc setFragmentBytes:&ubo length:sizeof(ubo) atIndex:0];
 		[enc setFragmentTexture:st->scene_texture atIndex:0];
 		[enc drawPrimitives:MTLPrimitiveTypeTriangle
 			vertexStart:0 vertexCount:6];
@@ -2803,15 +2785,18 @@ MTL_RunWarpPass(void)
 	   themselves (plain world, models, sprites, particles, UI) get the
 	   same second pow on the world image in both renderers. */
 	if (st->frame_active && st->command_buffer != nil &&
-	    st->pipeline_postprocess != nil && st->post_ubo != nil &&
+	    st->pipeline_postprocess != nil &&
 	    st->post_texture != nil && st->ui_color_vertex_buffer != nil)
 	{
-		mtl_post_ubo_t *ubo = (mtl_post_ubo_t *)[st->post_ubo contents];
+		/* G3: see the warp pass above, same fix: the single shared
+		   post_ubo let in-flight frames read the current frame's
+		   gamma/postprocess values. */
+		mtl_post_ubo_t ubo;
 		MTLRenderPassDescriptor *pd = [MTLRenderPassDescriptor renderPassDescriptor];
 		id<MTLRenderCommandEncoder> enc;
 
-		ubo->postprocess = mtl_postprocess->value > 0 ? 1.0f : 0.0f;
-		ubo->gamma = 2.1f - vid_gamma->value;
+		ubo.postprocess = mtl_postprocess->value > 0 ? 1.0f : 0.0f;
+		ubo.gamma = 2.1f - vid_gamma->value;
 
 		pd.colorAttachments[0].texture = st->post_texture;
 		pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -2828,7 +2813,7 @@ MTL_RunWarpPass(void)
 		    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
 		[enc setRenderPipelineState:st->pipeline_postprocess];
 		[enc setVertexBuffer:st->ui_color_vertex_buffer offset:0 atIndex:0];
-		[enc setFragmentBuffer:st->post_ubo offset:0 atIndex:0];
+		[enc setFragmentBytes:&ubo length:sizeof(ubo) atIndex:0];
 		[enc setFragmentTexture:st->ui_target atIndex:0];
 		[enc drawPrimitives:MTLPrimitiveTypeTriangle
 			vertexStart:0 vertexCount:6];
