@@ -116,7 +116,7 @@ MTL_EmitAliasUbo(size_t slot, const float *model, float textured)
 	size_t off;
 
 	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(alias_ubo_t)) > WORLD_UBO_RING_BYTES)
-		return SIZE_MAX;
+		return MTL_UboRingDry();
 
 	off = st->world_ubo_offset[slot];
 	ubo = (alias_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
@@ -143,7 +143,7 @@ MTL_EmitSpriteUbo(size_t slot)
 	size_t off;
 
 	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(sprite_ubo_t)) > WORLD_UBO_RING_BYTES)
-		return SIZE_MAX;
+		return MTL_UboRingDry();
 
 	off = st->world_ubo_offset[slot];
 	ubo = (sprite_ubo_t *)((byte *)st->world_ubo[slot].contents + off);

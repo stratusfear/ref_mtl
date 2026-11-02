@@ -1236,6 +1236,26 @@ static const float s_identity_model[16] = {
 };
 
 /*
+ * G2: shared uniform-ring exhaustion path. Every world UBO emitter
+ * (world/alias/sprite/viewproj/particle/UI) returns SIZE_MAX when the
+ * ring is dry and the draw is skipped; that used to be silent. Count
+ * the drop (reported by "mtl_mem") and say so once per session.
+ */
+size_t
+MTL_UboRingDry(void)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (st->ubo_exhausted++ == 0)
+	{
+		Com_DPrintf("MTL_UboRingDry: uniform ring exhausted, draw "
+			"dropped (further drops: mtl_mem)\n");
+	}
+
+	return SIZE_MAX;
+}
+
+/*
  * Writes one world_ubo_t into the slot's UBO ring and returns its byte
  * offset within that ring's buffer (SIZE_MAX when the ring is
  * exhausted). A NULL model means world space (identity); a NULL color
@@ -1249,7 +1269,7 @@ MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 	size_t off;
 
 	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(world_ubo_t)) > WORLD_UBO_RING_BYTES)
-		return SIZE_MAX;
+		return MTL_UboRingDry();
 
 	off = st->world_ubo_offset[slot];
 	ubo = (world_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
@@ -1308,6 +1328,21 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 	slot = st->frame_slot;
 	ring = (polyvert_t *)st->world_vertex_buffer[slot].contents;
 
+	/* G2: model/color/uvscale/etc. are chain constants, so the UBO is
+	   emitted once per chain instead of once per polygon: this chain
+	   used to consume one 160 B record per subdivided piece (water
+	   fans), which is what drained the shared ring on dense maps. */
+	ubo_off = MTL_EmitWorldUbo(slot, model, color);
+	if (ubo_off == SIZE_MAX)
+		return;
+
+	[st->encoder setVertexBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:1];
+	[st->encoder setFragmentTexture:texture atIndex:0];
+	[st->encoder setFragmentBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:0];
+	[st->encoder setRenderPipelineState:sky ? st->pipeline_sky : st->pipeline_plain];
+
 	for (; p; p = p->next)
 	{
 		int nv = p->numverts;
@@ -1338,19 +1373,9 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 		}
 		st->world_vertex_offset[slot] += (size_t)count * sizeof(polyvert_t);
 
-		ubo_off = MTL_EmitWorldUbo(slot, model, color);
-		if (ubo_off == SIZE_MAX)
-			break;
-
 		[st->encoder setVertexBuffer:st->world_vertex_buffer[slot]
 			offset:vstart atIndex:0];
-		[st->encoder setVertexBuffer:st->world_ubo[slot]
-			offset:ubo_off atIndex:1];
-		[st->encoder setFragmentTexture:texture atIndex:0];
-		[st->encoder setFragmentBuffer:st->world_ubo[slot]
-			offset:ubo_off atIndex:0];
 
-		[st->encoder setRenderPipelineState:sky ? st->pipeline_sky : st->pipeline_plain];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)count];
 	}
 }
@@ -1414,6 +1439,19 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 	slot = st->frame_slot;
 	ring = (lmappolyvert_t *)st->world_lmap_vertex_buffer[slot].contents;
 
+	/* G2: one UBO per chain, see MTL_DrawPolyChain */
+	ubo_off = MTL_EmitWorldUbo(slot, model, color);
+	if (ubo_off == SIZE_MAX)
+		return;
+
+	[st->encoder setVertexBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:1];
+	[st->encoder setFragmentTexture:texture atIndex:0];
+	[st->encoder setFragmentTexture:lmap atIndex:1];
+	[st->encoder setFragmentBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:0];
+	[st->encoder setRenderPipelineState:st->pipeline_lmap];
+
 	for (; p; p = p->next)
 	{
 		int nv = p->numverts;
@@ -1460,20 +1498,9 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 		}
 		st->world_lmap_vertex_offset[slot] += (size_t)count * sizeof(lmappolyvert_t);
 
-		ubo_off = MTL_EmitWorldUbo(slot, model, color);
-		if (ubo_off == SIZE_MAX)
-			break;
-
 		[st->encoder setVertexBuffer:st->world_lmap_vertex_buffer[slot]
 			offset:vstart atIndex:0];
-		[st->encoder setVertexBuffer:st->world_ubo[slot]
-			offset:ubo_off atIndex:1];
-		[st->encoder setFragmentTexture:texture atIndex:0];
-		[st->encoder setFragmentTexture:lmap atIndex:1];
-		[st->encoder setFragmentBuffer:st->world_ubo[slot]
-			offset:ubo_off atIndex:0];
 
-		[st->encoder setRenderPipelineState:st->pipeline_lmap];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)count];
 	}
 }

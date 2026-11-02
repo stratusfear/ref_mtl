@@ -2438,6 +2438,9 @@ Mtl_Mem_f(void)
 	Com_Printf("Rings resident: %.1f MB (3 slots x 6 rings)\n",
 		(double)total * 3 / (1024.0 * 1024.0));
 
+	/* G2: draws dropped by uniform-ring exhaustion, see MTL_UboRingDry */
+	Com_Printf("Uniform ring drops: %u\n", st->ubo_exhausted);
+
 	if (st->device != nil)
 	{
 		Com_Printf("Allocated on device: %llu MB\n",
@@ -3029,7 +3032,8 @@ R_RenderFlash(void)
 	slot = st->frame_slot;
 	if (st->world_ubo_offset[slot] + sizeof(float) * 4 > WORLD_UBO_RING_BYTES)
 	{
-		return;	/* ring exhausted, skip the flash */
+		(void)MTL_UboRingDry();	/* ring exhausted, skip the flash */
+		return;
 	}
 
 	ubo_off = st->world_ubo_offset[slot];
@@ -3074,7 +3078,7 @@ MTL_EmitParticlePointUbo(size_t slot)
 	size_t ubo_off;
 
 	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(particle_point_ubo_t)) > WORLD_UBO_RING_BYTES)
-		return SIZE_MAX;
+		return MTL_UboRingDry();
 
 	ubo_off = st->world_ubo_offset[slot];
 	ubo = (particle_point_ubo_t *)((byte *)st->world_ubo[slot].contents + ubo_off);
@@ -3672,7 +3676,7 @@ MTL_EmitUiUbo(size_t slot, const ui_ubo_t *ubo)
 
 	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(ui_ubo_t)) > WORLD_UBO_RING_BYTES)
 	{
-		return SIZE_MAX;
+		return MTL_UboRingDry();
 	}
 
 	ubo_off = st->world_ubo_offset[slot];

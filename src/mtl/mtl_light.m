@@ -44,7 +44,7 @@ MTL_EmitViewProjUbo(size_t slot)
 	size_t off;
 
 	if (st->world_ubo_offset[slot] + MTL_UBO_ALIGN(sizeof(dlight_ubo_t)) > WORLD_UBO_RING_BYTES)
-		return SIZE_MAX;
+		return MTL_UboRingDry();
 
 	off = st->world_ubo_offset[slot];
 	ubo = (dlight_ubo_t *)((byte *)st->world_ubo[slot].contents + off);

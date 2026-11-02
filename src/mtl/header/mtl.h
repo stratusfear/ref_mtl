@@ -246,7 +246,7 @@ typedef struct
 // consumed sequentially per frame).
 #define WORLD_VERTEX_RING_BYTES		(4 * 1024 * 1024)
 #define WORLD_LMAP_VERTEX_RING_BYTES	(4 * 1024 * 1024)
-#define WORLD_UBO_RING_BYTES		(512 * 1024)
+#define WORLD_UBO_RING_BYTES		(2 * 1024 * 1024)
 
 /* F4: the offset given to set*Buffer:offset:atIndex: for a struct
    argument must be a multiple of 16 bytes; MTL_DEBUG_LAYER enforces
@@ -399,6 +399,10 @@ void MTL_FreeLightmaps (void);
  * (SIZE_MAX when exhausted). Shared by the dlight quads and the
  * showtris outlines. */
 size_t MTL_EmitViewProjUbo (size_t slot);
+/* G2: shared uniform-ring exhaustion path: counts the dropped draw in
+   st->ubo_exhausted (one-shot Com_DPrintf on the first drop) and
+   returns SIZE_MAX, the emitters' sentinel for "ring dry". */
+size_t MTL_UboRingDry (void);
 
 void EmitWaterPolys (msurface_t *fa, image_t *texture,
 				   const float *modelMatrix, const float *color,
@@ -709,6 +713,9 @@ typedef struct mtlstate_s
 	   order: world vertex, world lmap, UBO, dlight, showtris, alias). */
 	size_t			ring_usage[6];
 	size_t			ring_usage_max[6];
+	/* G2: number of draws dropped by uniform-ring exhaustion across
+	   the session; reported by "mtl_mem". */
+	unsigned		ubo_exhausted;
 	float			pixel_scale;	// layer contentsScale
 	float			inverse_intensity;	// 1.0 / mtl_intensity, texture modulation
 	float			camera_separation;	// RE_BeginFrame argument, stereo
