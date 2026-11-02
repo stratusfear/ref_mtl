@@ -553,8 +553,21 @@ warp_fragment(warp_out in [[stage_in]],
     float2 fragCoord = in.uv * scrSize;
     float2 uv = in.uv;
 
-    if (ubo.time > 0 && fragCoord.x > ubo.refdefX && fragCoord.x < ubo.refdefX + ubo.refdefW &&
-        fragCoord.y > ubo.refdefY && fragCoord.y < ubo.refdefY + ubo.refdefH)
+    /* G5: pixels inside the refdef rect (device pixels) sample the
+       down-scaled world; pixels outside it pass the scene through
+       1:1. The world pass renders only into vrect/pixelSize of the
+       scene texture, so the /pixelSize remap is right only inside
+       that rect; outside it the scene holds full-size 2D content
+       (border tiles, menu) which the old unconditional remap scaled
+       up into stretched garbage bands. ref_vk hides the equivalent
+       stretched garbage by drawing its UI/tileclear after the warp
+       pass; mtl may encode the 2D before the world (demomap), so the
+       border has to survive the warp itself. Half-open bounds keep a
+       full-screen refdef (viewsize 100) uniformly remapped. */
+    const bool in_refdef = fragCoord.x >= ubo.refdefX && fragCoord.x < ubo.refdefX + ubo.refdefW &&
+        fragCoord.y >= ubo.refdefY && fragCoord.y < ubo.refdefY + ubo.refdefH;
+
+    if (ubo.time > 0 && in_refdef)
     {
         float sx = ubo.scale - abs(ubo.scrWidth  / 2.0 - fragCoord.x) * 2.0 / ubo.scrWidth;
         float sy = ubo.scale - abs(ubo.scrHeight / 2.0 - fragCoord.y) * 2.0 / ubo.scrHeight;
@@ -573,7 +586,15 @@ warp_fragment(warp_out in [[stage_in]],
     // shift the first divisor/2 columns onto the wrong texel), and hi
     // sits one half-texel below the far edge. For pixelSize == 1 this
     // is still a pixel-identical copy.
-    uv /= ubo.pixelSize;
+    //
+    // G5: the downscale-restore remap applies to refdef pixels only
+    // (the world lives at vrect/pixelSize inside the scene there);
+    // outside the world content is full-size or absent, so scaling by
+    // pixelSize there would magnify border/menu content by p.
+    if (in_refdef)
+    {
+        uv /= ubo.pixelSize;
+    }
     float2 hi = float2(1.0) - float2(0.5) / scrSize;
     uv = clamp(uv, float2(0.0), hi);
     return scene.sample(present_sampler, uv);
