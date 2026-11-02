@@ -876,6 +876,10 @@ void MTL_FreeUnusedImages (void)
 		}
 
 		/* free it */
+		/* G1: mtl_texture holds the +1 from newTextureWithDescriptor;
+		   dropping it without a release leaked the GPU texture (Shared
+		   storage: system RAM + device allocation) on every eviction. */
+		[image->mtl_texture release];
 		image->mtl_texture = nil;
 		memset(image, 0, sizeof(*image));
 
@@ -966,6 +970,8 @@ void	MTL_ShutdownImages (void)
 			Com_Printf("%s: Unload %s[%d]\n", __func__, image->name, img_loaded);
 		}
 
+		/* G1: release before dropping the slot, see MTL_FreeUnusedImages */
+		[image->mtl_texture release];
 		image->mtl_texture = nil;
 		memset(image, 0, sizeof(*image));
 
@@ -976,7 +982,8 @@ void	MTL_ShutdownImages (void)
 		}
 	}
 
-	for(i = 0; i < MAX_LIGHTMAPS*2; i++)
-		mtl_state.lightmap_textures[i] = nil;
+	/* G1: was nil-only (leaked every lightmap texture) and is now
+	   called from RE_Shutdown; MTL_FreeLightmaps() releases + nils. */
+	MTL_FreeLightmaps();
 }
 

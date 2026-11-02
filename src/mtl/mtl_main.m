@@ -612,6 +612,13 @@ RE_Shutdown(void)
 	ri.Cmd_RemoveCommand("screenshot");
 	RE_ShutdownContext();
 
+	/* G1: MTL_ShutdownImages had no call site, so the image textures
+	   and lightmap textures survived (leaked) a renderer shutdown;
+	   ref_vk's equivalent calls Vk_ShutdownImages() from
+	   QVk_WaitAndShutdownAll(). The command queue is still alive at
+	   this point, matching that ordering. */
+	MTL_ShutdownImages();
+
 	// W5d: StretchRaw's dynamic texture
 	if (raw_texture != nil)
 	{
@@ -985,6 +992,14 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 			}
 
 			id<MTLRenderPipelineState> pipeline = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+			/* G1: manual RC - pd and its +1 objects (functions from
+			   newFunctionWithName, vd) are not kept by the pipeline
+			   state; release once it is built, before the nil check so
+			   the failure path balances too. */
+			[pd.vertexFunction release];
+			[pd.fragmentFunction release];
+			[pd release];
+			[vd release];
 			if (pipeline == nil)
 			{
 				Com_Printf("ref_mtl: pipeline creation failed (%s): %s\n",
@@ -1034,6 +1049,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
 		st->pipeline_dlight = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];
 		if (st->pipeline_dlight == nil)
 		{
 			Com_Printf("ref_mtl: dlight pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1072,6 +1091,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
 		st->pipeline_flash = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];
 		if (st->pipeline_flash == nil)
 		{
 			Com_Printf("ref_mtl: flash pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1107,6 +1130,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_showtris = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];
 		if (st->pipeline_showtris == nil)
 		{
 			Com_Printf("ref_mtl: showtris pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1144,6 +1171,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_alias = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];	/* G1: manual RC; vd is shared with the next pd,
+						   released once below with that one */
 		if (st->pipeline_alias == nil)
 		{
 			Com_Printf("ref_mtl: alias pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1168,6 +1199,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
 		st->pipeline_alias_translucent = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_alias_translucent == nil)
 		{
 			Com_Printf("ref_mtl: alias translucent pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1214,6 +1249,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
 		st->pipeline_sprite = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_sprite == nil)
 		{
 			Com_Printf("ref_mtl: sprite pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1261,6 +1300,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
 		st->pipeline_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_particle == nil)
 		{
 			Com_Printf("ref_mtl: particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1303,6 +1346,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
 		st->pipeline_point_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_point_particle == nil)
 		{
 			Com_Printf("ref_mtl: point particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1566,6 +1613,7 @@ R_InitShaders(void)
 		cd.label = @"ref_mtl";
 
 		st->compiler = [st->device newCompilerWithDescriptor:cd error:&err];
+		[cd release];	/* G1: manual RC, cd is +1 and not kept */
 		if (st->compiler == nil)
 		{
 			Com_Printf("ref_mtl: failed to create MTL4Compiler: %s\n", err.localizedDescription.UTF8String);
@@ -1585,6 +1633,9 @@ R_InitShaders(void)
 		ld.name = @"ref_mtl.world";
 
 		st->library = [st->compiler newLibraryWithDescriptor:ld error:&err];
+		/* G1: manual RC, ld and opts are +1 and not kept. */
+		[ld release];
+		[opts release];
 		if (st->library == nil)
 		{
 			Com_Printf("ref_mtl: MSL compilation failed:\n%s\n", err.localizedDescription.UTF8String);
@@ -1645,6 +1696,7 @@ R_InitShaders(void)
 		st->ui_sampler_nearest = [st->device newSamplerStateWithDescriptor:sd];
 		if (st->ui_sampler_nearest == nil)
 		{
+			[sd release];	/* G1: manual RC, sd is +1 and not kept */
 			Com_Printf("ref_mtl: ui nearest sampler creation failed\n");
 			R_ReleaseShaders(st);
 			return false;
@@ -1654,6 +1706,7 @@ R_InitShaders(void)
 		sd.magFilter = MTLSamplerMinMagFilterLinear;
 		sd.mipFilter = MTLSamplerMipFilterLinear;
 		st->ui_sampler_linear = [st->device newSamplerStateWithDescriptor:sd];
+		[sd release];	/* G1: both samplers built, descriptor released */
 		if (st->ui_sampler_linear == nil)
 		{
 			Com_Printf("ref_mtl: ui linear sampler creation failed\n");
@@ -1692,6 +1745,10 @@ R_InitShaders(void)
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_ui_tex = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_ui_tex == nil)
 		{
 			Com_Printf("ref_mtl: ui tex pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1763,6 +1820,10 @@ R_InitShaders(void)
 		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
 
 		st->pipeline_ui_color = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_ui_color == nil)
 		{
 			Com_Printf("ref_mtl: ui color pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1868,6 +1929,7 @@ R_InitShaders(void)
 		st->depth_state = [st->device newDepthStencilStateWithDescriptor:dsd];
 		if (st->depth_state == nil)
 		{
+			[dsd release];	/* G1: manual RC, dsd is +1 and not kept */
 			Com_Printf("ref_mtl: failed to create depth stencil state\n");
 			R_ReleaseShaders(st);
 			return false;
@@ -1879,6 +1941,7 @@ R_InitShaders(void)
 		st->depth_state_nodwrite = [st->device newDepthStencilStateWithDescriptor:dsd];
 		if (st->depth_state_nodwrite == nil)
 		{
+			[dsd release];	/* G1: manual RC, dsd is +1 and not kept */
 			Com_Printf("ref_mtl: failed to create no-write depth stencil state\n");
 			R_ReleaseShaders(st);
 			return false;
@@ -1888,6 +1951,7 @@ R_InitShaders(void)
 		   never test or write depth. */
 		dsd.depthCompareFunction = MTLCompareFunctionAlways;
 		st->depth_state_none = [st->device newDepthStencilStateWithDescriptor:dsd];
+		[dsd release];	/* G1: manual RC, all three states built */
 		if (st->depth_state_none == nil)
 		{
 			Com_Printf("ref_mtl: failed to create no-compare depth stencil state\n");
@@ -1917,6 +1981,10 @@ R_InitShaders(void)
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_present = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_present == nil)
 		{
 			Com_Printf("ref_mtl: present pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1946,6 +2014,10 @@ R_InitShaders(void)
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_warp = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_warp == nil)
 		{
 			Com_Printf("ref_mtl: warp pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -1984,6 +2056,10 @@ R_InitShaders(void)
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_postprocess = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
 		if (st->pipeline_postprocess == nil)
 		{
 			Com_Printf("ref_mtl: postprocess pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
@@ -3216,6 +3292,9 @@ RE_ScreenShot_f(void)
 
 		if (cb == nil || staging == nil)
 		{
+			/* G1: manual RC, staging is +1; the autoreleasepool would
+			   not reclaim it. */
+			[staging release];
 			Com_Printf("%s: failed to allocate readback staging buffer\n",
 			    __func__);
 			return;
@@ -3243,6 +3322,7 @@ RE_ScreenShot_f(void)
 
 		if ([cb error] != nil)
 		{
+			[staging release];	/* G1: manual RC, see above */
 			Com_Printf("%s: GPU readback failed: %s\n", __func__,
 			    [[cb error] localizedDescription].UTF8String);
 			return;
@@ -3260,6 +3340,10 @@ RE_ScreenShot_f(void)
 		}
 
 		ri.Vid_WriteScreenshot((int)w, (int)h, 4, px);
+
+		/* G1: manual RC, staging is newBufferWithLength +1 and the
+		   autoreleasepool would not reclaim it; px aliases its contents. */
+		[staging release];
 	}
 }
 
