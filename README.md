@@ -249,6 +249,18 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   1.76-1.97 at the floor with 0 poisoned pixels, viewsize 50 + MSAAx4
   vrect 0.99-1.06 with 0.00-exact borders.
 - Feature parity remaining: none (W0-W7 complete).
+- Review findings F1-F6 (+ F7 found while verifying under the debug
+  layer) fixed: F1 MSAA attachments sized from stale dimensions on
+  resize (debug-layer repro: resolveTexture size mismatch assert);
+  F2 `MTL_UpdateMSAA` failure paths (draw buffers created before the
+  pipelines, `msaa_failed_want` one-shot degrade); F3 `slot_busy[]`
+  made `_Atomic` with release/acquire; F4 world-UBO ring offsets
+  rounded to 16-byte alignment (debug-layer offset assert); F5
+  Private storage for depth + MSAA attachments (timedemo demo1 A/B
+  neutral); F6 docs left untracked by decision; F7 all world pipelines
+  now set `depthAttachmentPixelFormat=Depth32Float` and the pre-W7
+  duplicate pipeline blocks in `R_InitShaders` (which leaked six
+  pipelines and overwrote the W7 pointers) were removed.
 
 ### Intentionally not implemented (parity scope cuts)
 
