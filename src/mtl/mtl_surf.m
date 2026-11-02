@@ -301,9 +301,15 @@ R_RenderBrushPoly(msurface_t *fa, const float *modelMatrix, float alpha,
 
 	if (is_dynamic)
 	{
-		if ((fa->styles[maps] >= 32 || fa->styles[maps] == 0) && (fa->dlightframe != r_framecount))
+		/* G6: the styles loop above can exit with maps == MAXLIGHTMAPS
+		   (all four styles static), where fa->styles[maps] reads one
+		   byte past the array; that case is 'static', same as the
+		   >= 32 / == 0 tests it replaces here. */
+		if ((maps >= MAXLIGHTMAPS || fa->styles[maps] >= 32 || fa->styles[maps] == 0) && (fa->dlightframe != r_framecount))
 		{
-			unsigned	temp[34 * 34];
+			/* G6: 128x128 like the lightmapped path: with extended
+			   (decoupled/BSPX) lightmaps smax/tmax can exceed 34. */
+			unsigned	temp[128 * 128];
 			int			smax, tmax;
 
 			smax = (fa->extents[0] >> fa->lmshift) + 1;
@@ -497,7 +503,8 @@ MTL_RenderLightmappedPoly(msurface_t *surf, const float *modelMatrix, float alph
 
 		R_BuildLightMap(surf, (void *)temp, smax * 4);
 
-		if ((surf->styles[map] >= 32 || surf->styles[map] == 0) && (surf->dlightframe != r_framecount))
+		/* G6: same MAXLIGHTMAPS guard as R_RenderBrushPoly */
+		if ((map >= MAXLIGHTMAPS || surf->styles[map] >= 32 || surf->styles[map] == 0) && (surf->dlightframe != r_framecount))
 		{
 			R_SetCacheState(surf);
 

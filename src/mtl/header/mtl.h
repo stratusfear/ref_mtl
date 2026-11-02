@@ -253,7 +253,7 @@ typedef struct
    this with a hard abort. The world UBO ring carries records of
    52-152 bytes, so every ring advance is rounded up with this macro to
    keep the next record's offset aligned. */
-#define MTL_UBO_ALIGN(x)			((size_t)(((x) + 15u) & ~15u))
+#define MTL_UBO_ALIGN(x)			((size_t)(((x) + 15u) & ~(size_t)15))
 #define DLIGHT_VERTEX_RING_BYTES	(256 * 1024)
 #define SHOWTRIS_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 #define ALIAS_VERTEX_RING_BYTES		(4 * 1024 * 1024)
@@ -697,6 +697,9 @@ typedef struct mtlstate_s
 	id<MTLTexture>			ui_target;	// post/warp/scene texture (not owned)
 	qboolean			world_rendered;	// world pass ran this frame
 	qboolean			warp_done;		// warp pass decided this frame
+	/* G6: scene_texture was (re)allocated, content not yet defined;
+	   R_BeginFrame clears it once before the frame's passes load it. */
+	qboolean			scene_needs_clear;
 
 	// per-frame state
 	id<CAMetalDrawable>		drawable;		// current frame's drawable

@@ -2601,6 +2601,10 @@ RE_BeginFrame(float camera_separation)
 		        height:drawable.texture.height
 		        mipmapped:NO];
 		sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+		/* G6: scene/warp/post are GPU-only (screenshots blit into their
+		   own texture); state Private explicitly instead of relying on
+		   the macOS default. */
+		sd.storageMode = MTLStorageModePrivate;
 		st->scene_texture = [st->device newTextureWithDescriptor:sd];
 
 		/* W6b: the world-warp pass target (same format/usage); UI pass and
@@ -2626,6 +2630,12 @@ RE_BeginFrame(float camera_separation)
 		st->depth_height = (int)drawable.texture.height;
 		st->scene_width = (int)drawable.texture.width;
 		st->scene_height = (int)drawable.texture.height;
+
+		/* G6: a (re)created scene_texture has undefined content and both
+		   the UI pass and the world pass LOAD it; the frame right after
+		   a resize would otherwise show garbage wherever nothing opaque
+		   covers the screen. Cleared once in R_BeginFrame below. */
+		st->scene_needs_clear = true;
 
 		/* W7: the multisampled world attachments follow the same
 		   resize; they're only live while MSAA is on. */
@@ -2661,6 +2671,25 @@ RE_BeginFrame(float camera_separation)
 	atomic_store_explicit(&st->slot_busy[st->frame_slot], true,
 	                      memory_order_relaxed);
 	st->frame_active = true;
+
+	/* G6: clear a freshly (re)allocated scene_texture once, before this
+	   frame's UI/world passes LOAD it; see the resize block above. */
+	if (st->scene_needs_clear && st->scene_texture != nil)
+	{
+		MTLRenderPassDescriptor *cd = [MTLRenderPassDescriptor renderPassDescriptor];
+		id<MTLRenderCommandEncoder> cenc;
+
+		st->scene_needs_clear = false;
+		cd.colorAttachments[0].texture = st->scene_texture;
+		cd.colorAttachments[0].loadAction = MTLLoadActionClear;
+		cd.colorAttachments[0].storeAction = MTLStoreActionStore;
+		cd.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+		cenc = [st->command_buffer renderCommandEncoderWithDescriptor:cd];
+		if (cenc != nil)
+		{
+			[cenc endEncoding];
+		}
+	}
 }
 
 /*
@@ -3398,6 +3427,7 @@ RE_RenderFrame(refdef_t *fd)
 			    height:(NSUInteger)st->scene_height
 			    mipmapped:NO];
 			sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+			sd.storageMode = MTLStorageModePrivate;	/* G6, see scene_texture */
 
 			[st->msaa_save_texture release];
 			st->msaa_save_texture = [st->device newTextureWithDescriptor:sd];
@@ -3412,7 +3442,14 @@ RE_RenderFrame(refdef_t *fd)
 	if (msaa)
 	{
 		st->pass_descriptor.colorAttachments[0].texture = st->msaa_color_texture;
-		st->pass_descriptor.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+		/* G6: with no pre-world UI content to keep, clear the multisample
+		   attachment instead of DontCare: the resolve replaces the whole
+		   scene texture, and the undefined texels outside the scissored
+		   world rect would otherwise resolve into the view borders. With
+		   pre-world tiles the save/restore blits below cover every texel
+		   outside the world rect, so DontCare stays fine there. */
+		st->pass_descriptor.colorAttachments[0].loadAction =
+			ui_before_world ? MTLLoadActionDontCare : MTLLoadActionClear;
 		st->pass_descriptor.colorAttachments[0].storeAction =
 			MTLStoreActionMultisampleResolve;
 		st->pass_descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
