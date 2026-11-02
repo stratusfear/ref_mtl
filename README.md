@@ -261,6 +261,28 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   now set `depthAttachmentPixelFormat=Depth32Float` and the pre-W7
   duplicate pipeline blocks in `R_InitShaders` (which leaked six
   pipelines and overwrote the W7 pointers) were removed.
+- Second review round G1-G6 fixed: G1 image GPU textures were never
+  released on eviction or shutdown (unbounded device-memory growth,
+  measured ~150 -> ~310 MB over repeated asset churn; bounded after);
+  G2 the world-UBO emit ran inside both draw chains, exhausting the
+  512 KiB ring mid-frame on large maps (hoisted to once per frame,
+  2 MiB ring, `mtl_mem` now counts ring drops: 95.7% usage -> ~20%,
+  0 drops); G3 a single shared warp/postprocess parameter UBO was
+  rewritten each frame while the 1-2 older in-flight command buffers
+  still read it (params now ride the command buffer via
+  `setFragmentBytes:`); G4 dynamic lightmap `replaceRegion:` wrote
+  immediately into textures in-flight frames were still sampling (the
+  dynamic lightmap range is now three per-frame-slot sets selected by
+  `frame_slot`, lazily created); G5 with `mtl_pixel_size` >1 and
+  viewsize <100 the warp pass stretched full-size border/menu content
+  outside the refdef rect into magnified garbage bands (the
+  upscale-restore remap is now gated to refdef pixels; A/B captures
+  show the same clean TileClear border as ref_vk, viewsize 100
+  unchanged); G6 hygiene bundle (Private storage for the scene/warp/
+  post/MSAA-save targets, one-time clear of freshly allocated scene
+  textures on resize, MSAA color load action preserves UI already in
+  the scene, larger lightmap temp buffer, alignment cast fix,
+  MAXLIGHTMAPS style guards).
 
 ### Intentionally not implemented (parity scope cuts)
 
