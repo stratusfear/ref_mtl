@@ -2525,6 +2525,15 @@ RE_BeginFrame(float camera_separation)
 		}
 		st->post_texture = [st->device newTextureWithDescriptor:sd];
 
+		/* F1: publish the new dimensions before the MSAA block below;
+		   MTL_CreateMSAADrawBuffers sizes its attachments from
+		   scene_width/height and depth_width/height and would otherwise
+		   build them at the previous frame's size. */
+		st->depth_width = (int)drawable.texture.width;
+		st->depth_height = (int)drawable.texture.height;
+		st->scene_width = (int)drawable.texture.width;
+		st->scene_height = (int)drawable.texture.height;
+
 		/* W7: the multisampled world attachments follow the same
 		   resize; they're only live while MSAA is on. */
 		if (st->msaa_sample_count > 1)
