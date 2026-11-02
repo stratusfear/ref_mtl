@@ -1420,7 +1420,9 @@ MTL_CreateMSAADrawBuffers(mtlstate_t *st, NSUInteger sampleCount)
 	        mipmapped:NO];
 	d.textureType = MTLTextureType2DMultisample;	// 2D rejects sampleCount
 	d.usage = MTLTextureUsageRenderTarget;
-	d.storageMode = MTLStorageModeShared;
+	/* F5: GPU-only render target; Private lets the driver deduplicate
+	   and compress on Apple GPUs. */
+	d.storageMode = MTLStorageModePrivate;
 	d.sampleCount = sampleCount;
 	st->msaa_color_texture = [st->device newTextureWithDescriptor:d];
 	if (st->msaa_color_texture == nil)
@@ -1437,7 +1439,7 @@ MTL_CreateMSAADrawBuffers(mtlstate_t *st, NSUInteger sampleCount)
 	        mipmapped:NO];
 	d.textureType = MTLTextureType2DMultisample;
 	d.usage = MTLTextureUsageRenderTarget;
-	d.storageMode = MTLStorageModeShared;
+	d.storageMode = MTLStorageModePrivate;	// F5: GPU-only, see above
 	d.sampleCount = sampleCount;
 	st->msaa_depth_texture = [st->device newTextureWithDescriptor:d];
 	if (st->msaa_depth_texture == nil)
@@ -2531,7 +2533,9 @@ RE_BeginFrame(float camera_separation)
 		        height:drawable.texture.height
 		        mipmapped:NO];
 		dd.usage = MTLTextureUsageRenderTarget;
-		dd.storageMode = MTLStorageModeShared;
+		/* F5: depth is never read back by the CPU; Private also lets
+		   Apple GPUs use compressed depth formats for the MSAA pass. */
+		dd.storageMode = MTLStorageModePrivate;
 		st->depth_texture = [st->device newTextureWithDescriptor:dd];
 
 		/* W6: offscreen color target (default/Private storage: the CPU
