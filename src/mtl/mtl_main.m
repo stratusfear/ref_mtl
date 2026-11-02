@@ -1470,31 +1470,29 @@ MTL_UpdateMSAA(mtlstate_t *st)
 {
 	NSUInteger want = MTL_DesiredSampleCount();
 
+	/* F2b: a request that already failed stays degraded at 1 sample
+	   until the cvar changes; this stops the per-frame teardown,
+	   rebuild and error print. */
+	if (want == st->msaa_failed_want)
+	{
+		return;
+	}
+
 	if (want == st->msaa_sample_count && st->pipeline_sample_count == want)
 	{
+		st->msaa_failed_want = 0;
 		return;
 	}
 
 	MTL_ReleaseWorldPipelines(st);
 	MTL_ReleaseMSAADrawBuffers(st);
 
-	if (!MTL_InitWorldPipelines(st, want))
-	{
-		Com_Printf("ref_mtl: rebuilding world pipelines for %ux MSAA failed\n",
-			(unsigned int)want);
-		st->msaa_sample_count = st->pipeline_sample_count = 1;
-		if (!MTL_InitWorldPipelines(st, 1))
-		{
-			st->pipeline_sample_count = 0;
-		}
-		return;
-	}
-	st->pipeline_sample_count = want;
-
+	/* F2a: create the multisampled attachments before the pipelines,
+	   so the world pipelines are always built at the sample count the
+	   frame buffers can actually provide. */
 	if (want > 1 && MTL_CreateMSAADrawBuffers(st, want))
 	{
 		st->msaa_sample_count = want;
-		Com_Printf("...MSAAx%d is used\n", (int)want);
 	}
 	else
 	{
@@ -1503,7 +1501,39 @@ MTL_UpdateMSAA(mtlstate_t *st)
 		{
 			Com_Printf("ref_mtl: %ux MSAA draw buffers failed, running without MSAA\n",
 				(unsigned int)want);
+			st->msaa_failed_want = want;
 		}
+	}
+
+	if (!MTL_InitWorldPipelines(st, st->msaa_sample_count))
+	{
+		/* F2c: even the 1-sample fallback matters - the world pass is
+		   skipped while pipeline_plain is nil, and msaa_failed_want
+		   keeps this from being retried every frame. */
+		Com_Printf("ref_mtl: rebuilding world pipelines at %ux samples failed\n",
+			(unsigned int)st->msaa_sample_count);
+		MTL_ReleaseMSAADrawBuffers(st);
+		st->msaa_sample_count = 0;
+		st->pipeline_sample_count = 0;
+		st->msaa_failed_want = want;
+		if (MTL_InitWorldPipelines(st, 1))
+		{
+			st->msaa_sample_count = st->pipeline_sample_count = 1;
+		}
+		return;
+	}
+	st->pipeline_sample_count = st->msaa_sample_count;
+
+	/* Only a request that came up at full count clears the
+	   degradation mark; a draw-buffer fallback keeps it set. */
+	if (st->msaa_sample_count == want)
+	{
+		st->msaa_failed_want = 0;
+	}
+
+	if (st->msaa_sample_count > 1)
+	{
+		Com_Printf("...MSAAx%d is used\n", (int)st->msaa_sample_count);
 	}
 }
 
@@ -2541,6 +2571,10 @@ RE_BeginFrame(float camera_separation)
 			MTL_ReleaseMSAADrawBuffers(st);
 			if (!MTL_CreateMSAADrawBuffers(st, st->msaa_sample_count))
 			{
+				/* F2d: pipelines are still at N samples here, but
+				   MTL_UpdateMSAA runs below before this frame's
+				   command buffer exists and brings them (or the
+				   buffers) to a consistent count. */
 				st->msaa_sample_count = 1;
 			}
 		}

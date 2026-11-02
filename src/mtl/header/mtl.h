@@ -660,6 +660,10 @@ typedef struct mtlstate_s
 	id<MTLTexture>			msaa_save_texture;
 	NSUInteger			msaa_sample_count;
 	NSUInteger			pipeline_sample_count;
+	/* F2: the r_msaa_samples request that last failed; MTL_UpdateMSAA
+	   stays degraded at 1 sample until the cvar moves off this value
+	   (one message, no per-frame rebuild loop). */
+	NSUInteger			msaa_failed_want;
 	int				world_vx;
 	int				world_vy;
 	int				world_vw;
