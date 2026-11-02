@@ -822,10 +822,10 @@ R_ReleaseShaders(mtlstate_t *st)
 	   the scene/depth textures (recreated by MTL_UpdateMSAA / the
 	   BeginFrame resize block). */
 	MTL_ReleaseMSAADrawBuffers(st);
-	if (st->msaa_save_texture != nil)
+	if (st->border_save_texture != nil)
 	{
-		[st->msaa_save_texture release];
-		st->msaa_save_texture = nil;
+		[st->border_save_texture release];
+		st->border_save_texture = nil;
 	}
 	if (st->pipeline_dlight != nil)
 	{
@@ -2563,6 +2563,8 @@ RE_BeginFrame(float camera_separation)
 	st->world_rendered = false;
 	st->warp_done = false;
 	st->ui_target = nil;
+	// H1: the pre-world tile save is re-decided every frame.
+	st->tiles_saved = false;
 
 	// W4: the depth texture is sized to the drawable and recreated when
 	// the window (or its contentsScale) changes.
@@ -2727,6 +2729,11 @@ MTL_RunWarpPass(void)
 	mtlstate_t *st = &mtl_state;
 	float underwaterTime;
 	float divisor;
+	/* H1: the refdef rectangle the warp pass used (device pixels,
+	   half-open), and whether the border around it has to be restored
+	   from the pre-world tile save. */
+	int brect[4];
+	qboolean border_fix = false;
 
 	if (st->warp_done)
 	{
@@ -2802,6 +2809,20 @@ MTL_RunWarpPass(void)
 		[enc endEncoding];
 
 		st->ui_target = st->warp_texture;
+
+		/* H1: remember the refdef rect in the half-open form the warp
+		   shader applies (fragCoord are pixel centers: pixel i is
+		   inside refdef when i + 0.5 >= refdefX and < refdefX +
+		   refdefW). Everything outside it in the warp output is the
+		   1:1 scene passthrough, which at divisor > 1 contains the
+		   raw down-scaled world texels of the scene bands
+		   [vrect/p, vrect); restore those from the pre-world tile
+		   save below. */
+		brect[0] = (int)ceilf(ubo.refdefX - 0.5f);
+		brect[1] = (int)ceilf(ubo.refdefY - 0.5f);
+		brect[2] = (int)ceilf(ubo.refdefX + ubo.refdefW - 0.5f);
+		brect[3] = (int)ceilf(ubo.refdefY + ubo.refdefH - 0.5f);
+		border_fix = st->tiles_saved && divisor > 1.0f;
 	}
 
 	/* Postprocess stage (ref_vk postprocess.frag parity): samples the
@@ -2834,21 +2855,83 @@ MTL_RunWarpPass(void)
 		enc = [st->command_buffer renderCommandEncoderWithDescriptor:pd];
 		if (enc == nil)
 		{
+			// H1: don't bail, the border restore below still applies
+			// (ui_target is still the warp stage's output).
 			Com_DPrintf("ref_mtl: failed to open postprocess encoder\n");
-			return;
 		}
+		else
+		{
+			[enc setViewport:(MTLViewport){0.0, 0.0,
+			    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
+			[enc setRenderPipelineState:st->pipeline_postprocess];
+			[enc setVertexBuffer:st->ui_color_vertex_buffer offset:0 atIndex:0];
+			[enc setFragmentBytes:&ubo length:sizeof(ubo) atIndex:0];
+			[enc setFragmentTexture:st->ui_target atIndex:0];
+			[enc drawPrimitives:MTLPrimitiveTypeTriangle
+				vertexStart:0 vertexCount:6];
+			[enc endEncoding];
 
-		[enc setViewport:(MTLViewport){0.0, 0.0,
-		    (double)st->scene_width, (double)st->scene_height, 0.0, 1.0}];
-		[enc setRenderPipelineState:st->pipeline_postprocess];
-		[enc setVertexBuffer:st->ui_color_vertex_buffer offset:0 atIndex:0];
-		[enc setFragmentBytes:&ubo length:sizeof(ubo) atIndex:0];
-		[enc setFragmentTexture:st->ui_target atIndex:0];
-		[enc drawPrimitives:MTLPrimitiveTypeTriangle
-			vertexStart:0 vertexCount:6];
-		[enc endEncoding];
+			st->ui_target = st->post_texture;
+		}
+	}
 
-		st->ui_target = st->post_texture;
+	/* H1: ref_vk draws its 2D border after the warp pass, which hides
+	   the stretched remnant there; mtl encodes SCR_TileClear before the
+	   world, so put the saved pre-world tiles back over everything
+	   outside the warp's refdef rect in the final offscreen target
+	   (post_texture when the postprocess stage ran, else warp_texture).
+	   After the postprocess stage is deliberate: the 2D tiles must not
+	   get the world gamma/intensity pow, matching ref_vk where the UI
+	   is drawn after postprocessing. This also covers the scene bands
+	   [vrect/p, vrect) that the MSAA resolve restore above does not
+	   reach, so it is correct for the MSAA and non-MSAA paths alike. */
+	if (border_fix && st->tiles_saved &&
+	    st->border_save_texture != nil && st->ui_target != nil)
+	{
+		const NSUInteger w = (NSUInteger)st->scene_width;
+		const NSUInteger h = (NSUInteger)st->scene_height;
+		const NSUInteger x0 = (NSUInteger)MAX(0, MIN(brect[0], (int)w));
+		const NSUInteger y0 = (NSUInteger)MAX(0, MIN(brect[1], (int)h));
+		const NSUInteger x1 = (NSUInteger)MAX(0, MIN(brect[2], (int)w));
+		const NSUInteger y1 = (NSUInteger)MAX(0, MIN(brect[3], (int)h));
+		id<MTLBlitCommandEncoder> restore =
+			[st->command_buffer blitCommandEncoder];
+
+		/* top, bottom, left, right around the refdef rect (half-open,
+		   empty pieces skipped) */
+		if (y0 > 0)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+				sourceSize:MTLSizeMake(w, y0, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+		}
+		if (y1 < h)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y1, 0)
+				sourceSize:MTLSizeMake(w, h - y1, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y1, 0)];
+		}
+		if (x0 > 0)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y0, 0)
+				sourceSize:MTLSizeMake(x0, y1 - y0, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y0, 0)];
+		}
+		if (x1 < w)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x1, y0, 0)
+				sourceSize:MTLSizeMake(w - x1, y1 - y0, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x1, y0, 0)];
+		}
+		[restore endEncoding];
 	}
 }
 
@@ -3414,12 +3497,19 @@ RE_RenderFrame(refdef_t *fd)
 
 	/* W7: the resolve overwrites the whole scene texture, so keep the
 	   pre-world tiles (drawn outside the world view at viewsize <
-	   100) in a copy that is restored after the pass. */
-	if (msaa && ui_before_world)
+	   100) in a copy that is restored after the pass.
+	   H1: the non-MSAA case needs the same copy when mtl_pixel_size > 1,
+	   because the warp pass's 1:1 passthrough outside the refdef rect
+	   would otherwise composite the raw down-scaled world texels of the
+	   bands [vrect/p, vrect) into the 2D border; ref_vk hides them by
+	   drawing its border after the warp. */
+	qboolean save_tiles = ui_before_world &&
+	                      (msaa || MTL_PixelDivisor() > 1.0f);
+	if (save_tiles)
 	{
-		if (st->msaa_save_texture == nil ||
-		    (int)st->msaa_save_texture.width != st->scene_width ||
-		    (int)st->msaa_save_texture.height != st->scene_height)
+		if (st->border_save_texture == nil ||
+		    (int)st->border_save_texture.width != st->scene_width ||
+		    (int)st->border_save_texture.height != st->scene_height)
 		{
 			MTLTextureDescriptor *sd = [MTLTextureDescriptor
 			    texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -3429,13 +3519,14 @@ RE_RenderFrame(refdef_t *fd)
 			sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
 			sd.storageMode = MTLStorageModePrivate;	/* G6, see scene_texture */
 
-			[st->msaa_save_texture release];
-			st->msaa_save_texture = [st->device newTextureWithDescriptor:sd];
+			[st->border_save_texture release];
+			st->border_save_texture = [st->device newTextureWithDescriptor:sd];
 		}
 
-		if (st->msaa_save_texture == nil)
+		if (st->border_save_texture == nil)
 		{
 			msaa = false;
+			save_tiles = false;
 		}
 	}
 
@@ -3474,7 +3565,7 @@ RE_RenderFrame(refdef_t *fd)
 	st->pass_descriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
 	st->pass_descriptor.depthAttachment.clearDepth = 1.0;
 
-	if (msaa && ui_before_world)
+	if (save_tiles)
 	{
 		id<MTLBlitCommandEncoder> save =
 			[st->command_buffer blitCommandEncoder];
@@ -3484,11 +3575,14 @@ RE_RenderFrame(refdef_t *fd)
 			sourceOrigin:MTLOriginMake(0, 0, 0)
 			sourceSize:MTLSizeMake((NSUInteger)st->scene_width,
 			    (NSUInteger)st->scene_height, 1)
-			toTexture:st->msaa_save_texture
+			toTexture:st->border_save_texture
 			destinationSlice:0
 			destinationLevel:0
 			destinationOrigin:MTLOriginMake(0, 0, 0)];
 		[save endEncoding];
+
+		// H1: MTL_RunWarpPass restores the border from this copy.
+		st->tiles_saved = true;
 	}
 
 	st->encoder = [st->command_buffer renderCommandEncoderWithDescriptor:st->pass_descriptor];
@@ -3573,22 +3667,22 @@ RE_RenderFrame(refdef_t *fd)
 
 		/* top, bottom, left, right (half-open, covers everything
 		   outside the world rectangle exactly once) */
-		[restore copyFromTexture:st->msaa_save_texture
+		[restore copyFromTexture:st->border_save_texture
 			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
 			sourceSize:MTLSizeMake(w, y0, 1)
 			toTexture:st->scene_texture
 			destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
-		[restore copyFromTexture:st->msaa_save_texture
+		[restore copyFromTexture:st->border_save_texture
 			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y1, 0)
 			sourceSize:MTLSizeMake(w, h - y1, 1)
 			toTexture:st->scene_texture
 			destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y1, 0)];
-		[restore copyFromTexture:st->msaa_save_texture
+		[restore copyFromTexture:st->border_save_texture
 			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y0, 0)
 			sourceSize:MTLSizeMake(x0, y1 - y0, 1)
 			toTexture:st->scene_texture
 			destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y0, 0)];
-		[restore copyFromTexture:st->msaa_save_texture
+		[restore copyFromTexture:st->border_save_texture
 			sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x1, y0, 0)
 			sourceSize:MTLSizeMake(w - x1, y1 - y0, 1)
 			toTexture:st->scene_texture

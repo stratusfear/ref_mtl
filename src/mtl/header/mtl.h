@@ -657,14 +657,20 @@ typedef struct mtlstate_s
 	   pipeline_sample_count tracks the count they were built for. The
 	   UI / warp / postprocess / present side always runs at 1 sample
 	   off the resolved texture, like ref_vk's single-sample
-	   vk_colorbuffer / vk_ui_depthbuffer. msaa_save_texture holds the
-	   pre-world scene (SCR_TileClear tiles at viewsize < 100) across
-	   the resolve, which overwrites the whole resolve texture
-	   regardless of the scissor rect. world_vx/vy/vw/vh are the
+	   vk_colorbuffer / vk_ui_depthbuffer. border_save_texture holds
+	   the pre-world scene (SCR_TileClear tiles at viewsize < 100)
+	   across the resolve, which overwrites the whole resolve texture
+	   regardless of the scissor rect; H1 reuses the same save to put
+	   the tiles back around the warp pass, whose 1:1 passthrough
+	   outside the refdef rect would otherwise composite the raw
+	   down-scaled world texels of the bands [vrect/p, vrect) into the
+	   2D border. tiles_saved marks the frames that have that copy.
+	   world_vx/vy/vw/vh are the
 	   device-pixel world viewport/scissor rectangle of the frame. */
 	id<MTLTexture>			msaa_color_texture;
 	id<MTLTexture>			msaa_depth_texture;
-	id<MTLTexture>			msaa_save_texture;
+	id<MTLTexture>			border_save_texture;
+	qboolean			tiles_saved;
 	NSUInteger			msaa_sample_count;
 	NSUInteger			pipeline_sample_count;
 	/* F2: the r_msaa_samples request that last failed; MTL_UpdateMSAA
