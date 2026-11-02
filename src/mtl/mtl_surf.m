@@ -320,6 +320,16 @@ R_RenderBrushPoly(msurface_t *fa, const float *modelMatrix, float alpha,
 			R_BuildLightMap(fa, (void *)temp, smax * 4);
 			R_SetCacheState(fa);
 
+			/* H2: the static lightmap texture is shared across frame
+			   slots, so this CPU replaceRegion can race the 1-2 command
+			   buffers still sampling it (the G4 race, static case). It
+			   only runs when a surface returns to base lighting (dlight
+			   or lightstyle ended), rewrites the identical base values
+			   in the steady state, and any tear shows as a one-frame
+			   flicker on that transition. Accepted knowingly: per-slot
+			   staging like G4 would mean a second full set of 256
+			   lightmap textures (~24 MB + rebuild cost) to hide a rare
+			   single-frame glitch. */
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[fa->lightmaptexturenum],
 				(const byte *)temp, smax * LIGHTMAP_BYTES,
 				fa->light_s, fa->light_t, smax, tmax);
@@ -511,6 +521,8 @@ MTL_RenderLightmappedPoly(msurface_t *surf, const float *modelMatrix, float alph
 			R_SetCacheState(surf);
 
 			lmtex = surf->lightmaptexturenum;
+			/* H2: same accepted static-texture replaceRegion race as in
+			   R_RenderBrushPoly above. */
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[surf->lightmaptexturenum],
 				(const byte *)temp, smax * LIGHTMAP_BYTES,
 				surf->light_s, surf->light_t, smax, tmax);
