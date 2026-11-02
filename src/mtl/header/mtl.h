@@ -29,6 +29,7 @@
 
 #include <stdio.h>
 #include <math.h>
+#include <stdatomic.h>	// F3: slot_busy cross-thread flags
 
 #ifdef USE_SDL3
 #include <SDL3/SDL.h>
@@ -697,7 +698,10 @@ typedef struct mtlstate_s
 	id<CAMetalDrawable>		drawable;		// current frame's drawable
 	uint64_t			frame_number;	// monotonically increasing
 	int				frame_slot;		// current slot in the frame ring
-	qboolean				slot_busy[3];	// slot has a frame in flight (completion handler clears it)
+	/* F3: written (release) by Metal's command-buffer completion
+	   handler thread, polled (acquire) on the render thread; a plain
+	   qboolean here is a data race. */
+	_Atomic bool			slot_busy[3];	// slot has a frame in flight (completion handler clears it)
 	qboolean			frame_active;	// frame in flight (Begin..End)
 	/* W9: ring consumption of the last completed frame, plus lifetime
 	   maxima, snapshotted in RE_EndFrame before RE_BeginFrame resets

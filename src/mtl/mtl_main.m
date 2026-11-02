@@ -2136,7 +2136,10 @@ RE_InitContext(void *sdl_window)
 	st->drawable = nil;
 	st->frame_number = 0;
 	st->frame_slot = 0;
-	memset(st->slot_busy, 0, sizeof(st->slot_busy));
+	for (int si = 0; si < 3; si++)
+	{
+		atomic_store(&st->slot_busy[si], false);
+	}
 	st->frame_active = false;
 	st->pixel_scale = pixel_scale;
 
@@ -2466,7 +2469,8 @@ RE_BeginFrame(float camera_separation)
 	{
 		int waited = 0;
 
-		while (st->slot_busy[st->frame_slot])
+		while (atomic_load_explicit(&st->slot_busy[st->frame_slot],
+		                            memory_order_acquire))
 		{
 			if (++waited > 1000)
 			{
@@ -2595,7 +2599,8 @@ RE_BeginFrame(float camera_separation)
 		Com_DPrintf("ref_mtl: failed to create command buffer, skipping frame\n");
 		return;
 	}
-	st->slot_busy[st->frame_slot] = true;
+	atomic_store_explicit(&st->slot_busy[st->frame_slot], true,
+	                      memory_order_relaxed);
 	st->frame_active = true;
 }
 
@@ -2835,7 +2840,8 @@ RE_EndFrame(void)
 					Com_Printf("ref_mtl: GPU error in frame %llu command buffer: %s\n",
 						frame, err.localizedDescription.UTF8String);
 				}
-				mtl_state.slot_busy[slot] = false;
+				atomic_store_explicit(&mtl_state.slot_busy[slot], false,
+				                      memory_order_release);
 			}
 		}];
 	}
