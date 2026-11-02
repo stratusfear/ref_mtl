@@ -617,9 +617,11 @@ typedef struct mtlstate_s
 	size_t				alias_vertex_offset[3];
 
 	// W3: lightmap textures (static [0..MAX_LIGHTMAPS-1] lazily
-	// created, dynamic [DYNLIGHTMAP_OFFSET..MAX_LIGHTMAPS*2-1]
-	// pre-created in MTL_BeginBuildingLightmaps)
-	id<MTLTexture>			lightmap_textures[MAX_LIGHTMAPS*2];
+	// created; dynamic range G4: three per-frame-slot sets, block b of
+	// slot s at DYNLIGHTMAP_OFFSET + s*MAX_LIGHTMAPS + b, also lazily
+	// created. The per-slot dynamic sets keep this frame's replaceRegion
+	// writes off the textures the 1-2 in-flight frames are still sampling.
+	id<MTLTexture>			lightmap_textures[MAX_LIGHTMAPS*4];
 
 	// W3: per-frame render command encoder (created in RE_RenderFrame,
 	// ended there; world draw functions encode into it)

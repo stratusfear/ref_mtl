@@ -59,6 +59,8 @@ static mtllightmapstate_t mtl_lms;
 static void		LM_InitBlock( void );
 static void		LM_UploadBlock( qboolean dynamic );
 static qboolean	LM_AllocBlock (int w, int h, int *x, int *y);
+static void		MTL_CreateLightmapTexture(unsigned index, const byte *data);
+static unsigned	MTL_DynLightmapTexture(unsigned block);
 
 /*
  * Uploads a w x h lightmap region to texture position (x, y).
@@ -515,7 +517,16 @@ MTL_RenderLightmappedPoly(msurface_t *surf, const float *modelMatrix, float alph
 		}
 		else
 		{
-			lmtex = surf->lightmaptexturenum + DYNLIGHTMAP_OFFSET;
+			/* G4: three dynamic lightmap sets, one per frame slot.
+			   replaceRegion on the shared dynamic texture was an
+			   immediate CPU write; the 1-2 command buffers still in
+			   flight were sampling that same texture, giving torn or
+			   flickering dlight lightmaps. Frame N now writes and
+			   samples only slot frame_slot's copy. Lazily created
+			   (zero-filled): the old up-front loop built 256 textures
+			   per set, 3x that was 48 MB of mostly-unused GPU memory. */
+			lmtex = MTL_DynLightmapTexture(surf->lightmaptexturenum);
+
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[lmtex],
 				(const byte *)temp, smax * LIGHTMAP_BYTES,
 				surf->light_s, surf->light_t, smax, tmax);
@@ -969,6 +980,30 @@ MTL_CreateLightmapTexture(unsigned index, const byte *data)
 	st->lightmap_textures[index] = texture;
 }
 
+/*
+ * G4: index of the dynamic lightmap texture for block `block` in the
+ * current frame slot's set; the texture is created zero-filled on first
+ * use. Frame N only ever writes/samples slot N's set, so the immediate
+ * CPU replaceRegion writes can't race the GPU sampling an in-flight
+ * frame's copy of the same texture.
+ */
+static unsigned
+MTL_DynLightmapTexture(unsigned block)
+{
+	unsigned index = DYNLIGHTMAP_OFFSET
+		+ (unsigned)mtl_state.frame_slot * MAX_LIGHTMAPS + block;
+
+	if (mtl_state.lightmap_textures[index] == nil)
+	{
+		byte dummy[BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES];
+
+		memset(dummy, 0, sizeof(dummy));
+		MTL_CreateLightmapTexture(index, dummy);
+	}
+
+	return index;
+}
+
 static void LM_UploadBlock( qboolean dynamic )
 {
 	unsigned texture;
@@ -1191,17 +1226,9 @@ void MTL_BeginBuildingLightmaps (model_t *m)
 	mtl_lms.current_lightmap_texture = 0;
 
 	/*
-	** initialize the dynamic lightmap textures
+	** G4: dynamic lightmap textures are now per-frame-slot and created
+	** lazily in MTL_DynLightmapTexture(); nothing to do here.
 	*/
-	if (mtl_state.lightmap_textures[DYNLIGHTMAP_OFFSET] == nil)
-	{
-		byte dummy[BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES];
-
-		memset(dummy, 0, sizeof(dummy));
-
-		for (i = DYNLIGHTMAP_OFFSET; i < MAX_LIGHTMAPS * 2; i++)
-			MTL_CreateLightmapTexture(i, dummy);
-	}
 }
 
 /*
@@ -1516,7 +1543,7 @@ void MTL_FreeLightmaps (void)
 {
 	unsigned i;
 
-	for (i = 0; i < MAX_LIGHTMAPS * 2; i++)
+	for (i = 0; i < MAX_LIGHTMAPS * 4; i++)
 	{
 		[mtl_state.lightmap_textures[i] release];
 		mtl_state.lightmap_textures[i] = nil;
