@@ -908,7 +908,10 @@ sample count changes while the UI / warp / postprocess / present
 pipelines stay at 1 sample.
 
 The creation blocks were factored out of R_InitShaders verbatim; the
-only changes are `pd.rasterSampleCount = sampleCount;` and the failure
+only changes are `pd.rasterSampleCount = sampleCount;`,
+`pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;` (F7: the
+world pass always carries a Depth32Float attachment and the debug layer
+asserts on the mismatch) and the failure
 returns. Called with sampleCount 1 from R_InitShaders and again from
 MTL_UpdateMSAA when r_msaa_samples changes.
 ============
@@ -961,6 +964,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 			pd.vertexDescriptor = vd;
 
 			pd.rasterSampleCount = sampleCount;
+			pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 			/* ref_vk parity: vk_drawPolyPipeline / vk_drawPolyWarpPipeline
@@ -1019,6 +1023,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
@@ -1056,6 +1061,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -1097,6 +1103,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_showtris = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
@@ -1133,6 +1140,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_alias = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
@@ -1149,6 +1157,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -1194,6 +1203,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -1240,6 +1250,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -1281,6 +1292,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -1582,231 +1594,11 @@ R_InitShaders(void)
 			}
 		}
 
-	/* W4: showtris (R_DrawTriangleOutlines). Reuses the dlight vertex and
-	   fragment functions (same 24B pos+color layout, same viewproj UBO);
-	   the differences live in the pipeline/encoder state - no blend, and
-	   the draws are line primitives with culling and depth test disabled
-	   (see R_DrawTriangleOutlines). */
-	{
-		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-
-		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
-
-		pd.fragmentFunction = [st->library newFunctionWithName:@"dlight_fragment"];
-
-		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
-		vd.attributes[0].format = MTLVertexFormatFloat3;
-		vd.attributes[0].offset = 0;
-		vd.attributes[0].bufferIndex = 0;
-		vd.attributes[1].format = MTLVertexFormatFloat3;
-		vd.attributes[1].offset = 12;
-		vd.attributes[1].bufferIndex = 0;
-		vd.layouts[0].stride = sizeof(dlightvert_t);
-		pd.vertexDescriptor = vd;
-
-		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-
-		st->pipeline_showtris = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
-		if (st->pipeline_showtris == nil)
-		{
-			Com_Printf("ref_mtl: showtris pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-	}
-
-	/* W5a: alias models. 36-byte vertices (pos3 + uv2 + color4), one UBO
-	   per model (alias_ubo_t, shared by all of the model's draws). The
-	   translucent variant alpha-blends and skips depth writes, like the
-	   flash pipeline. */
-	{
-		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-
-		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
-
-		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
-
-		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
-		vd.attributes[0].format = MTLVertexFormatFloat3;
-		vd.attributes[0].offset = 0;
-		vd.attributes[0].bufferIndex = 0;
-		vd.attributes[1].format = MTLVertexFormatFloat2;
-		vd.attributes[1].offset = 12;
-		vd.attributes[1].bufferIndex = 0;
-		vd.attributes[2].format = MTLVertexFormatFloat4;
-		vd.attributes[2].offset = 20;
-		vd.attributes[2].bufferIndex = 0;
-		vd.layouts[0].stride = sizeof(aliasvert_t);
-		pd.vertexDescriptor = vd;
-
-		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-
-		st->pipeline_alias = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
-		if (st->pipeline_alias == nil)
-		{
-			Com_Printf("ref_mtl: alias pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-
-		pd = [MTLRenderPipelineDescriptor new];
-		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
-		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
-		pd.vertexDescriptor = vd;
-
-		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingEnabled = YES;
-		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
-		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
-
-		st->pipeline_alias_translucent = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
-		if (st->pipeline_alias_translucent == nil)
-		{
-			Com_Printf("ref_mtl: alias translucent pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-
-
-	}
-
-	/* W5b: sprites (mod_sprite). Same 36-byte vertex layout as the alias
-	   models (the CPU writes color = white * alpha per vertex); the UBO is
-	   the smaller sprite_ubo_t (viewproj + gamma). Blending is always on,
-	   like ref_vk's sprite pipeline; depth state is set per draw. */
-	{
-		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-
-		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
-
-		pd.fragmentFunction = [st->library newFunctionWithName:@"sprite_fragment"];
-
-		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
-		vd.attributes[0].format = MTLVertexFormatFloat3;
-		vd.attributes[0].offset = 0;
-		vd.attributes[0].bufferIndex = 0;
-		vd.attributes[1].format = MTLVertexFormatFloat2;
-		vd.attributes[1].offset = 12;
-		vd.attributes[1].bufferIndex = 0;
-		vd.attributes[2].format = MTLVertexFormatFloat4;
-		vd.attributes[2].offset = 20;
-		vd.attributes[2].bufferIndex = 0;
-		vd.layouts[0].stride = sizeof(aliasvert_t);
-		pd.vertexDescriptor = vd;
-
-		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingEnabled = YES;
-		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
-		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
-
-		st->pipeline_sprite = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
-		if (st->pipeline_sprite == nil)
-		{
-			Com_Printf("ref_mtl: sprite pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-
-
-	}
-
-	/* W5c: particles. Textured mode reuses the sprite vertex function and
-	   UBO (viewproj + gamma); only the fragment threshold differs (0.5,
-	   ref_vk basic.frag aTreshold). Point mode computes the attenuated
-	   point size in the vertex shader; its fragment has no bindings at
-	   all. Both blend like the sprite pipeline (ref_vk default blendOpts). */
-	{
-		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-
-		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
-
-		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_fragment"];
-
-		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
-		vd.attributes[0].format = MTLVertexFormatFloat3;
-		vd.attributes[0].offset = 0;
-		vd.attributes[0].bufferIndex = 0;
-		vd.attributes[1].format = MTLVertexFormatFloat2;
-		vd.attributes[1].offset = 12;
-		vd.attributes[1].bufferIndex = 0;
-		vd.attributes[2].format = MTLVertexFormatFloat4;
-		vd.attributes[2].offset = 20;
-		vd.attributes[2].bufferIndex = 0;
-		vd.layouts[0].stride = sizeof(aliasvert_t);
-		pd.vertexDescriptor = vd;
-
-		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingEnabled = YES;
-		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
-		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
-
-		st->pipeline_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
-		if (st->pipeline_particle == nil)
-		{
-			Com_Printf("ref_mtl: particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-
-
-	}
-
-	{
-		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-
-		pd.vertexFunction = [st->library newFunctionWithName:@"particle_point_vertex"];
-
-		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_point_fragment"];
-
-		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
-		vd.attributes[0].format = MTLVertexFormatFloat3;
-		vd.attributes[0].offset = 0;
-		vd.attributes[0].bufferIndex = 0;
-		vd.attributes[1].format = MTLVertexFormatFloat2;
-		vd.attributes[1].offset = 12;
-		vd.attributes[1].bufferIndex = 0;
-		vd.attributes[2].format = MTLVertexFormatFloat4;
-		vd.attributes[2].offset = 20;
-		vd.attributes[2].bufferIndex = 0;
-		vd.layouts[0].stride = sizeof(aliasvert_t);
-		pd.vertexDescriptor = vd;
-
-		pd.rasterSampleCount = 1;
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		pd.colorAttachments[0].blendingEnabled = YES;
-		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
-		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
-		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
-
-		st->pipeline_point_particle = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
-		if (st->pipeline_point_particle == nil)
-		{
-			Com_Printf("ref_mtl: point particle pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
-			R_ReleaseShaders(st);
-			return false;
-		}
-
-	}
+	/* F7: the showtris / alias / alias-translucent / sprite / particle
+	   pipelines are built by MTL_InitWorldPipelines above. The pre-W7
+	   copies that used to be repeated here would rebuild those six
+	   pipelines at rasterSampleCount 1 and overwrite the pointers
+	   without releasing, leaking the factored-out objects; removed. */
 
 	/* W8: the two UI sampling states. Nearest (no mip) for nolerp-listed
 	   textures (conchars/ch* fonts by default), linear+mip for everything
@@ -2743,11 +2535,6 @@ RE_BeginFrame(float camera_separation)
 				st->msaa_sample_count = 1;
 			}
 		}
-
-		st->depth_width = (int)drawable.texture.width;
-		st->depth_height = (int)drawable.texture.height;
-		st->scene_width = (int)drawable.texture.width;
-		st->scene_height = (int)drawable.texture.height;
 	}
 
 	/* W7: r_msaa_samples changes rebuild the world pipelines and the
