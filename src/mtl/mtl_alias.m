@@ -30,9 +30,10 @@
  * matrix + viewproj + textured flag) is written to the world UBO ring
  * per model and shared by all of its draws.
  *
- * Deferred from ref_vk: RF_DEPTHHACK / RDF_NOWORLDMODEL projection
- * hacking, r_lefthand mirroring, shadows (vk_shadows). None of these
- * matter for baseq2 world entities.
+ * Deferred from ref_vk: shadows (vk_shadows). The depth-hack / gun-FOV
+ * projection (I2) rides on the per-draw alias UBO and the r_lefthand
+ * mirror (I2) on the encoder cull state; neither disturbs the global
+ * view matrices.
  *
  * =======================================================================
  */
@@ -106,10 +107,14 @@ Alias_CmdvertRealloc(int count)
  * Writes one alias_ubo_t into the slot's world UBO ring and returns its
  * byte offset within the ring buffer (SIZE_MAX when exhausted). The
  * model matrix is in model space (rotation + translation only); the
- * vertex shader applies viewproj * model.
+ * vertex shader applies viewproj * model. I2: the viewproj is passed
+ * in rather than read from r_viewproj_matrix so depth-hack / left-hand
+ * entities can supply their own variant without disturbing the global
+ * matrix (the UBO record captures it at emit time; later entities keep
+ * the global one automatically).
  */
 size_t
-MTL_EmitAliasUbo(size_t slot, const float *model, float textured)
+MTL_EmitAliasUbo(size_t slot, const float *model, const float *viewproj, float textured)
 {
 	mtlstate_t *st = &mtl_state;
 	alias_ubo_t *ubo;
@@ -120,13 +125,54 @@ MTL_EmitAliasUbo(size_t slot, const float *model, float textured)
 
 	off = st->world_ubo_offset[slot];
 	ubo = (alias_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
-	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
+	memcpy(ubo->viewproj, viewproj, sizeof(float) * 16);
 	memcpy(ubo->model, model, sizeof(float) * 16);
 	ubo->textured = textured;
 	/* F4: advance keeps the next ring offset 16-byte aligned */
 	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(alias_ubo_t));
 
 	return off;
+}
+
+/*
+ * I2 (ref_vk R_DrawAliasModel's RF_DEPTHHACK / RDF_NOWORLDMODEL block):
+ * rebuilds the view-projection matrix for view models so their depth
+ * lands in a compressed front band and they can't poke through world
+ * geometry. ref_vk post-multiplies its projection by the correction
+ * matrix r_vulkan_correction_dh with [10] = [14] = c (0.3, or 0.2 while
+ * the player-setup menu's RDF_NOWORLDMODEL flag is set, to keep the
+ * setup model off the view model), which maps GL NDC z in [-1,1] to
+ * [0, 2c]. ref_mtl's Mat_Perspective emits Metal's [0,1] depth range
+ * directly, so the same band is folded into the matrix: z' = c*z_ndc +
+ * c. The near plane is 4 (the gun model distance) and fovy follows
+ * r_gunfov for RF_WEAPONMODEL, matching ref_vk: a negative r_gunfov
+ * means "follow the main FOV" (r_newrefdef.fov_y), otherwise the cvar
+ * value is used.
+ */
+void
+MTL_BuildDepthHackViewproj(const entity_t *e, float *out)
+{
+	float dist = (r_farsee->value == 0) ? 4096.0f : 8192.0f;
+	float c = 0.3f - (r_newrefdef.rdflags & RDF_NOWORLDMODEL) * 0.1f;
+	float fovy;
+	float proj[16];
+
+	if ((e->flags & RF_WEAPONMODEL) && r_gunfov->value < 0)
+	{
+		fovy = r_newrefdef.fov_y;
+	}
+	else
+	{
+		fovy = r_gunfov->value;
+	}
+
+	Mat_Perspective(proj, fovy, (float)r_newrefdef.width / r_newrefdef.height, 4, dist);
+	/* remap the depth row pair from [0,1] to the [0, 2c] band: z' =
+	   c*z_ndc + c (row-vector convention, w row untouched) */
+	proj[10] *= 2.0f * c;
+	proj[14] *= 2.0f * c;
+
+	Mat_Mul(r_view_matrix, proj, out);
 }
 
 /*
@@ -244,7 +290,7 @@ MTL_WriteAliasVert(aliasvert_t *dst, const alias_cmdvert_t *cv, dtrivertx_t *ver
 static int
 MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
     dtrivertx_t *verts, int num_xyz, size_t ubo_off,
-    qboolean shell, qboolean translucent)
+    qboolean shell, qboolean translucent, qboolean lefthand)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
@@ -344,7 +390,21 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 
 		[st->encoder setRenderPipelineState:translucent ? st->pipeline_alias_translucent : st->pipeline_alias];
 		[st->encoder setDepthStencilState:translucent ? st->depth_state_nodwrite : st->depth_state];
+		if (lefthand)
+		{
+			/* I2: the mirrored (left-hand) viewproj flips on-screen
+			   winding, so the cull that normally discards back faces
+			   has to discard the other side. ref_vk models this with a
+			   dedicated pipeline (vk_drawLefthandModelPipelineFan,
+			   CULL_MODE_FRONT under its global CW front face); the
+			   equivalent Metal encoder state is Front. */
+			[st->encoder setCullMode:MTLCullModeFront];
+		}
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)tri_count];
+		if (lefthand)
+		{
+			[st->encoder setCullMode:MTLCullModeNone];
+		}
 	}
 
 	return 0;
@@ -357,7 +417,7 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
  */
 static void
 MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
-    float *modelMatrix, entity_t *currententity)
+    float *modelMatrix, const float *viewproj, entity_t *currententity)
 {
 	daliasframe_t *frame, *oldframe;
 	dtrivertx_t *v, *ov, *verts;
@@ -371,6 +431,7 @@ MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
 	int num_mesh_nodes;
 	short *mesh_nodes;
 	qboolean shell, translucent;
+	qboolean lefthand;
 	size_t ubo_off;
 
 	frame = (daliasframe_t *)((byte *)paliashdr + paliashdr->ofs_frames
@@ -423,10 +484,12 @@ MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
 	shell = (currententity->flags & (RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE)) != 0;
 	translucent = (currententity->flags & RF_TRANSLUCENT) != 0;
 
-	ubo_off = MTL_EmitAliasUbo(mtl_state.frame_slot, modelMatrix,
+	ubo_off = MTL_EmitAliasUbo(mtl_state.frame_slot, modelMatrix, viewproj,
 	    shell ? 0.f : (r_lightmap->value ? 0.f : 1.f));
 	if (ubo_off == SIZE_MAX)
 		return;	/* UBO ring exhausted */
+
+	lefthand = ((currententity->flags & RF_WEAPONMODEL) && r_lefthand->value == 1.0f);
 
 	num_mesh_nodes = (paliashdr->ofs_skins - sizeof(dmdl_t)) / sizeof(short) / 2;
 	mesh_nodes = (short *)((char *)paliashdr + sizeof(dmdl_t));
@@ -437,14 +500,14 @@ MTL_DrawAliasFrameLerp(dmdl_t *paliashdr, float backlerp, image_t *skin,
 		{
 			if (MTL_DrawAliasGlcmds(order + mesh_nodes[i * 2],
 			    order + Q_min(paliashdr->num_glcmds, mesh_nodes[i * 2] + mesh_nodes[i * 2 + 1]),
-			    alpha, skin, verts, paliashdr->num_xyz, ubo_off, shell, translucent))
+			    alpha, skin, verts, paliashdr->num_xyz, ubo_off, shell, translucent, lefthand))
 				return;
 		}
 	}
 	else
 	{
 		MTL_DrawAliasGlcmds(order, order + paliashdr->num_glcmds,
-		    alpha, skin, verts, paliashdr->num_xyz, ubo_off, shell, translucent);
+		    alpha, skin, verts, paliashdr->num_xyz, ubo_off, shell, translucent, lefthand);
 	}
 }
 
@@ -607,6 +670,11 @@ R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 		if (R_CullAliasModel(bbox, currententity, currentmodel))
 			return;
 	}
+	else if (r_lefthand->value == 2)
+	{
+		/* I2: hand 2 hides the view weapon (ref_vk's early return) */
+		return;
+	}
 
 	paliashdr = (dmdl_t *)currentmodel->extradata;
 
@@ -768,7 +836,33 @@ R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 			currententity->backlerp = 0;
 		}
 
-		MTL_DrawAliasFrameLerp(paliashdr, currententity->backlerp, skin, model, currententity);
+		/* I2: RF_DEPTHHACK / RDF_NOWORLDMODEL entities draw with the
+		   compressed-depth projection; hand 1 mirrors the view weapon
+		   in X (ref_vk Mat_Scale(viewproj, -1, 1, 1) on top of the
+		   depth-hack variant when both apply). r_viewproj_matrix is
+		   never touched: the alias UBO record captures whichever
+		   matrix this entity draws with. */
+		{
+			float viewproj[16];
+
+			if ((currententity->flags & RF_DEPTHHACK) ||
+			    (r_newrefdef.rdflags & RDF_NOWORLDMODEL))
+			{
+				MTL_BuildDepthHackViewproj(currententity, viewproj);
+			}
+			else
+			{
+				memcpy(viewproj, r_viewproj_matrix, sizeof(viewproj));
+			}
+
+			if ((currententity->flags & RF_WEAPONMODEL) && r_lefthand->value == 1.0f)
+			{
+				Mat_Scale(viewproj, -1.f, 1.f, 1.f);
+			}
+
+			MTL_DrawAliasFrameLerp(paliashdr, currententity->backlerp, skin,
+			    model, viewproj, currententity);
+		}
 	}
 }
 

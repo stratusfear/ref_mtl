@@ -438,11 +438,16 @@ void R_DrawBrushModel (entity_t *currententity, const model_t *currentmodel);
  * MTL_EmitAliasUbo writes one alias_ubo_t into the slot's world UBO ring
  * and returns its byte offset within the ring buffer (SIZE_MAX when
  * exhausted).
+ * MTL_BuildDepthHackViewproj (I2) builds the RF_DEPTHHACK /
+ * RDF_NOWORLDMODEL projection variant (ref_vk r_vulkan_correction_dh):
+ * gun near plane 4, depth compressed into the [0, 0.6] band so the view
+ * model can't poke through world geometry.
  */
 void R_DrawEntitiesOnList (void);
-size_t MTL_EmitAliasUbo (size_t slot, const float *model, float textured);
+size_t MTL_EmitAliasUbo (size_t slot, const float *model, const float *viewproj, float textured);
 size_t MTL_EmitSpriteUbo (size_t slot);
 void R_DrawSpriteModel (entity_t *currententity, const model_t *currentmodel);
+void MTL_BuildDepthHackViewproj (const entity_t *e, float *out);
 
 //====================================================
 // Images
