@@ -332,12 +332,44 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
    element (visible at -O0, silent under UBSan); no live call site
    in any tree passes a prefixed or ternary argument, and the
    explicit component copies stay as the documented sidestep;
-   J3 fixed the beam/dlight/left-hand encoder cull restores to return
-   culling to Metal's pass default (back-face cull, the mirror of the
-   vk pipeline default) instead of culling off, so a translucent
-   alias model drawn after a beam no longer double-blends (jail1
-   `misc_blackhole` rig: blackhole color shift +25 -> +11 matching
-   vk's +12; opaque scenes unchanged apart from moving guards).
+   J3 made the beam/dlight/left-hand encoder restores return to
+   back-face cull instead of culling off, so a translucent alias
+   model drawn after a beam stopped double-blending (jail1
+   `misc_blackhole` rig: +25 -> +11, vk +12) - round-6 K2 showed
+   that diagnosis to be wrong (Metal's documented fresh-encoder
+   default is culling off, not back-cull; the "restore" was a state
+   leak, and the common no-beam frame stayed double-blended), and
+   replaced it.
+ - Round-6 finding K2: the world pass's raster state is made explicit
+   and no longer draw-order dependent. Metal's
+   documented fresh-encoder state is Clockwise + `MTLCullModeNone`,
+   and mtl's clip space does *not* mirror winding against ref_vk, so
+   the pass sets that baseline (`MTL_SetPassDefaults`, at pass start
+   and at every override's tail) and each override group sets the
+   same winding + cull pair ref_vk bakes into its pipeline (qvk.h):
+   alias-model draws Clockwise + back-cull (front-cull when `hand`
+   mirrors the viewproj), the beam tube Clockwise + back, the dlight
+   cubes Clockwise + front. Measured on the jail1 blackhole funnel
+   with a freeze protocol (spawn + server-pause in one bind, pinning
+   the blackhole's 19-frame anim to frame 0; base captures pause at
+   the same level time): mtl funnel G-delta +7.5/+7.5 with and
+   without a laser in view vs vk +7.4/+7.4, and mtl's own order-
+   dependence is gone (funnel window with vs without beam, mean pixel
+   diff 0.009); the old no-beam case double-blended at +24. The
+   model-file winding sign was settled by the weapon view model's
+   open surfaces: CounterClockwise + back-cull carves front-face
+   holes in the stock/grip where Clockwise + back-cull matches vk
+   (funnel-window pixel diff to vk mean 0.90 / max 43 vs 1.27 / 78);
+   hand 1's mirrored pair matches vk's lefthand pipeline at the
+   frame-noise floor; base1 full-frame diff vs pre-K2 stays confined
+   to the gun region (open-surface back-face removal, matching vk).
+   Free-running cross-run comparisons are phase-noisy (a one-tick
+   schedule shift moves the funnel delta by ~7 - which is why the
+   J3-era +11 vs +12 agreement was tighter than it looked). Whole-
+   pass back-culling with hidden-surface-removal savings (the
+   brief's option B) is deferred as a perf-parity milestone; pull it
+   forward if glass/alpha double-blend findings, perf goals, or
+   further winding-mixup bugs recur.
 
 ### Intentionally not implemented (parity scope cuts)
 

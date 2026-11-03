@@ -3513,6 +3513,31 @@ RE_ScreenShot_f(void)
 
 /*
 ==============
+MTL_SetPassDefaults
+
+K2: the world pass's raster-state baseline, Clockwise front winding
+with culling disabled - Metal's documented fresh-encoder defaults.
+Metal pipelines carry no raster state (unlike ref_vk, which bakes
+frontFace/cullMode into every pipeline, qvk.h's defaults macro being
+CLOCKWISE + CULL_MODE_BACK with the lefthand/dlight pipelines on FRONT
+and null/warp/showtris on NONE), so the encoder state *is* the pass
+state for the groups that never touch it - world surfaces, sprites,
+particles, poly chains, UI - and they must see culling disabled.
+Anything that overrides winding or culling (the alias-model draws,
+the beam tube, the dlight cubes, the left-hand weapon) restores this
+baseline when it is done; see the groups' own comments for why their
+override pair is what it is.
+==============
+*/
+void
+MTL_SetPassDefaults(id<MTLRenderCommandEncoder> encoder)
+{
+	[encoder setFrontFacingWinding:MTLWindingClockwise];
+	[encoder setCullMode:MTLCullModeNone];
+}
+
+/*
+==============
 RE_RenderFrame
 
 Encodes the world pass: clear color and depth, set up the view from the
@@ -3654,6 +3679,14 @@ RE_RenderFrame(refdef_t *fd)
 		Com_DPrintf("ref_mtl: failed to create render command encoder\n");
 		return;
 	}
+
+	/* K2: state the raster baseline explicitly instead of trusting
+	   that a fresh encoder still sits in it: groups that override
+	   winding/culling restore exactly this state, and the groups
+	   that never touch it (world surfaces, sprites, particles,
+	   chains) only render unculled if the encoder really is
+	   unculled. See MTL_SetPassDefaults. */
+	MTL_SetPassDefaults(st->encoder);
 
 	/* Classic encoders have no default viewport; set it explicitly.
 	   ref_vk parity (R_SetupVulkan viewport + RE_RenderFrame scissor):

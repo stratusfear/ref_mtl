@@ -148,10 +148,17 @@ R_RenderDlight(dlight_t *light)
 	[st->encoder setRenderPipelineState:st->pipeline_dlight];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:48];
 
-	/* restore the pass defaults for later draws (J3, see R_DrawBeam) */
+	/* K2: restore the pass baseline (Clockwise + culling off, Metal's
+	   documented fresh-encoder state; the J3 "restore" here wrote
+	   CCW + back-cull, a leak, not a default). The dlight cube's own
+	   Clockwise + front-cull pair above is deliberate: the cube
+	   vertices (EmitDlightVert, built from ref_vk's QVk dlight cube)
+	   face Clockwise under mtl's projection, and vk draws them with
+	   front-face culling too (vk_drawDLightPipeline: global CW
+	   frontFace + VK_CULL_MODE_FRONT_BIT, vk_common.c:1504), so the
+	   far shell of the cube is the one that blends. */
 	[st->encoder setDepthStencilState:st->depth_state];
-	[st->encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-	[st->encoder setCullMode:MTLCullModeBack];
+	MTL_SetPassDefaults(st->encoder);
 }
 
 void

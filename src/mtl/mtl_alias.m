@@ -410,22 +410,35 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 
 		[st->encoder setRenderPipelineState:translucent ? st->pipeline_alias_translucent : st->pipeline_alias];
 		[st->encoder setDepthStencilState:translucent ? st->depth_state_nodwrite : st->depth_state];
-		if (lefthand)
-		{
-			/* I2: the mirrored (left-hand) viewproj flips on-screen
-			   winding, so the cull that normally discards back faces
-			   has to discard the other side. ref_vk models this with a
-			   dedicated pipeline (vk_drawLefthandModelPipelineFan,
-			   CULL_MODE_FRONT under its global CW front face); the
-			   equivalent Metal encoder state is Front. */
-			[st->encoder setCullMode:MTLCullModeFront];
-		}
+
+		/* K2: set the model draws' raster state explicitly before
+		   every drawPrimitives, and restore the pass baseline
+		   (MTL_SetPassDefaults) right after, so draw order can
+		   never leak a cull into another group. The model-file
+		   triangle data (glcmds, and the shells that reuse them)
+		   faces Clockwise under mtl's projection - mtl's clip
+		   space does NOT mirror winding against vk, so this pair
+		   is ref_vk's own: global CW frontFace + the fan
+		   pipeline's CULL_MODE_BACK default (qvk.h). I2: the
+		   mirrored (left-hand) viewproj flips on-screen winding,
+		   so the cull discards the other side, exactly like vk's
+		   dedicated vk_drawLefthandModelPipelineFan
+		   (CULL_MODE_FRONT). Two families of draws discriminate
+		   the winding (opaque closed alias models are
+		   pixel-invariant under any cull): the translucent
+		   glass.dm2 misc_blackhole, which ran unculled (double
+		   blend, funnel-window delta +24) unless a cull was set,
+		   and the weapon view model, whose open surfaces show
+		   back faces when unculled and front-face holes under
+		   the CounterClockwise pair the beam tail leaked since
+		   J3 - Clockwise + Back renders both like vk (base1
+		   view model identical, frozen-frame funnel-window
+		   pixel diff to vk mean 0.90 / max 43, vs 1.27 / 78 for
+		   CounterClockwise + Back). */
+		[st->encoder setFrontFacingWinding:MTLWindingClockwise];
+		[st->encoder setCullMode:lefthand ? MTLCullModeFront : MTLCullModeBack];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)tri_count];
-		if (lefthand)
-		{
-			/* restore the pass default (see J3 note in R_DrawBeam) */
-			[st->encoder setCullMode:MTLCullModeBack];
-		}
+		MTL_SetPassDefaults(st->encoder);
 	}
 
 	return 0;
@@ -1039,7 +1052,7 @@ MTL_PutBeamVert(beamvert_t *v, const vec3_t p, const float *color)
  * (cl_laseralpha, default 0.3), and without culling the back half of
  * the tube blends under the front half - the jail1 test laser measured
  * ~1.8x the vk core color density with culling off. The encoder state
- * is restored to the pass defaults afterwards (see the J3 note below
+ * is restored to the pass baseline afterwards (see the K2 note below
  * the draw).
  */
 static void
@@ -1133,20 +1146,30 @@ R_DrawBeam(entity_t *currententity)
 	[st->encoder setRenderPipelineState:st->pipeline_beam];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:36];
 
-	/* Restore the pass defaults (J3): Metal's fresh-encoder state is
-	   counter-clockwise front winding with back-face culling, and the
-	   vk pipelines all inherit the matching QVk defaults (global
-	   frontFace CLOCKWISE, per-pipeline CULL_MODE_BACK) under the
-	   vk/Metal projection winding mirror. Restoring CullMode None
-	   instead leaked a cull-off state into every later draw of the
-	   frame: the jail1 test laser then left the second (translucent)
-	   entity pass uncullable, and a translucent alias model drawn
-	   after a beam (the jail1 misc_blackhole rig) blended its far
-	   half under its near half, ~6/255 darker on the green channel
-	   than the vk reference. */
+	/* K2: restore the pass baseline (MTL_SetPassDefaults: Clockwise +
+	   culling disabled, Metal's documented fresh-encoder state). The
+	   J3 note here claimed the fresh encoder was already CCW + back
+	   cull and "restored" exactly that - which was wrong on both
+	   counts (the documented default is CW + None, and assigning
+	   CCW + Back is a leak, not a restore). The leaked pair culled
+	   one shell of the jail1/glass misc_blackhole alias model drawn
+	   later in the same frame (the wrong shell: under the true CW
+	   convention CCW + Back discards front faces), and a
+	   single-blended blackhole happened to match vk's blend density
+	   within the funnel window's noise (+25 -> +11, vk +12) - while
+	   a frame without a beam drew the blackhole unculled again
+	   (+24), and that leaked pair culls front faces, carving holes
+	   through the weapon view model's open surfaces wherever it
+	   reaches one (measured as black diamonds in the stock/grip
+	   when CCW + Back was tried explicitly on base1). Draw order must not be
+	   load-bearing: the alias draws set their pair explicitly. The
+	   beam's own CW + back-cull above is deliberate, not baseline:
+	   the constructed tube quads face Clockwise under mtl's
+	   projection and must be culled so the translucent laser core
+	   blends once, matching vk (global CW frontFace + the fan
+	   pipeline's BACK default, qvk.h). */
 	[st->encoder setDepthStencilState:st->depth_state];
-	[st->encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-	[st->encoder setCullMode:MTLCullModeBack];
+	MTL_SetPassDefaults(st->encoder);
 }
 
 /*

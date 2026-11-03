@@ -411,6 +411,30 @@ size_t MTL_EmitViewProjUbo (size_t slot);
    returns SIZE_MAX, the emitters' sentinel for "ring dry". */
 size_t MTL_UboRingDry (void);
 
+/* K2: the world pass's raster-state baseline: Clockwise front winding
+ * and MTLCullModeNone - Metal's documented fresh-encoder defaults,
+ * which most world-pass draws (world surfaces, sprites, particles,
+ * chains, UI) rely on: Metal pipelines carry no raster state at all,
+ * so those groups get culling disabled only while the encoder sits
+ * in this state. ref_vk instead bakes culling into each pipeline
+ * (qvk.h: frontFace CLOCKWISE, CULL_MODE_BACK default, FRONT for the
+ * lefthand and dlight pipelines, NONE for null/showtris/warp).
+ * mtl's clip space does not mirror winding against vk, so all three
+ * groups that override the encoder state use the same Clockwise
+ * front face as ref_vk and only pick a cull mode: the alias-model
+ * draws back-cull (front when the viewproj is left-hand mirrored),
+ * the beam tube back-culls, the dlight cubes front-cull - each
+ * exactly the pair ref_vk bakes into the matching pipeline. The
+ * alias winding is established against vk pixel captures (the
+ * translucent glass.dm2 misc_blackhole needs *a* cull - unculled it
+ * double-blends, funnel-window delta +24 - and the weapon view
+ * model's open surfaces show the wrong faces if the sign is wrong:
+ * CounterClockwise + back-carves front-face holes into the stock
+ * where Clockwise + Back matches vk, and tightens the blackhole
+ * funnel-window diff to vk from mean 1.27/max 78 to 0.90/43). See
+ * the definition in mtl_main.m and the groups' comments. */
+void MTL_SetPassDefaults (id<MTLRenderCommandEncoder> encoder);
+
 void EmitWaterPolys (msurface_t *fa, image_t *texture,
 				   const float *modelMatrix, const float *color,
 				   qboolean solid_surface);
