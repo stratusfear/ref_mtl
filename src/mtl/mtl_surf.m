@@ -1389,6 +1389,15 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 		offset:ubo_off atIndex:0];
 	[st->encoder setRenderPipelineState:sky ? st->pipeline_sky : st->pipeline_plain];
 
+	/* I5: set the depth state per chain instead of inheriting it from
+	   the encoder. ref_vk bakes depth test + write into every brush
+	   pipeline (QVKPIPELINE_INIT defaults), so a chain must draw with
+	   st->depth_state no matter what ran before it: the entity loop
+	   leaves no-depth-write behind after translucent alias models,
+	   and R_DrawAlphaSurfaces() and entity brush models run after
+	   that in the frame. */
+	[st->encoder setDepthStencilState:st->depth_state];
+
 	for (; p; p = p->next)
 	{
 		int nv = p->numverts;
@@ -1497,6 +1506,9 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
 	[st->encoder setRenderPipelineState:st->pipeline_lmap];
+
+	/* I5: explicit depth state, see MTL_DrawPolyChain */
+	[st->encoder setDepthStencilState:st->depth_state];
 
 	for (; p; p = p->next)
 	{
