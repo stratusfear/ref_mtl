@@ -297,6 +297,28 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   `fix_verify.sh` smoke now maps `jail1` (the old `dm1` was absent
   from the installed paks, making the map-content check inert) and
   fails on `Can't find`.
+ - Fourth review round I1-I5 (entity/alias feature gaps) fixed: I1
+   `RF_BEAM` entities were never drawn (ref_vk draws them as tubes via
+   `R_DrawBeam`); beams now draw as tube segments with the beam's
+   flat color, no depth write, culling off (a back-culled tube proved
+   hollow against vk captures), new `pipeline_beam` + beam shaders,
+   jail1 `target_laser` A/B: beam footprint 12444 px vs vk 12628 px,
+   IoU 0.96; I2 the view weapon ignored `RF_DEPTHHACK` (the gun poked
+   through walls), `r_gunfov` and `hand`: a per-entity depth-hack
+   view-projection (the 0.3 band folded into the native Metal [0,1]
+   range, near 4) rides the alias UBO record, `r_gunfov -1` follows
+   the main FOV, hand 1 mirrors via negated X + front-face culling,
+   hand 2 hides the weapon (paired mtl/vk captures: mirrored-bbox IoU
+   0.87/0.78 at the frame-noise ceiling, gunfov bbox parity,
+   wall-pushup gun-region diff 202 px); I3 malformed glcmd commands
+   (`count < 3`) desynced the parser - the vertex words are now
+   skipped and reads clamped to the node's command range; I4
+   uninitialised `pointcolor` and the `1.0/s` NaN on the degenerate
+   lighting paths are now deterministic (zero); I5 the brush chains
+   (`MTL_DrawPolyChain`/`MTL_DrawLightmappedChain`) set `depth_state`
+   explicitly instead of inheriting the encoder state the
+   translucent-alias pass leaves behind (ref_vk bakes it into every
+   brush pipeline).
 
 ### Intentionally not implemented (parity scope cuts)
 
