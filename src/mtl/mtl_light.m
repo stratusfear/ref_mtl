@@ -148,10 +148,10 @@ R_RenderDlight(dlight_t *light)
 	[st->encoder setRenderPipelineState:st->pipeline_dlight];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:48];
 
-	/* restore the world-pass encoder state for later draws */
+	/* restore the pass defaults for later draws (J3, see R_DrawBeam) */
 	[st->encoder setDepthStencilState:st->depth_state];
 	[st->encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-	[st->encoder setCullMode:MTLCullModeNone];
+	[st->encoder setCullMode:MTLCullModeBack];
 }
 
 void

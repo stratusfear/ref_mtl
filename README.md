@@ -297,18 +297,13 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   `fix_verify.sh` smoke now maps `jail1` (the old `dm1` was absent
   from the installed paks, making the map-content check inert) and
   fails on `Can't find`.
- - Fourth review round I1-I5 (entity/alias feature gaps) fixed, and
-   round-5 finding J1 (beam triangle winding) fixed: I1
+ - Fourth review round I1-I5 (entity/alias feature gaps) fixed: I1
    `RF_BEAM` entities were never drawn (ref_vk draws them as tubes via
    `R_DrawBeam`); beams now draw as tube segments with the beam's
-   flat color, no depth write, clockwise front winding and back-face
-   culling like the vk beam pipeline, new `pipeline_beam` + beam
-   shaders; the jail1 `target_laser` beam is translucent
-   (`cl_laseralpha` 0.3), and its tube core now blends at effective
-   alpha 0.31 like vk (footprint IoU 0.96) - the first revision paired
-   the quad triangles with opposite orientation and had to disable
-   culling, double-blending the tube to alpha 0.49, ~1.8x vk's core
-   colour density; I2 the view weapon ignored `RF_DEPTHHACK` (the gun poked
+   flat color and no depth write, new `pipeline_beam` + beam shaders
+   (winding/cull state corrected by round-5 J1, see below; jail1
+   `target_laser` A/B footprint IoU 0.96); I2 the view weapon
+   ignored `RF_DEPTHHACK` (the gun poked
    through walls), `r_gunfov` and `hand`: a per-entity depth-hack
    view-projection (the 0.3 band folded into the native Metal [0,1]
    range, near 4) rides the alias UBO record, `r_gunfov -1` follows
@@ -324,6 +319,21 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
    explicitly instead of inheriting the encoder state the
    translucent-alias pass leaves behind (ref_vk bakes it into every
    brush pipeline).
+ - Round-5 findings J1-J3: J1 fixed the beam quad's triangle pair so
+   back-face culling keeps the front half of the tube - the
+   translucent `TE_LASER` core now blends at effective alpha 0.31
+   like vk (was a 0.49 double blend with culling disabled); J2
+   verified the toolchain-workaround claim: the miscompile of
+   `VectorCopy()` through a `const vec3_t *` is a real host-clang
+   code-generation defect (component loads at byte offsets 0/12/24
+   instead of 0/4/8, every -O level, silent under UBSan, the C is
+   valid) and the explicit component copies stay as the sidestep;
+   J3 fixed the beam/dlight/left-hand encoder cull restores to return
+   culling to Metal's pass default (back-face cull, the mirror of the
+   vk pipeline default) instead of culling off, so a translucent
+   alias model drawn after a beam no longer double-blends (jail1
+   `misc_blackhole` rig: blackhole color shift +25 -> +11 matching
+   vk's +12; opaque scenes unchanged apart from moving guards).
 
 ### Intentionally not implemented (parity scope cuts)
 

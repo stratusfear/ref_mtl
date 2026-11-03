@@ -423,7 +423,8 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)tri_count];
 		if (lefthand)
 		{
-			[st->encoder setCullMode:MTLCullModeNone];
+			/* restore the pass default (see J3 note in R_DrawBeam) */
+			[st->encoder setCullMode:MTLCullModeBack];
 		}
 	}
 
@@ -1034,8 +1035,9 @@ MTL_PutBeamVert(beamvert_t *v, const vec3_t p, const float *color)
  * Culling must stay on: the TE_LASER beam is drawn translucent
  * (cl_laseralpha, default 0.3), and without culling the back half of
  * the tube blends under the front half - the jail1 test laser measured
- * ~1.8x the vk core color density with culling off. The world-pass
- * encoder state is restored afterwards.
+ * ~1.8x the vk core color density with culling off. The encoder state
+ * is restored to the pass defaults afterwards (see the J3 note below
+ * the draw).
  */
 static void
 R_DrawBeam(entity_t *currententity)
@@ -1128,10 +1130,20 @@ R_DrawBeam(entity_t *currententity)
 	[st->encoder setRenderPipelineState:st->pipeline_beam];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:36];
 
-	/* restore the world-pass encoder state for later draws */
+	/* Restore the pass defaults (J3): Metal's fresh-encoder state is
+	   counter-clockwise front winding with back-face culling, and the
+	   vk pipelines all inherit the matching QVk defaults (global
+	   frontFace CLOCKWISE, per-pipeline CULL_MODE_BACK) under the
+	   vk/Metal projection winding mirror. Restoring CullMode None
+	   instead leaked a cull-off state into every later draw of the
+	   frame: the jail1 test laser then left the second (translucent)
+	   entity pass uncullable, and a translucent alias model drawn
+	   after a beam (the jail1 misc_blackhole rig) blended its far
+	   half under its near half, ~6/255 darker on the green channel
+	   than the vk reference. */
 	[st->encoder setDepthStencilState:st->depth_state];
 	[st->encoder setFrontFacingWinding:MTLWindingCounterClockwise];
-	[st->encoder setCullMode:MTLCullModeNone];
+	[st->encoder setCullMode:MTLCullModeBack];
 }
 
 /*
