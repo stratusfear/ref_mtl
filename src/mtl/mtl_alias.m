@@ -143,11 +143,11 @@ MTL_EmitAliasUbo(size_t slot, const float *model, const float *viewproj, float t
  * the player-setup menu's RDF_NOWORLDMODEL flag is set, to keep the
  * setup model off the view model), which maps GL NDC z in [-1,1] to
  * [0, 2c]. ref_mtl's Mat_Perspective emits Metal's [0,1] depth range
- * directly, so the same band is folded into the matrix: z' = c*z_ndc +
- * c. The near plane is 4 (the gun model distance) and fovy follows
- * r_gunfov for RF_WEAPONMODEL, matching ref_vk: a negative r_gunfov
- * means "follow the main FOV" (r_newrefdef.fov_y), otherwise the cvar
- * value is used.
+ * directly, so the same band is folded into the matrix by scaling the
+ * depth row pair by 2c: z' = 2c*z_ndc (Metal NDC). The near plane is 4
+ * (the gun model distance) and fovy follows r_gunfov for
+ * RF_WEAPONMODEL, matching ref_vk: a negative r_gunfov means "follow
+ * the main FOV" (r_newrefdef.fov_y), otherwise the cvar value is used.
  */
 void
 MTL_BuildDepthHackViewproj(const entity_t *e, float *out)
@@ -167,8 +167,9 @@ MTL_BuildDepthHackViewproj(const entity_t *e, float *out)
 	}
 
 	Mat_Perspective(proj, fovy, (float)r_newrefdef.width / r_newrefdef.height, 4, dist);
-	/* remap the depth row pair from [0,1] to the [0, 2c] band: z' =
-	   c*z_ndc + c (row-vector convention, w row untouched) */
+	/* fold the [0,1] depth range into the [0, 2c] band: scale the
+	   depth row pair by 2c, z' = 2c*z_ndc (row-vector convention,
+	   w row untouched) */
 	proj[10] *= 2.0f * c;
 	proj[14] *= 2.0f * c;
 
@@ -989,11 +990,18 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 
 /* One beam tube vertex: position plus the beam's flat RGBA color. The
    component-by-component copy is deliberate: VectorCopy() of a vec3_t
-   reached through an array of vec3_t pointers is miscompiled by clang 17
-   at -O2 (the three components get loaded 12 bytes apart, the array
-   element stride, so a vertex ends up holding the x components of three
-   neighbouring points). Ring fills elsewhere in the renderer are written
-   the same explicit way. */
+   reached through a `const vec3_t *` (the array-of-pointers ring fill
+   used during I1 development) is miscompiled by this host toolchain
+   (Apple clang 21.0.0, clang-2100.4.1.1) - it emits the three
+   component loads at byte offsets 0/12/24 (the vec3_t element size)
+   instead of 0/4/8, so a vertex ends up holding the x components of
+   three neighbouring points. Verified in isolation on this host at
+   every -O level (-O0 .. -O2, repro: VectorCopy(*tri[k], dst) with
+   `const vec3_t *tri[]`; the explicit (*tri[k])[j] form compiles
+   correctly), and silently under -fsanitize=undefined: the source is
+   valid C, this is a toolchain code-generation defect, not UB.
+   Ring fills elsewhere in the renderer are written the same explicit
+   way. */
 static void
 MTL_PutBeamVert(beamvert_t *v, const vec3_t p, const float *color)
 {
