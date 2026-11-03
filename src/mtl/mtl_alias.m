@@ -990,19 +990,22 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 }
 
 /* One beam tube vertex: position plus the beam's flat RGBA color. The
-   component-by-component copy is deliberate: VectorCopy() of a vec3_t
-   reached through a `const vec3_t *` (the array-of-pointers ring fill
-   used during I1 development) is miscompiled by this host toolchain
-   (Apple clang 21.0.0, clang-2100.4.1.1) - it emits the three
-   component loads at byte offsets 0/12/24 (the vec3_t element size)
-   instead of 0/4/8, so a vertex ends up holding the x components of
-   three neighbouring points. Verified in isolation on this host at
-   every -O level (-O0 .. -O2, repro: VectorCopy(*tri[k], dst) with
-   `const vec3_t *tri[]`; the explicit (*tri[k])[j] form compiles
-   correctly), and silently under -fsanitize=undefined: the source is
-   valid C, this is a toolchain code-generation defect, not UB.
-   Ring fills elsewhere in the renderer are written the same explicit
-   way. */
+   component-by-component copy is deliberate: an I1-development
+   revision fed the ring corners through an array of `const vec3_t *`
+   with VectorCopy(*tri[k], dst), and the components loaded at byte
+   offsets 0/12/24 - a vertex holding the x components of three
+   neighbouring ring points. An earlier J2 note here blamed this
+   host's clang; that was wrong (K1): shared.h defines
+   VectorCopy(a, b) with unparenthesised arguments, so the expansion
+   `*tri[k][j]` parses as the valid C `*(tri[k][j])` - with
+   `const vec3_t *tri[]` that indexes j whole vec3_t elements
+   (pointer-to-array arithmetic, 12-byte steps) and decays to that
+   element's first float. Present at -O0, silent under UBSan, and
+   the explicit (*tri[k])[j] form compiles correctly. The macro is
+   byte-identical upstream (yquake2/ref_vk shared.h); no call site
+   in any tree passes a *- or &-prefixed or ternary argument, so
+   only this comment records the trap. Explicit component copies
+   stay. */
 static void
 MTL_PutBeamVert(beamvert_t *v, const vec3_t p, const float *color)
 {

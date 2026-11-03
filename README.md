@@ -323,11 +323,15 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
    back-face culling keeps the front half of the tube - the
    translucent `TE_LASER` core now blends at effective alpha 0.31
    like vk (was a 0.49 double blend with culling disabled); J2
-   verified the toolchain-workaround claim: the miscompile of
-   `VectorCopy()` through a `const vec3_t *` is a real host-clang
-   code-generation defect (component loads at byte offsets 0/12/24
-   instead of 0/4/8, every -O level, silent under UBSan, the C is
-   valid) and the explicit component copies stay as the sidestep;
+   investigated the toolchain-workaround claim, and round 6 (K1)
+   corrected its conclusion: the `VectorCopy(*tri[k], dst)`
+   misbehaviour is a macro-precedence trap, not a clang defect -
+   `VectorCopy`'s arguments are unparenthesised in the (upstream-
+   identical) `shared.h`, so the expansion `*tri[k][j]` parses as
+   the valid C `*(tri[k][j])`, the first float of the *next* ring
+   element (visible at -O0, silent under UBSan); no live call site
+   in any tree passes a prefixed or ternary argument, and the
+   explicit component copies stay as the documented sidestep;
    J3 fixed the beam/dlight/left-hand encoder cull restores to return
    culling to Metal's pass default (back-face cull, the mirror of the
    vk pipeline default) instead of culling off, so a translucent
