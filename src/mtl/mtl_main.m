@@ -714,6 +714,11 @@ R_ReleaseShaders(mtlstate_t *st)
 			[st->dlight_vertex_buffer[i] release];
 			st->dlight_vertex_buffer[i] = nil;
 		}
+		if (st->beam_vertex_buffer[i] != nil)
+		{
+			[st->beam_vertex_buffer[i] release];
+			st->beam_vertex_buffer[i] = nil;
+		}
 		if (st->showtris_vertex_buffer[i] != nil)
 		{
 			[st->showtris_vertex_buffer[i] release];
@@ -831,6 +836,11 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->pipeline_dlight release];
 		st->pipeline_dlight = nil;
+	}
+	if (st->pipeline_beam != nil)
+	{
+		[st->pipeline_beam release];
+		st->pipeline_beam = nil;
 	}
 	if (st->pipeline_flash != nil)
 	{
@@ -1046,6 +1056,53 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		if (st->pipeline_dlight == nil)
 		{
 			Com_Printf("ref_mtl: dlight pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
+	/* I1: RF_BEAM tubes (R_DrawBeam). 28-byte vertices (pos3 + color4),
+	   standard alpha blend and no depth write, matching the vk beam
+	   pipeline (basic_color_quad frag, default SRC_ALPHA /
+	   ONE_MINUS_SRC_ALPHA, depthWriteEnable VK_FALSE). The cull/winding
+	   state rides on the encoder (clockwise front winding, culling
+	   disabled, see R_DrawBeam). */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"beam_vertex"];
+
+		pd.fragmentFunction = [st->library newFunctionWithName:@"beam_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.attributes[1].format = MTLVertexFormatFloat4;
+		vd.attributes[1].offset = 12;
+		vd.attributes[1].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(beamvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_beam = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];
+		if (st->pipeline_beam == nil)
+		{
+			Com_Printf("ref_mtl: beam pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
 			R_ReleaseShaders(st);
 			return false;
 		}
@@ -1368,6 +1425,7 @@ MTL_ReleaseWorldPipelines(mtlstate_t *st)
 		&st->pipeline_lmap,
 		&st->pipeline_sky,
 		&st->pipeline_dlight,
+		&st->pipeline_beam,
 		&st->pipeline_flash,
 		&st->pipeline_showtris,
 		&st->pipeline_alias,
@@ -1879,6 +1937,7 @@ R_InitShaders(void)
 		st->world_lmap_vertex_buffer[i] = [st->device newBufferWithLength:WORLD_LMAP_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->world_ubo[i] = [st->device newBufferWithLength:WORLD_UBO_RING_BYTES options:MTLResourceStorageModeShared];
 		st->dlight_vertex_buffer[i] = [st->device newBufferWithLength:DLIGHT_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
+		st->beam_vertex_buffer[i] = [st->device newBufferWithLength:BEAM_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->showtris_vertex_buffer[i] = [st->device newBufferWithLength:SHOWTRIS_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->alias_vertex_buffer[i] = [st->device newBufferWithLength:ALIAS_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 
@@ -1886,6 +1945,7 @@ R_InitShaders(void)
 		    st->world_lmap_vertex_buffer[i] == nil ||
 		    st->world_ubo[i] == nil ||
 		    st->dlight_vertex_buffer[i] == nil ||
+		    st->beam_vertex_buffer[i] == nil ||
 		    st->showtris_vertex_buffer[i] == nil ||
 		    st->alias_vertex_buffer[i] == nil)
 		{
@@ -2263,6 +2323,7 @@ R_CountPipelines(void)
 		&st->pipeline_lmap,
 		&st->pipeline_sky,
 		&st->pipeline_dlight,
+		&st->pipeline_beam,
 		&st->pipeline_flash,
 		&st->pipeline_showtris,
 		&st->pipeline_alias,
@@ -2554,6 +2615,7 @@ RE_BeginFrame(float camera_separation)
 	st->world_lmap_vertex_offset[st->frame_slot] = 0;
 	st->world_ubo_offset[st->frame_slot] = 0;
 	st->dlight_vertex_offset[st->frame_slot] = 0;
+	st->beam_vertex_offset[st->frame_slot] = 0;
 	st->showtris_vertex_offset[st->frame_slot] = 0;
 	st->alias_vertex_offset[st->frame_slot] = 0;
 

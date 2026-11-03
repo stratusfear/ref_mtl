@@ -169,6 +169,44 @@ dlight_fragment(dlight_out in [[stage_in]])
 }
 
 //==================================================================
+// Beams (R_DrawBeam, I1): 28-byte vertices (pos3 + color4),
+// viewproj * pos (the beam rides the DlightUbo viewproj block),
+// color with alpha passed through so the pipeline's standard
+// SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend can use the entity alpha
+// (matching the vk beam + basic_color_quad frag, which blend the
+// UBO color's alpha). Encoder state: no depth writes, clockwise front
+// winding, culling disabled (see R_DrawBeam).
+//==================================================================
+
+struct beam_in
+{
+    float3 position [[attribute(0)]];
+    float4 color   [[attribute(1)]];
+};
+
+struct beam_out
+{
+    float4 position [[position]];
+    float4 color;
+};
+
+vertex beam_out
+beam_vertex(beam_in in [[stage_in]],
+            const device DlightUbo *ubo [[buffer(1)]])
+{
+    beam_out out;
+    out.position = ubo->viewproj * float4(in.position, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+fragment float4
+beam_fragment(beam_out in [[stage_in]])
+{
+    return in.color;
+}
+
+//==================================================================
 // View flash (R_PolyBlend): a full-screen clip-space quad with a
 // uniform RGBA color taken from v_blend (pain / damage feedback).
 // The vertices are already NDC, so no matrix is needed; the color

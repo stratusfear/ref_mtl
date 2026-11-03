@@ -119,6 +119,12 @@ typedef struct
 
 typedef struct
 {
+	float vertex[3];
+	float color[4];
+} beamvert_t;				// 28 bytes
+
+typedef struct
+{
 	float position[2];
 } flashvert_t;				// 8 bytes
 
@@ -255,6 +261,7 @@ typedef struct
    keep the next record's offset aligned. */
 #define MTL_UBO_ALIGN(x)			((size_t)(((x) + 15u) & ~(size_t)15))
 #define DLIGHT_VERTEX_RING_BYTES	(256 * 1024)
+#define BEAM_VERTEX_RING_BYTES		(256 * 1024)
 #define SHOWTRIS_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 #define ALIAS_VERTEX_RING_BYTES		(4 * 1024 * 1024)
 
@@ -531,6 +538,12 @@ typedef struct mtlstate_s
 	// The fragment stage has no resource bindings.
 	id<MTLRenderPipelineState>	pipeline_dlight;	// dlight_vertex + dlight_fragment
 
+	// I1: RF_BEAM tubes (R_DrawBeam): 28-byte vertices (pos3 + color4),
+	// standard alpha blend (vk beam pipeline's SRC_ALPHA /
+	// ONE_MINUS_SRC_ALPHA), no depth write. The viewproj UBO is the
+	// dlight one (dlight_ubo_t).
+	id<MTLRenderPipelineState>	pipeline_beam;	// beam_vertex + beam_fragment
+
 	// W4: view flash (R_PolyBlend): full-screen clip-space quad, uniform
 	// color from v_blend, standard alpha blend, no depth test or write.
 	// The six vertices are static; the color rides on the world UBO ring
@@ -607,6 +620,10 @@ typedef struct mtlstate_s
 	// W4: per-slot dlight vertex ring (dlightvert_t records, 24B)
 	id<MTLBuffer>			dlight_vertex_buffer[3];
 	size_t				dlight_vertex_offset[3];
+
+	// I1: per-slot beam vertex ring (beamvert_t records, 28B)
+	id<MTLBuffer>			beam_vertex_buffer[3];
+	size_t				beam_vertex_offset[3];
 
 	// W4: per-slot showtris vertex ring (dlightvert_t records, 24B)
 	id<MTLBuffer>			showtris_vertex_buffer[3];

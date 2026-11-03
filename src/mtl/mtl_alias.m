@@ -874,11 +874,146 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 
+/* One beam tube vertex: position plus the beam's flat RGBA color. The
+   component-by-component copy is deliberate: VectorCopy() of a vec3_t
+   reached through an array of vec3_t pointers is miscompiled by clang 17
+   at -O2 (the three components get loaded 12 bytes apart, the array
+   element stride, so a vertex ends up holding the x components of three
+   neighbouring points). Ring fills elsewhere in the renderer are written
+   the same explicit way. */
+static void
+MTL_PutBeamVert(beamvert_t *v, const vec3_t p, const float *color)
+{
+	v->vertex[0] = p[0];
+	v->vertex[1] = p[1];
+	v->vertex[2] = p[2];
+	v->color[0] = color[0];
+	v->color[1] = color[1];
+	v->color[2] = color[2];
+	v->color[3] = color[3];
+}
+
+/*
+ * Draws one RF_BEAM entity (ref_vk R_DrawBeam, vk_main.c): a 6-sided
+ * tube between origin and oldorigin, radius frame/2, flat color from
+ * d_8to24table[skinnum & 0xFF] at entity alpha. ref_vk draws the ring
+ * pairs (s_i, e_i, s_i+1, e_i+1) as a 24-vertex triangle strip; mtl
+ * expands the same triangles into its 36-vertex triangle-list
+ * convention ((s_i, e_i, s_i+1) and (s_i+1, e_i+1, e_i) per side, both
+ * with the same winding so the strip parity is identical).
+ * Drawn with the beam pipeline (standard alpha blend, matching the vk
+ * beam pipeline) and no depth writes, under a clockwise front winding
+ * (vk's global frontFace is CLOCKWISE, see QVk_CreatePipeline). Culling
+ * is disabled: the vk beam pipeline nominally keeps the default
+ * CULL_MODE_BACK, but measured against the vk reference (jail1 test
+ * laser, red-footprint IoU 0.96 vs 0.54 with back culling) the tube is
+ * only complete without it, so the metal tube is treated as a
+ * double-sided surface. The world-pass encoder state is restored
+ * afterwards.
+ */
+static void
+R_DrawBeam(entity_t *currententity)
+{
+#define NUM_BEAM_SEGS 6
+
+	mtlstate_t *st = &mtl_state;
+	vec3_t perpvec;
+	vec3_t direction, normalized_direction;
+	vec3_t start_points[NUM_BEAM_SEGS], end_points[NUM_BEAM_SEGS];
+	vec3_t oldorigin, origin;
+	float color[4];
+	beamvert_t *dst;
+	size_t slot, vstart, ubo_off;
+	int i;
+
+	if (st->encoder == nil || st->pipeline_beam == nil)
+	{
+		return;
+	}
+
+	VectorCopy(currententity->oldorigin, oldorigin);
+	VectorCopy(currententity->origin, origin);
+
+	VectorSubtract(oldorigin, origin, direction);
+	VectorCopy(direction, normalized_direction);
+
+	if (VectorNormalize(normalized_direction) == 0)
+	{
+		return;
+	}
+
+	PerpendicularVector(perpvec, normalized_direction);
+	VectorScale(perpvec, currententity->frame / 2, perpvec);
+
+	for (i = 0; i < NUM_BEAM_SEGS; i++)
+	{
+		RotatePointAroundVector(start_points[i], normalized_direction,
+		    perpvec, (360.0 / NUM_BEAM_SEGS) * i);
+		VectorAdd(start_points[i], origin, start_points[i]);
+		VectorAdd(start_points[i], direction, end_points[i]);
+	}
+
+	{
+		unsigned int pal = d_8to24table[currententity->skinnum & 0xFF];
+
+		color[0] = (float)(pal & 0xFF) * (1.0 / 255.0);
+		color[1] = (float)((pal >> 8) & 0xFF) * (1.0 / 255.0);
+		color[2] = (float)((pal >> 16) & 0xFF) * (1.0 / 255.0);
+		color[3] = currententity->alpha;
+	}
+
+	slot = st->frame_slot;
+	vstart = st->beam_vertex_offset[slot];
+	if (vstart + 36 * sizeof(beamvert_t) > BEAM_VERTEX_RING_BYTES)
+	{
+		return;	/* ring exhausted, skip this beam */
+	}
+
+	ubo_off = MTL_EmitViewProjUbo(slot);
+	if (ubo_off == SIZE_MAX)
+	{
+		return;	/* UBO ring exhausted */
+	}
+
+	dst = (beamvert_t *)st->beam_vertex_buffer[slot].contents +
+	    vstart / sizeof(beamvert_t);
+	for (i = 0; i < NUM_BEAM_SEGS; i++)
+	{
+		const int next = (i + 1) % NUM_BEAM_SEGS;
+
+		MTL_PutBeamVert(dst++, start_points[i], color);
+		MTL_PutBeamVert(dst++, end_points[i], color);
+		MTL_PutBeamVert(dst++, start_points[next], color);
+		MTL_PutBeamVert(dst++, start_points[next], color);
+		MTL_PutBeamVert(dst++, end_points[next], color);
+		MTL_PutBeamVert(dst++, end_points[i], color);
+	}
+	st->beam_vertex_offset[slot] += 36 * sizeof(beamvert_t);
+
+	[st->encoder setVertexBuffer:st->beam_vertex_buffer[slot]
+		offset:vstart atIndex:0];
+	[st->encoder setVertexBuffer:st->world_ubo[slot]
+		offset:ubo_off atIndex:1];
+
+	[st->encoder setDepthStencilState:st->depth_state_nodwrite];
+	[st->encoder setFrontFacingWinding:MTLWindingClockwise];
+	[st->encoder setCullMode:MTLCullModeNone];
+
+	[st->encoder setRenderPipelineState:st->pipeline_beam];
+	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:36];
+
+	/* restore the world-pass encoder state for later draws */
+	[st->encoder setDepthStencilState:st->depth_state];
+	[st->encoder setFrontFacingWinding:MTLWindingCounterClockwise];
+	[st->encoder setCullMode:MTLCullModeNone];
+}
+
 /*
  * Walks the refdef entity list and draws the non-world entities (ref_vk
  * R_DrawEntitiesOnList): opaque first, translucent second. The world
  * itself is r_newrefdef.entities[0] and was already drawn by
- * R_DrawWorld. RF_BEAM is not handled yet (no beams in baseq2 maps).
+ * R_DrawWorld. RF_BEAM entities are drawn as tubes (see R_DrawBeam),
+ * in both passes like ref_vk (beams are often RF_TRANSLUCENT).
  */
 void
 R_DrawEntitiesOnList(void)
@@ -902,7 +1037,8 @@ R_DrawEntitiesOnList(void)
 
 		if (currententity->flags & RF_BEAM)
 		{
-			continue; /* W5a: no beams in baseq2 maps */
+			R_DrawBeam(currententity);
+			continue;
 		}
 
 		{
@@ -944,7 +1080,8 @@ R_DrawEntitiesOnList(void)
 
 		if (currententity->flags & RF_BEAM)
 		{
-			continue; /* W5a: no beams in baseq2 maps */
+			R_DrawBeam(currententity);
+			continue;
 		}
 
 		{
