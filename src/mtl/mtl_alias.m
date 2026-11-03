@@ -321,17 +321,36 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 			count = -count;
 
 		if (count < 3)
+		{
+			/* I3: malformed command (ref_vk has no such check): the
+			   vertex words still have to be stepped over, otherwise
+			   the next iteration reads a vertex float as the command
+			   count and the whole list desyncs. Clamp the skip to
+			   order_end so a truncated tail cannot run off the end. */
+			order += Q_min(3 * count, (int)(order_end - order));
 			continue;
+		}
 
 		if (Alias_CmdvertRealloc(count))
 		{
 			Com_Error(ERR_FATAL, "MTL_DrawAliasGlcmds: can't allocate memory\n");
 		}
 
-		/* parse the command's vertices and validate the indices */
+		/* parse the command's vertices and validate the indices.
+		   I3: also stop at order_end: a header claiming more vertices
+		   than the node's range holds must not read past the end of
+		   the command list. */
 		for (i = 0; i < count; i++)
 		{
-			int index_xyz = order[2];
+			int index_xyz;
+
+			if (order + 3 > order_end)
+			{
+				Com_Printf("MTL_DrawAliasGlcmds: truncated glcmd list\n");
+				return -1;
+			}
+
+			index_xyz = order[2];
 
 			if (index_xyz < 0 || index_xyz >= num_xyz)
 			{
