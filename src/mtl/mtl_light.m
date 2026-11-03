@@ -421,7 +421,11 @@ BSPX_LightGridValue(const bspxlightgrid_t *grid, const lightstyle_t *lightstyles
 			tile[1]+!!(i&2),
 			tile[2]+!!(i&4), res_diffuse);
 
-	VectorScale(res_diffuse, 1.0/s, res_diffuse);	//average the successful ones
+	/* I4: s == 0 when all eight corner lookups failed. The upstream
+	   1.0/s is then infinity and turns the accumulated zeros into
+	   NaN; keep the "assume worst" zero instead. */
+	if (s > 0)
+		VectorScale(res_diffuse, 1.0/s, res_diffuse);	//average the successful ones
 }
 
 void
@@ -431,6 +435,12 @@ R_LightPoint(const bspxlightgrid_t *grid, vec3_t p, vec3_t color, entity_t *curr
 	float		r;
 	int			lnum;
 	dlight_t	*dl;
+
+	/* I4: RecursiveLightPoint can return 0 (surface with no samples)
+	   without having written pointcolor; the caller then copies it
+	   into the entity color. Upstream leaves it uninitialised; zero
+	   it so the entity gets deterministic light. */
+	VectorClear(pointcolor);
 
 	if (!r_worldmodel->lightdata || !currententity)
 	{
