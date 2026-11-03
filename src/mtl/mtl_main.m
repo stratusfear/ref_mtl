@@ -1065,8 +1065,9 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   standard alpha blend and no depth write, matching the vk beam
 	   pipeline (basic_color_quad frag, default SRC_ALPHA /
 	   ONE_MINUS_SRC_ALPHA, depthWriteEnable VK_FALSE). The cull/winding
-	   state rides on the encoder (clockwise front winding, culling
-	   disabled, see R_DrawBeam). */
+	   state rides on the encoder (clockwise front winding, back-face
+	   culling, matching the vk pipeline's default CULL_MODE_BACK under
+	   the CLOCKWISE global frontFace; see R_DrawBeam). */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 

@@ -175,7 +175,7 @@ dlight_fragment(dlight_out in [[stage_in]])
 // SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend can use the entity alpha
 // (matching the vk beam + basic_color_quad frag, which blend the
 // UBO color's alpha). Encoder state: no depth writes, clockwise front
-// winding, culling disabled (see R_DrawBeam).
+// winding, back-face culling (see R_DrawBeam).
 //==================================================================
 
 struct beam_in

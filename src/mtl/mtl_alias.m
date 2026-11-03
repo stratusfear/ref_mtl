@@ -1010,19 +1010,24 @@ MTL_PutBeamVert(beamvert_t *v, const vec3_t p, const float *color)
  * Draws one RF_BEAM entity (ref_vk R_DrawBeam, vk_main.c): a 6-sided
  * tube between origin and oldorigin, radius frame/2, flat color from
  * d_8to24table[skinnum & 0xFF] at entity alpha. ref_vk draws the ring
- * pairs (s_i, e_i, s_i+1, e_i+1) as a 24-vertex triangle strip; mtl
- * expands the same triangles into its 36-vertex triangle-list
- * convention ((s_i, e_i, s_i+1) and (s_i+1, e_i+1, e_i) per side, both
- * with the same winding so the strip parity is identical).
+ * pairs (s_i, e_i, s_i+1, e_i+1) as a 24-vertex triangle strip; the
+ * strip parity rule turns each side into the triangles
+ * (s_i, e_i, s_i+1) and (s_i+1, e_i, e_i+1) - the odd strip triangle
+ * swaps the last two corners of the quad - plus degenerate connector
+ * triangles at the segment seams. mtl expands the same pair into its
+ * 36-vertex triangle-list convention; the pair shares one winding, so
+ * back-culling keeps the front half of the tube and the silhouette
+ * matches vk. (An earlier revision paired (s_i+1, e_i+1, e_i), which
+ * flips orientation per quad and leaves half of every side culled.)
  * Drawn with the beam pipeline (standard alpha blend, matching the vk
  * beam pipeline) and no depth writes, under a clockwise front winding
- * (vk's global frontFace is CLOCKWISE, see QVk_CreatePipeline). Culling
- * is disabled: the vk beam pipeline nominally keeps the default
- * CULL_MODE_BACK, but measured against the vk reference (jail1 test
- * laser, red-footprint IoU 0.96 vs 0.54 with back culling) the tube is
- * only complete without it, so the metal tube is treated as a
- * double-sided surface. The world-pass encoder state is restored
- * afterwards.
+ * and back-face culling: vk's global frontFace is CLOCKWISE and the
+ * beam pipeline keeps the default CULL_MODE_BACK (QVk_CreatePipeline).
+ * Culling must stay on: the TE_LASER beam is drawn translucent
+ * (cl_laseralpha, default 0.3), and without culling the back half of
+ * the tube blends under the front half - the jail1 test laser measured
+ * ~1.8x the vk core color density with culling off. The world-pass
+ * encoder state is restored afterwards.
  */
 static void
 R_DrawBeam(entity_t *currententity)
@@ -1098,8 +1103,8 @@ R_DrawBeam(entity_t *currententity)
 		MTL_PutBeamVert(dst++, end_points[i], color);
 		MTL_PutBeamVert(dst++, start_points[next], color);
 		MTL_PutBeamVert(dst++, start_points[next], color);
-		MTL_PutBeamVert(dst++, end_points[next], color);
 		MTL_PutBeamVert(dst++, end_points[i], color);
+		MTL_PutBeamVert(dst++, end_points[next], color);
 	}
 	st->beam_vertex_offset[slot] += 36 * sizeof(beamvert_t);
 
@@ -1110,7 +1115,7 @@ R_DrawBeam(entity_t *currententity)
 
 	[st->encoder setDepthStencilState:st->depth_state_nodwrite];
 	[st->encoder setFrontFacingWinding:MTLWindingClockwise];
-	[st->encoder setCullMode:MTLCullModeNone];
+	[st->encoder setCullMode:MTLCullModeBack];
 
 	[st->encoder setRenderPipelineState:st->pipeline_beam];
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:36];
