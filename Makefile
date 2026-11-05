@@ -273,16 +273,19 @@ check-shaders:
 	fi
 
 # S2: also keep the generated file current inside a normal build when a
-# .msl is newer. Without python3 the regeneration cannot run, so the
-# rule only shouts; check-shaders then blocks the gate.
+# .msl is newer. T4: without python3 the regeneration cannot run, but
+# a normal build must not depend on the generator - the checked-in
+# file is the supported input - so this branch warns and succeeds.
+# The gate is still protected: fix_verify.sh runs check-shaders
+# first, and check-shaders has no such fallback, so a stale file
+# fails there.
 SRC_MSL := $(wildcard shaders/*.msl)
 
 src/files/mtl_shaders.c: $(SRC_MSL) shaders/gen_msl.sh
 	@if command -v python3 >/dev/null; then \
 		sh shaders/gen_msl.sh; \
 	else \
-		echo "src/files/mtl_shaders.c is out of date and python3 is unavailable; regenerate on a machine that has it" >&2; \
-		false; \
+		echo "WARNING: src/files/mtl_shaders.c is older than the .msl sources and python3 is unavailable; building with the checked-in shader array, regenerate with: sh shaders/gen_msl.sh" >&2; \
 	fi
 
 # ----------

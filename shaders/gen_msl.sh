@@ -9,9 +9,18 @@
 #
 #   sh shaders/gen_msl.sh
 #
-# Output is checked in (like ref_vk's spirv/*.c), so the build itself has
-# no generator dependency. An optional first argument redirects the output
-# (used by "make check-shaders", which compares against a temp file).
+# Output is checked in (like ref_vk's spirv/*.c), so a normal build
+# needs no generator: it compiles the checked-in array. "make" does
+# carry one convenience rule (T4) - if some shaders/*.msl is newer
+# than the generated file it regenerates in place when python3 is on
+# PATH, and otherwise only warns and builds with the checked-in
+# array. Freshness is enforced separately by "make check-shaders",
+# which the gate (tools/fix_verify.sh) runs first and which does
+# require python3.
+#
+# Output is written to src/files/mtl_shaders.c; an optional first
+# argument redirects it (used by "make check-shaders", which compares
+# against a temp file).
 
 set -e
 
