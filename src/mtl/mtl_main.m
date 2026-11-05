@@ -361,8 +361,8 @@ void Mat_Ortho(float *matrix, float left, float right, float bottom, float top,
 R_SetupFrame
 
 Sets up the per-frame view state: view origin, viewcluster and the
-view/projection matrices. W3.0: defined for the W4 draw path but not
-called at runtime yet (RE_RenderFrame is a clear-only pass).
+view/projection matrices. Called from RE_RenderFrame once the refdef is
+published, at the same place in the frame as ref_vk's R_SetupFrame.
 ==============
 */
 void
@@ -4112,9 +4112,12 @@ R_SetLightLevel(void)
 ==============
 RE_RenderFrame
 
-Encodes the world pass: clear color and depth, set up the view from the
-refdef (R_SetupFrame), draw the world (R_DrawWorld), then end the
-encoder. All world draw functions encode into st->encoder.
+Encodes the world pass: publish the refdef, special-case RDF_NOWORLDMODEL
+frames (O3, grey backdrop and no warp chain), set up the view
+(R_SetupFrame), open the pass with the load/clear and tile-save rules of
+W7/H1/O3, draw the world (R_DrawWorld) into st->encoder, restore the
+saved tiles after the MSAA resolve and end the encoder. All world draw
+functions encode into st->encoder.
 ==============
 */
 static void
@@ -4132,13 +4135,19 @@ RE_RenderFrame(refdef_t *fd)
 		return;
 	}
 
+	/* O6: publish the refdef before the frame-machinery guard, like
+	   ref_vk publishes r_newrefdef at the top of RE_RenderView before
+	   any pass bookkeeping. The 2D-side readers (MTL_RunWarpPass's
+	   refdef rect) then never see a frame younger than the last call;
+	   the early return below must not be able to keep them a frame
+	   behind on a frame the engine did submit. */
+	r_newrefdef = *fd;
+
 	if (!st->frame_active || st->command_buffer == nil ||
 	    st->scene_texture == nil || st->pipeline_plain == nil)
 	{
 		return;
 	}
-
-	r_newrefdef = *fd;
 
 	/* O3: ref_vk special-cases RDF_NOWORLDMODEL frames (the player-setup
 	   menu renders its 3-D model through this entry point with no world):

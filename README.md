@@ -552,6 +552,44 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     clears to black) and moved out of the shared-name parity list in
     `REVIEW_EXTERNAL.md`, which also gained the requested
     registered-cvar status table.
+ - Round-10 findings O1-O6 (brief `REVIEW_FINDINGS_10.md`; frame setup,
+    cvar surface, 2D border): O1 wired the never-called `R_MarkLeaves`
+    into `RE_RenderFrame` after `R_SetupFrame` (PVS leaf marking, same
+    place as ref_vk's `RE_RenderView`), which restores the
+    `d_pvs`/`r_viewcluster` chain the surface cull reads. O2 ported
+    `R_SetLightLevel()` (water/quake/slime/lava damage tint plus the
+    `refdef.ambientlight` bump) and calls it every world frame. O3
+    special-cased `RDF_NOWORLDMODEL` frames like ref_vk: a grey
+    backdrop quad through the UI colour path, the player-setup model
+    drawn over it, and no warp/postprocess chain, with the MSAA
+    resolve and `ui_target` bookkeeping following suit. O4 renamed
+    `mtl_polyblend` to the shared `r_polyblend`, registered
+    `r_norefresh` (freezes the refdef and the world draw while UI,
+    warp and present keep running), `r_speeds` (same counters as ref_vk)
+    and ported the deferred `r_shadows` planar ground shadow (own
+    pipeline, `MTL_BuildShadowViewproj`, per-entity stencil-free draw;
+    `base1`/`jail1` captures match ref_vk's shadow silhouettes). O5
+    found a real bug behind a comment contradiction: at `viewsize <
+    100` the whole mtl 2D border rendered as one flat grey, because
+    both UI samplers defaulted to clamp-to-edge while
+    `RE_Draw_TileClear` maps uv values past 1.0 (the engine even
+    passes oversized rects), pinning every tile past the first to the
+    backtile's corner texel. A new `ui_sampler_repeat`
+    (`MTLSamplerAddressModeRepeat`) selected only for tile clears fixed
+    it, and verifying the border's gamma settled the H1 question:
+    ref_vk draws its tileclear inside the world pass, so its tiles get
+    the postprocess pow at every pixel size; the tile restore moved
+    from after the postprocess stage to between warp and postprocess,
+    making the border byte-identical to ref_vk at `mtl_pixel_size 1`
+    (230400/230400 sampled border pixels) and palette/gamma-matching at
+    2, where the residual difference is resolution only (ref_vk's
+    border is the half-scale world image upscaled 2x). O6 is the nit
+    pass: the `R_SetupFrame` and `RE_RenderFrame` headers no longer
+    describe W3.0/W4 scaffolding, the I2 depth-hack comment no longer
+    repeats ref_vk's wrong "0.2 / 0.4" wording (`RDF_NOWORLDMODEL` is
+    2, so `0.3 - 2 * 0.1` gives c = 0.1 and a [0, 0.2] band), and
+    `r_newrefdef = *fd` is published before the frame-machinery early
+    return so the 2D-side readers can never lag a submitted frame.
 
 ### Intentionally not implemented (parity scope cuts)
 

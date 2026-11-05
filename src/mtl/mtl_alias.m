@@ -164,12 +164,14 @@ MTL_EmitAliasUbo(size_t slot, const float *model, const float *viewproj, float t
  * rebuilds the view-projection matrix for view models so their depth
  * lands in a compressed front band and they can't poke through world
  * geometry. ref_vk post-multiplies its projection by the correction
- * matrix r_vulkan_correction_dh with [10] = [14] = c (0.3, or 0.2 while
- * the player-setup menu's RDF_NOWORLDMODEL flag is set, to keep the
- * setup model off the view model), which maps GL NDC z in [-1,1] to
- * [0, 2c]. ref_mtl's Mat_Perspective emits Metal's [0,1] depth range
- * directly, so the same band is folded into the matrix by scaling the
- * depth row pair by 2c: z' = 2c*z_ndc (Metal NDC). The near plane is 4
+ * matrix r_vulkan_correction_dh with [10] = [14] = c (0.3 normally;
+ * while the player-setup menu's RDF_NOWORLDMODEL flag is set the raw
+ * bit value is 2 so 0.3 - 2 * 0.1 gives c = 0.1, a [0, 0.2] band, to
+ * keep the setup model off the view model), which maps GL NDC z in
+ * [-1,1] to [0, 2c]. ref_mtl's Mat_Perspective emits Metal's [0,1]
+ * depth range directly, so the same band is folded into the matrix by
+ * scaling the depth row pair by 2c: z' = 2c*z_ndc (Metal NDC). The
+ * near plane is 4
  * (the gun model distance) and fovy follows r_gunfov for
  * RF_WEAPONMODEL, matching ref_vk: a negative r_gunfov means "follow
  * the main FOV" (r_newrefdef.fov_y), otherwise the cvar value is used.
