@@ -489,6 +489,8 @@ static image_t *draw_chars;
 static id<MTLTexture> raw_textures[3];
 static int raw_textures_width[3];
 static int raw_textures_height[3];
+/* L5: one-shot console note for a failed 2x/3x retexturing alloc. */
+static int raw_scale_oom_warned;
 
 void
 Draw_InitLocal(void)
@@ -4421,21 +4423,45 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 	{
 		if (r_retexturing->value)
 		{
+			/* L5: scale2x/scale3x write through the destination
+			   pointer unconditionally, so a failed allocation here
+			   was a NULL deref (ref_vk is unchecked the same way;
+			   ours guards). On failure fall back to the unscaled
+			   source: one frame of an unsmoothed video, no crash. */
+			byte *scaled = NULL;
+
 			// triple scaling
 			if (cols < (vid.width / 3) || rows < (vid.height / 3))
 			{
-				image_scaled = malloc((size_t)cols * rows * 9);
-				scale3x(data, image_scaled, cols, rows);
-				cols = cols * 3;
-				rows = rows * 3;
+				scaled = malloc((size_t)cols * rows * 9);
+				if (scaled != NULL)
+				{
+					scale3x(data, scaled, cols, rows);
+					cols = cols * 3;
+					rows = rows * 3;
+				}
 			}
 			else
 			// double scaling
 			{
-				image_scaled = malloc((size_t)cols * rows * 4);
-				scale2x(data, image_scaled, cols, rows);
-				cols = cols * 2;
-				rows = rows * 2;
+				scaled = malloc((size_t)cols * rows * 4);
+				if (scaled != NULL)
+				{
+					scale2x(data, scaled, cols, rows);
+					cols = cols * 2;
+					rows = rows * 2;
+				}
+			}
+
+			if (scaled != NULL)
+			{
+				image_scaled = scaled;
+			}
+			else if (!raw_scale_oom_warned)
+			{
+				raw_scale_oom_warned = 1;
+				Com_Printf("RE_Draw_StretchRaw: retexturing "
+						"allocation failed, drawing unscaled\n");
 			}
 		}
 		else

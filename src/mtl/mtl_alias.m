@@ -440,23 +440,12 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 		   triangle data (glcmds, and the shells that reuse them)
 		   faces Clockwise under mtl's projection - mtl's clip
 		   space does NOT mirror winding against vk, so this pair
-		   is ref_vk's own: global CW frontFace + the fan
-		   pipeline's CULL_MODE_BACK default (qvk.h). I2: the
-		   mirrored (left-hand) viewproj flips on-screen winding,
-		   so the cull discards the other side, exactly like vk's
-		   dedicated vk_drawLefthandModelPipelineFan
-		   (CULL_MODE_FRONT). Two families of draws discriminate
-		   the winding (opaque closed alias models are
-		   pixel-invariant under any cull): the translucent
-		   glass.dm2 misc_blackhole, which ran unculled (double
-		   blend, funnel-window delta +24) unless a cull was set,
-		   and the weapon view model, whose open surfaces show
-		   back faces when unculled and front-face holes under
-		   the CounterClockwise pair the beam tail leaked since
-		   J3 - Clockwise + Back renders both like vk (base1
-		   view model identical, frozen-frame funnel-window
-		   pixel diff to vk mean 0.90 / max 43, vs 1.27 / 78 for
-		   CounterClockwise + Back). */
+		   is ref_vk's fan pipeline's: global CW frontFace +
+		   CULL_MODE_BACK (qvk.h). The mirrored (lefthand) viewproj
+		   flips on-screen winding, so the cull discards the other
+		   side, exactly like vk's dedicated lefthand model fan
+		   (CULL_MODE_FRONT). Evidence trail: README and
+		   REVIEW_EXTERNAL.md, round 6 (J3/K2). */
 		[st->encoder setFrontFacingWinding:MTLWindingClockwise];
 		[st->encoder setCullMode:lefthand ? MTLCullModeFront : MTLCullModeBack];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)tri_count];
@@ -1169,24 +1158,11 @@ R_DrawBeam(entity_t *currententity)
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:36];
 
 	/* K2: restore the pass baseline (MTL_SetPassDefaults: Clockwise +
-	   culling disabled, Metal's documented fresh-encoder state). The
-	   J3 note here claimed the fresh encoder was already CCW + back
-	   cull and "restored" exactly that - which was wrong on both
-	   counts (the documented default is CW + None, and assigning
-	   CCW + Back is a leak, not a restore). The leaked pair culled
-	   one shell of the jail1/glass misc_blackhole alias model drawn
-	   later in the same frame (the wrong shell: under the true CW
-	   convention CCW + Back discards front faces), and a
-	   single-blended blackhole happened to match vk's blend density
-	   within the funnel window's noise (+25 -> +11, vk +12) - while
-	   a frame without a beam drew the blackhole unculled again
-	   (+24), and that leaked pair culls front faces, carving holes
-	   through the weapon view model's open surfaces wherever it
-	   reaches one (measured as black diamonds in the stock/grip
-	   when CCW + Back was tried explicitly on base1). Draw order must not be
-	   load-bearing: the alias draws set their pair explicitly. The
-	   beam's own CW + back-cull above is deliberate, not baseline:
-	   the constructed tube quads face Clockwise under mtl's
+	   culling disabled, Metal's documented fresh-encoder state). Draw
+	   order must not be load-bearing: every special draw sets its own
+	   winding + cull pair before drawPrimitives and restores right
+	   after. The beam's own CW + back-cull above is deliberate, not
+	   baseline: the constructed tube quads face Clockwise under mtl's
 	   projection and must be culled so the translucent laser core
 	   blends once, matching vk (global CW frontFace + the fan
 	   pipeline's BACK default, qvk.h). */

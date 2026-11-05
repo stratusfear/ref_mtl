@@ -370,6 +370,37 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
    brief's option B) is deferred as a perf-parity milestone; pull it
    forward if glass/alpha double-blend findings, perf goals, or
    further winding-mixup bugs recur.
+ - Round-7 findings L1-L5 (+ round-6 leftovers): L1 added
+   `MTL_DrainInFlightFrames` at the top of both shutdown paths -
+   frame-completion handlers run on Metal worker threads and write
+   dylib statics, and the host dlcloses right after `re.Shutdown()`,
+   so an undrained quit/`vid_restart` risked executing unmapped
+   code (stress: 15+ unload/reload cycles clean). L2 completed the
+   teardown: all five console commands are deregistered (pre-fix,
+   2 restarts x 2 rounds logged 16 "already defined" and kept the
+   stale dylib's handlers wired), `Mod_FreeAll`/
+   `Mod_FreeModelsKnown` run before image teardown as in
+   `QVk_WaitAndShutdownAll`, and the `s_blocklights`/`s_lerped`/
+   `s_cmdverts` scratch is freed; `leaks --atExit` across 2 restarts
+   dropped 1,415,936 B (incl. 4 x 320K `calloc in Mod_Reallocate`)
+   to a 27,648 B host/runtime baseline. L3 gave `RE_Draw_StretchRaw`
+   one raw texture per frame slot (G4 pattern; the single shared
+   texture was rewritten by `replaceRegion` while older in-flight
+   frames sampled it). L4 made `r_videos_unfiltered` actually pick
+   the nearest UI sampler for video, like vk's `S_NEAREST` branch.
+   L5 + leftovers: stale-alignment and stale-J3 comments trimmed
+   to the current rule, `scale2x/3x` destination allocation guarded
+   (vk leaves it unchecked; we fall back to unscaled with a
+   one-shot console note), and the `VectorCopy` precedence-trap
+   documentation stays at the beam copies (K1). Still open from
+   this round: shelled-alias-model capture coverage - base-game
+   gamecode never sets `EF_*` shells on monsters (rogue/ctf only,
+   not installed) and singleplayer has no chase cam, so no mtl/vk
+   pair can be produced; shell draws reuse the same glcmds and the
+   same Clockwise + back-cull pair (vk: one fan pipeline), so the
+   cull argument there is structural. UI bind-caching
+   (`RE_Draw_CharScaled` per-glyph state churn) stays deferred
+   until profiling says otherwise.
 
 ### Intentionally not implemented (parity scope cuts)
 

@@ -149,8 +149,7 @@ R_RenderDlight(dlight_t *light)
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:48];
 
 	/* K2: restore the pass baseline (Clockwise + culling off, Metal's
-	   documented fresh-encoder state; the J3 "restore" here wrote
-	   CCW + back-cull, a leak, not a default). The dlight cube's own
+	   documented fresh-encoder state). The dlight cube's own
 	   Clockwise + front-cull pair above is deliberate: the cube
 	   vertices (EmitDlightVert, built from ref_vk's QVk dlight cube)
 	   face Clockwise under mtl's projection, and vk draws them with

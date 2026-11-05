@@ -619,7 +619,8 @@ typedef struct mtlstate_s
 	// tint path additionally multiplies by the UBO color, and the color
 	// path outputs the UBO color with standard alpha blending. All three
 	// share the 56-byte ui_ubo_t layout; the UBOs ride on the world UBO
-	// ring (8-byte aligned). Drawn in a second, color-only render pass
+	// ring (16-byte aligned, MTL_UBO_ALIGN, since F4). Drawn in a second,
+	// color-only render pass
 	// that loads (not clears) the scene target, except when the world pass
 	// has not run (plaque/cinematic frames) or a UI quad was drawn before
 	// it (TileClear with viewsize < 100), in which case the world pass
