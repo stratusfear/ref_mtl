@@ -461,6 +461,11 @@ void MTL_FreeLightmaps (void);
  * (SIZE_MAX when exhausted). Shared by the dlight quads and the
  * showtris outlines. */
 size_t MTL_EmitViewProjUbo (size_t slot);
+/* P1: same as MTL_EmitViewProjUbo but with a caller-supplied 4x4 matrix
+ * (a viewproj with the entity transform already baked in) instead of the
+ * global r_viewproj_matrix. Used by the null-model marker, whose entity
+ * rotation vk likewise carries in the per-draw UBO. */
+size_t MTL_EmitViewProjUboMat (size_t slot, const float *viewproj);
 /* G2: shared uniform-ring exhaustion path: counts the dropped draw in
    st->ring_drops[RING_WORLD_UBO] (one-shot Com_DPrintf on the first
    drop for that ring) and returns SIZE_MAX, the emitters' sentinel for

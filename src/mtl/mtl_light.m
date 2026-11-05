@@ -37,7 +37,7 @@ int r_dlightframecount;
  * the dlight quads and the showtris outlines.
  */
 size_t
-MTL_EmitViewProjUbo(size_t slot)
+MTL_EmitViewProjUboMat(size_t slot, const float *viewproj)
 {
 	mtlstate_t *st = &mtl_state;
 	dlight_ubo_t *ubo;
@@ -48,11 +48,17 @@ MTL_EmitViewProjUbo(size_t slot)
 
 	off = st->world_ubo_offset[slot];
 	ubo = (dlight_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
-	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
+	memcpy(ubo->viewproj, viewproj, sizeof(ubo->viewproj));
 	/* F4: advance keeps the next ring offset 16-byte aligned */
 	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(dlight_ubo_t));
 
 	return off;
+}
+
+size_t
+MTL_EmitViewProjUbo(size_t slot)
+{
+	return MTL_EmitViewProjUboMat(slot, r_viewproj_matrix);
 }
 
 /*

@@ -1411,11 +1411,120 @@ R_DrawBeam(entity_t *currententity)
 }
 
 /*
+ * P1: entity with a missing/bad model: the classic lit octahedron
+ * marker, ref_vk's R_DrawNullModel (vk_main.c:236). ref_mtl skipped
+ * such entities instead, so a model that failed to load simply erased
+ * its entity from the frame. Same geometry as vk: two square cones
+ * sharing a z=0 ring of radius 16, apexes at +-16 on z (the same 16
+ * units as vk's verts; the ring seam vertex is drawn twice by vk's
+ * fans, so 8 triangles / 24 vertices here is the identical surface).
+ * Light comes from R_LightPoint at the entity origin, fullbright for
+ * RF_FULLBRIGHT or with no lit world model, exactly like vk.
+ *
+ * Rendering reuses the showtris pipeline (dlight_vertex/
+ * dlight_fragment: pos3 + color3, viewproj-only UBO - the entity
+ * rotation is folded into the UBO on the CPU like vk's model matrix),
+ * the showtris vertex ring (24 B records, 576 B per entity: the ring
+ * holds 4 MiB and the outline pass runs first, so marker and outlines
+ * can never crowd each other out in practice) and the standard depth
+ * state; vk's nullmodel pipeline likewise tests and writes depth.
+ */
+static void
+MTL_PutNullModelVert(dlightvert_t *dst, const vec3_t pos, const vec3_t color)
+{
+	VectorCopy(pos, dst->vertex);
+	VectorCopy(color, dst->color);
+}
+
+static void
+R_DrawNullModel(entity_t *currententity)
+{
+	mtlstate_t *st = &mtl_state;
+	size_t slot = (size_t)st->frame_slot;
+	size_t vstart;
+	size_t ubo_off;
+	dlightvert_t *dst;
+	vec3_t shadelight;
+	float model[16];
+	float viewproj[16];
+	int i;
+
+	if (currententity->flags & RF_FULLBRIGHT || !r_worldmodel
+	    || !r_worldmodel->lightdata)
+	{
+		shadelight[0] = shadelight[1] = shadelight[2] = 1.0f;
+	}
+	else
+	{
+		R_LightPoint(r_worldmodel->grid, currententity->origin,
+		    shadelight, currententity);
+	}
+
+	Mat_Identity(model);
+	R_RotateForEntity(currententity, model);
+	/* row-vector convention: pos * model * viewproj (the dlight UBO's
+	   viewproj is applied last, so bake the entity transform in
+	   first) */
+	Mat_Mul(model, r_viewproj_matrix, viewproj);
+
+	vstart = st->showtris_vertex_offset[slot];
+	if (vstart + 24 * sizeof(dlightvert_t) > SHOWTRIS_VERTEX_RING_BYTES)
+	{
+		MTL_RingDry(RING_SHOWTRIS_VERTEX);
+		return;	/* ring exhausted, skip this marker */
+	}
+
+	ubo_off = MTL_EmitViewProjUboMat(slot, viewproj);
+	if (ubo_off == SIZE_MAX)
+	{
+		return;	/* UBO ring exhausted */
+	}
+
+	dst = (dlightvert_t *)st->showtris_vertex_buffer[slot].contents
+	    + vstart / sizeof(dlightvert_t);
+	for (i = 0; i < 4; i++)
+	{
+		float a0 = i * (float)M_PI / 2.0f;
+		float a1 = (i + 1) * (float)M_PI / 2.0f;
+		const float ring0[3] = { 16.0f * cosf(a0), 16.0f * sinf(a0), 0.0f };
+		const float ring1[3] = { 16.0f * cosf(a1), 16.0f * sinf(a1), 0.0f };
+		const float down[3] = { 0.0f, 0.0f, -16.0f };
+		const float up[3] = { 0.0f, 0.0f, 16.0f };
+
+		/* bottom cone: (down, ring[i], ring[i+1]), matching vk's
+		   first fan winding; top cone reverses it */
+		MTL_PutNullModelVert(dst++, down, shadelight);
+		MTL_PutNullModelVert(dst++, ring0, shadelight);
+		MTL_PutNullModelVert(dst++, ring1, shadelight);
+
+		MTL_PutNullModelVert(dst++, up, shadelight);
+		MTL_PutNullModelVert(dst++, ring1, shadelight);
+		MTL_PutNullModelVert(dst++, ring0, shadelight);
+	}
+	st->showtris_vertex_offset[slot] = vstart + 24 * sizeof(dlightvert_t);
+
+	[st->encoder setRenderPipelineState:st->pipeline_showtris];
+	[st->encoder setDepthStencilState:st->depth_state];
+	/* vk's nullmodel pipeline uses cull mode NONE (vk_common.c:1411);
+	   reset the pass default here because a beam drawn earlier in this
+	   same loop leaves MTLCullModeBack on the encoder (R_DrawBeam) */
+	[st->encoder setFrontFacingWinding:MTLWindingClockwise];
+	[st->encoder setCullMode:MTLCullModeNone];
+	[st->encoder setVertexBuffer:st->showtris_vertex_buffer[slot]
+		offset:vstart atIndex:0];
+	[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
+	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle
+		vertexStart:0 vertexCount:24];
+}
+
+/*
  * Walks the refdef entity list and draws the non-world entities (ref_vk
  * R_DrawEntitiesOnList): opaque first, translucent second. The world
  * itself is r_newrefdef.entities[0] and was already drawn by
  * R_DrawWorld. RF_BEAM entities are drawn as tubes (see R_DrawBeam),
- * in both passes like ref_vk (beams are often RF_TRANSLUCENT).
+ * in both passes like ref_vk (beams are often RF_TRANSLUCENT). P1:
+ * entities with a nil model draw the octahedron marker
+ * (R_DrawNullModel), like ref_vk, instead of being skipped.
  */
 void
 R_DrawEntitiesOnList(void)
@@ -1448,6 +1557,7 @@ R_DrawEntitiesOnList(void)
 
 			if (!currentmodel)
 			{
+				R_DrawNullModel(currententity);
 				continue;
 			}
 
@@ -1491,6 +1601,7 @@ R_DrawEntitiesOnList(void)
 
 			if (!currentmodel)
 			{
+				R_DrawNullModel(currententity);
 				continue;
 			}
 
