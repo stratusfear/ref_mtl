@@ -2856,6 +2856,15 @@ RE_BeginFrame(float camera_separation)
 			[st->scene_texture release];
 			st->scene_texture = nil;
 		}
+		/* M3: the tile-save copy is size-checked against scene_width and
+		   recreated lazily (RE_GetTileTexture), so releasing the
+		   now-wrong-size one here just returns the memory immediately
+		   instead of holding it until the next save. */
+		if (st->border_save_texture != nil)
+		{
+			[st->border_save_texture release];
+			st->border_save_texture = nil;
+		}
 
 		dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
 		        MTLPixelFormatDepth32Float
@@ -2896,6 +2905,49 @@ RE_BeginFrame(float camera_separation)
 			[st->post_texture release];
 		}
 		st->post_texture = [st->device newTextureWithDescriptor:sd];
+
+		/* M3: only publish the new dimensions when all four targets
+		   actually exist. The old code published unconditionally: on
+		   an allocation failure (memory pressure on a large drawable)
+		   the size test at the top of this block saw matching
+		   dimensions from the next frame on and never retried, so
+		   scene_texture stayed nil for the rest of the session -
+		   MTL_BeginUIPass returns early on a nil scene target and the
+		   screen stayed black. Drop the partial set, zero the sizes so
+		   the test keeps firing, and skip this frame; the next
+		   RE_BeginFrame retries the whole block. Nothing below has run
+		   yet (no command buffer, frame_active still false), so
+		   RE_EndFrame's frame_active guard makes the skip safe, like
+		   the command-buffer failure path below. */
+		if (st->depth_texture == nil || st->scene_texture == nil ||
+		    st->warp_texture == nil || st->post_texture == nil)
+		{
+			if (st->depth_texture != nil)
+			{
+				[st->depth_texture release];
+				st->depth_texture = nil;
+			}
+			if (st->scene_texture != nil)
+			{
+				[st->scene_texture release];
+				st->scene_texture = nil;
+			}
+			if (st->warp_texture != nil)
+			{
+				[st->warp_texture release];
+				st->warp_texture = nil;
+			}
+			if (st->post_texture != nil)
+			{
+				[st->post_texture release];
+				st->post_texture = nil;
+			}
+			st->depth_width = st->depth_height = 0;
+			st->scene_width = st->scene_height = 0;
+			Com_DPrintf("ref_mtl: resize allocations failed, skipping "
+			            "frame %llu\n", (unsigned long long)st->frame_number);
+			return;
+		}
 
 		/* F1: publish the new dimensions before the MSAA block below;
 		   MTL_CreateMSAADrawBuffers sizes its attachments from
