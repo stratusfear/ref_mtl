@@ -579,6 +579,79 @@ RE_Init(void)
 
 /*
 ==============
+MTL_DrainInFlightFrames
+
+L1: the ref_vk equivalent of vkDeviceWaitIdle in
+QVk_WaitAndShutdownAll (vk_main.c). Up to three frames can be in
+flight; their addCompletedHandler: blocks (installed in
+RE_EndFrame) run on Metal worker threads and write to
+mtl_state.slot_busy, a static in this dylib. The host calls
+Sys_FreeLibrary right after re.Shutdown(), so any handler still
+running at that point executes unmapped code. Wait for every
+slot's handler before releasing anything.
+
+A frame left open by Com_Error mid-frame is handled separately:
+RE_BeginFrame set the slot's busy flag but RE_EndFrame's commit
+never ran, so no completion handler will ever fire - drop the
+uncommitted command buffer and clear the flag instead of spinning
+on it. frame_active is an exact marker for that state: it is
+cleared at the very top of RE_EndFrame, and nothing between there
+and the commit has an error path (all encoding failures are
+DPrintf + skip); every real error path, warp and UI Sys_Error
+included, runs while frame_active is still set.
+==============
+*/
+static void
+MTL_DrainInFlightFrames(void)
+{
+	mtlstate_t *st = &mtl_state;
+	int slot;
+
+	if (st->device == nil)
+	{
+		return; // never initialized, nothing can be in flight
+	}
+
+	if (st->frame_active)
+	{
+		if (st->command_buffer != nil)
+		{
+			[st->command_buffer release];
+			st->command_buffer = nil;
+		}
+		atomic_store_explicit(&st->slot_busy[st->frame_slot], false,
+		                      memory_order_release);
+		st->frame_active = false;
+	}
+
+	for (slot = 0; slot < 3; slot++)
+	{
+		int waited = 0;
+
+		while (atomic_load_explicit(&st->slot_busy[slot],
+		                            memory_order_acquire))
+		{
+			if (++waited > 2000)
+			{
+				Com_Printf("ref_mtl: GPU frame in slot %d still "
+				           "in flight after 2 s, continuing\n",
+				           slot);
+				break;
+			}
+			SDL_Delay(1);
+		}
+	}
+
+	/* The handler clears its flag as its last action, but the block
+	   can still be a few instructions from returning when the clear
+	   is observed; a short grace period dwarfs that window before
+	   the releases - and, in RE_Shutdown, the eventual dlclose -
+	   proceed. */
+	SDL_Delay(20);
+}
+
+/*
+==============
 RE_ShutdownContext
 
 Shuts down the window specific context (Metal view and layer). Called
@@ -591,6 +664,9 @@ static void
 RE_ShutdownContext(void)
 {
 	mtlstate_t *st = &mtl_state;
+
+	// L1: no frame may outlive the context or the dylib
+	MTL_DrainInFlightFrames();
 
 	if (st->metal_view != NULL)
 	{
@@ -608,6 +684,11 @@ void
 RE_Shutdown(void)
 {
 	mtlstate_t *st = &mtl_state;
+
+	/* L1: drain again at the top of the full shutdown (the drain is
+	   idempotent): RE_Shutdown also releases the queue/device and
+	   zeroes mtl_state, and nothing in flight may touch any of it. */
+	MTL_DrainInFlightFrames();
 
 	ri.Cmd_RemoveCommand("screenshot");
 	RE_ShutdownContext();
