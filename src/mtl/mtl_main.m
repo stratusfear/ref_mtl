@@ -480,11 +480,15 @@ ref_vk Draw_InitLocal).
 */
 static image_t *draw_chars;
 
-/* W5d: RE_Draw_StretchRaw's dynamic texture, recreated when the size
-   changes (see RE_Draw_StretchRaw). */
-static id<MTLTexture> raw_texture;
-static int raw_texture_width;
-static int raw_texture_height;
+/* W5d: RE_Draw_StretchRaw's dynamic textures, recreated when the size
+   changes (see RE_Draw_StretchRaw). L3: one per frame slot, like G4's
+   dynamic lightmaps: a single shared texture rewritten with
+   replaceRegion while the 1-2 command buffers still in flight sample
+   it let consecutive video frames tear or mix. Frame N now writes and
+   samples only slot frame_slot's copy. */
+static id<MTLTexture> raw_textures[3];
+static int raw_textures_width[3];
+static int raw_textures_height[3];
 
 void
 Draw_InitLocal(void)
@@ -721,11 +725,16 @@ RE_Shutdown(void)
 	   this point, matching that ordering. */
 	MTL_ShutdownImages();
 
-	// W5d: StretchRaw's dynamic texture
-	if (raw_texture != nil)
+	// W5d/L3: StretchRaw's dynamic textures, all three slots
+	for (int i = 0; i < 3; i++)
 	{
-		[raw_texture release];
-		raw_texture = nil;
+		if (raw_textures[i] != nil)
+		{
+			[raw_textures[i] release];
+			raw_textures[i] = nil;
+		}
+		raw_textures_width[i] = 0;
+		raw_textures_height[i] = 0;
 	}
 
 	// W2: shaders and test resources
@@ -4464,44 +4473,51 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 		}
 	}
 
-	/* (Re)create the dynamic texture when the size changes. */
-	if (raw_texture != nil &&
-	    (raw_texture_width != cols || raw_texture_height != rows))
+	/* (Re)create the dynamic texture when this slot's size changes.
+	   L3: indexed by frame slot so a replaceRegion can't touch a
+	   texture an in-flight frame is still sampling. */
 	{
-		[raw_texture release];
-		raw_texture = nil;
-	}
+		int slot = st->frame_slot;
 
-	if (raw_texture == nil)
-	{
-		MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
-		        MTLPixelFormatRGBA8Unorm
-		        width:(NSUInteger)cols
-		        height:(NSUInteger)rows
-		        mipmapped:NO];
-		td.storageMode = MTLStorageModeShared;
-		raw_texture = [st->device newTextureWithDescriptor:td];
-		if (raw_texture == nil)
+		if (raw_textures[slot] != nil &&
+		    (raw_textures_width[slot] != cols ||
+		     raw_textures_height[slot] != rows))
 		{
-			free(raw_image32);
-			return;
+			[raw_textures[slot] release];
+			raw_textures[slot] = nil;
 		}
-		raw_texture_width = cols;
-		raw_texture_height = rows;
+
+		if (raw_textures[slot] == nil)
+		{
+			MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+			        MTLPixelFormatRGBA8Unorm
+			        width:(NSUInteger)cols
+			        height:(NSUInteger)rows
+			        mipmapped:NO];
+			td.storageMode = MTLStorageModeShared;
+			raw_textures[slot] = [st->device newTextureWithDescriptor:td];
+			if (raw_textures[slot] == nil)
+			{
+				free(raw_image32);
+				return;
+			}
+			raw_textures_width[slot] = cols;
+			raw_textures_height[slot] = rows;
+		}
+
+		[raw_textures[slot] replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)cols, (NSUInteger)rows)
+		        mipmapLevel:0 slice:0 withBytes:raw_image32
+		        bytesPerRow:cols * 4 bytesPerImage:cols * rows * 4];
+
+		free(raw_image32);
 	}
-
-	[raw_texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)cols, (NSUInteger)rows)
-	        mipmapLevel:0 slice:0 withBytes:raw_image32
-	        bytesPerRow:cols * 4 bytesPerImage:cols * rows * 4];
-
-	free(raw_image32);
 
 	/* Draw the raw texture as a quad. */
 	{
 		struct image_s fake;
 
 		memset(&fake, 0, sizeof(fake));
-		fake.mtl_texture = raw_texture;
+		fake.mtl_texture = raw_textures[st->frame_slot];
 
 		memset(&ubo, 0, sizeof(ubo));
 		ubo.offset[0] = (float)x / vid.width;
