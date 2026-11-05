@@ -574,7 +574,22 @@ MTL_UploadTexture(image_t *image, byte *texBuffer, int width, int height,
 	texture = [st->device newTextureWithDescriptor:td];
 	if (texture == nil)
 	{
-		Com_DPrintf("ref_mtl: failed to create texture %s\n", image->name);
+		/* M6: this used to be a Com_DPrintf under a level the default
+		   console hides, and the caller kept the image as valid with
+		   mtl_texture nil - world/alias draws then silently skip the
+		   surface (invisible geometry). Log loudly and substitute
+		   r_notexture's texture (retained; the skip-mip path below
+		   never runs for it), so the surface shows the notexture
+		   checker instead. If even notexture has no texture (its own
+		   creation failed, or this *is* notexture) there is nothing
+		   sane to substitute and draws skip it as before. */
+		Com_Printf("ref_mtl: failed to create GPU texture for %s, "
+		           "using notexture instead\n", image->name);
+		if (r_notexture != NULL && r_notexture != image &&
+		    r_notexture->mtl_texture != nil)
+		{
+			image->mtl_texture = [r_notexture->mtl_texture retain];
+		}
 		return;
 	}
 
@@ -752,7 +767,18 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 
 			image_converted = malloc(width * height * scale * scale);
 			if (!image_converted)
+			{
+				/* M6: the slot is already named and img_loaded already
+				   bumped here; returning NULL without rolling back left
+				   a named slot with mtl_texture nil (a permanent hole
+				   that also skewed the r_validation load counter and
+				   confused MTL_ImageHasFreeSpace). Same rollback as
+				   MTL_FreeUnusedImages: wipe the slot, drop the count. */
+				memset(image, 0, sizeof(*image));
+				img_loaded--;
+				Com_DPrintf("ref_mtl: out of memory scaling %s\n", name);
 				return NULL;
+			}
 
 			if (scale == 3) {
 				scale3x(pic, image_converted, width, height);
