@@ -670,20 +670,31 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 
 	{
 		int		i;
-		// find a free image_t
-		for (i = 0, image = mtltextures; i<nummtltextures; i++, image++)
-		{
-			// W3.0: no GPU textures yet, so a free slot is an unnamed one
-			if (!image->name[0])
-			{
-				break;
-			}
 
-			if (!strcmp(image->name, name))
+		/* M5: scan every named slot for the name first. The old
+		   combined loop stopped at the first unnamed slot, so once
+		   MTL_FreeUnusedImages had punched holes, an image living in
+		   a later slot was not recognized and a duplicate copy got
+		   uploaded into the hole (reachable through the paths that
+		   skip the MTL_FindImage pre-scan: generated images, or a
+		   R_LoadImage extension hit different from the stored name). */
+		for (i = 0; i < nummtltextures; i++)
+		{
+			if (mtltextures[i].name[0] && !strcmp(mtltextures[i].name, name))
 			{
 				/* we already have such image */
-				image->registration_sequence = registration_sequence;
-				return image;
+				mtltextures[i].registration_sequence = registration_sequence;
+				return &mtltextures[i];
+			}
+		}
+
+		// find a free image_t
+		for (i = 0; i < nummtltextures; i++)
+		{
+			// W3.0: no GPU textures yet, so a free slot is an unnamed one
+			if (!mtltextures[i].name[0])
+			{
+				break;
 			}
 		}
 
