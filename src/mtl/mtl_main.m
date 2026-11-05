@@ -584,6 +584,52 @@ RE_Init(void)
 }
 
 /*
+ ==============
+ MTL_AbandonOpenFrame
+
+ Discard a frame left open by a mid-frame error: end any open
+ encoder first (releasing a command buffer with an encoder still
+ open is a debug-layer assertion), drop the uncommitted command
+ buffer, free the abandoned frame's own slot, clear frame_active.
+ Callers must invoke it while frame_slot / frame_number still
+ refer to the abandoned frame - in RE_BeginFrame that means before
+ the frame counter is advanced.
+ ==============
+*/
+static void
+MTL_AbandonOpenFrame(void)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (!st->frame_active)
+	{
+		return;
+	}
+
+	if (st->encoder != nil)
+	{
+		[st->encoder endEncoding];
+		st->encoder = nil;
+	}
+	if (st->ui_encoder != nil)
+	{
+		[st->ui_encoder endEncoding];
+		st->ui_encoder = nil;
+	}
+	if (st->command_buffer != nil)
+	{
+		[st->command_buffer release];
+		st->command_buffer = nil;
+	}
+	atomic_store_explicit(&st->slot_busy[st->frame_slot], false,
+	                      memory_order_release);
+	st->frame_active = false;
+
+	Com_DPrintf("ref_mtl: discarding frame %llu left open by a "
+	            "mid-frame error\n", (unsigned long long)st->frame_number);
+}
+
+/*
 ==============
 MTL_DrainInFlightFrames
 
@@ -600,11 +646,18 @@ A frame left open by Com_Error mid-frame is handled separately:
 RE_BeginFrame set the slot's busy flag but RE_EndFrame's commit
 never ran, so no completion handler will ever fire - drop the
 uncommitted command buffer and clear the flag instead of spinning
-on it. frame_active is an exact marker for that state: it is
-cleared at the very top of RE_EndFrame, and nothing between there
-and the commit has an error path (all encoding failures are
-DPrintf + skip); every real error path, warp and UI Sys_Error
-included, runs while frame_active is still set.
+on it (MTL_AbandonOpenFrame). frame_active is an exact marker for
+that state: it is cleared at the very top of RE_EndFrame, and
+nothing between there and the commit has an error path (all
+encoding failures are DPrintf + skip); every real error path, warp
+and UI Sys_Error included, runs while frame_active is still set.
+
+M7B2: ERR_DROP while the renderer stays alive (the host returns to
+the console and the game keeps rendering) left that abandoned slot
+busy forever - every third frame then stalled a second on the CPU
+gate. RE_BeginFrame calls MTL_AbandonOpenFrame for the previous
+frame before advancing the frame counter, so the abandoned frame's
+slot is the one released.
 ==============
 */
 static void
@@ -620,14 +673,7 @@ MTL_DrainInFlightFrames(void)
 
 	if (st->frame_active)
 	{
-		if (st->command_buffer != nil)
-		{
-			[st->command_buffer release];
-			st->command_buffer = nil;
-		}
-		atomic_store_explicit(&st->slot_busy[st->frame_slot], false,
-		                      memory_order_release);
-		st->frame_active = false;
+		MTL_AbandonOpenFrame();
 	}
 
 	for (slot = 0; slot < 3; slot++)
@@ -2697,6 +2743,17 @@ RE_BeginFrame(float camera_separation)
 	{
 		return; // not initialized
 	}
+
+	/* M7B2: a mid-frame ERR_DROP (warp bad numverts, overlong clip
+	   chains, bad world model, ...) longjmps out before RE_EndFrame,
+	   leaving frame_active set, the frame's command buffer (and
+	   possibly its encoders) open and its slot busy forever. The
+	   drain at L1 only clears this at shutdown; without the call
+	   here, the abandoned slot makes every third frame hit the CPU
+	   gate's one-second timeout from then on. Must run before the
+	   frame counter advance below so frame_slot still identifies the
+	   abandoned frame. */
+	MTL_AbandonOpenFrame();
 
 	st->frame_number++;
 	st->frame_slot = (int)(st->frame_number % 3);
