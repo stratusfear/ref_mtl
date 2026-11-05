@@ -4518,6 +4518,12 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 
 		memset(&fake, 0, sizeof(fake));
 		fake.mtl_texture = raw_textures[st->frame_slot];
+		/* L4: r_videos_unfiltered was registered but never read.
+		   vk picks S_NEAREST for video when it is non-zero
+		   (vk_draw.c:426); route the same choice through the fake
+		   image's nolerp flag, which the UI pass sampler select
+		   already keys on. */
+		fake.nolerp = (r_videos_unfiltered->value != 0);
 
 		memset(&ubo, 0, sizeof(ubo));
 		ubo.offset[0] = (float)x / vid.width;
