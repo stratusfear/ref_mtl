@@ -1315,6 +1315,25 @@ void MTL_BeginBuildingLightmaps (model_t *m)
 	/* N1: new map, new warning budget for lightmap creation failures. */
 	lmap_fail_warned = false;
 
+	/* N3: the previous map's static block textures are still in the
+	   slots. Reusing them meant LM_UploadBlock overwrote live textures
+	   with CPU replaceRegion while in-flight command buffers could
+	   still sample them (the H2 race class, triggered at every map
+	   change), and blocks the new map doesn't use stayed resident
+	   until shutdown (up to 256 x 64 KiB). Release and nil the static
+	   range so each used block is created fresh and the rest goes free;
+	   Metal keeps a texture alive until the command buffers referencing
+	   it complete. The per-slot dynamic sets beyond MAX_LIGHTMAPS are
+	   left alone: they are zero-filled on creation and only ever read
+	   where the same frame slot wrote them (G4). This runs once per
+	   BSP load (MTL_LoadModel wraps Mod_LoadFaces with Begin/End), not
+	   per submodel. */
+	for (i = 0; i < MAX_LIGHTMAPS; i++)
+	{
+		[mtl_state.lightmap_textures[i] release];
+		mtl_state.lightmap_textures[i] = nil;
+	}
+
 	/*
 	** G4: dynamic lightmap textures are now per-frame-slot and created
 	** lazily in MTL_DynLightmapTexture(); nothing to do here.
