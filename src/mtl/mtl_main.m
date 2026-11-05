@@ -2442,6 +2442,20 @@ RE_InitContext(void *sdl_window)
 			return false;
 		}
 
+		/* M4: the OS check above only proves the MTL4 *APIs* exist;
+		   the GPU itself must belong to the Metal 4 family. Without
+		   this test the failure surfaced much later as a cryptic
+		   MTL4Compiler pipeline error instead of a clean fallback to
+		   the next renderer. */
+		if (![device supportsFamily:MTLGPUFamilyMetal4])
+		{
+			Com_Printf("ref_mtl: default Metal device '%s' does not support "
+			           "the Metal 4 GPU family. Not initializing.\n",
+			           device.name.UTF8String);
+			[device release];	/* Create rule: +1, not stored */
+			return false;
+		}
+
 		/* Classic (MTL3-era) command queue: drawing through an MTL4
 		   queue with an app-created render target corrupts the
 		   displayed image on M3 (Bug C, tools/bugc_repro/NOTES.md).
@@ -2452,6 +2466,7 @@ RE_InitContext(void *sdl_window)
 		if (command_queue == nil)
 		{
 			Com_Printf("ref_mtl: failed to create Metal command queue\n");
+			[device release];	/* same Create-rule release as above */
 			return false;
 		}
 
@@ -2476,13 +2491,25 @@ RE_InitContext(void *sdl_window)
 		return false;
 	}
 
-	/* The SDL Metal view owns the CAMetalLayer we render into. */
+	/* The SDL Metal view owns the CAMetalLayer we render into. M4: the
+	   view is checked before its layer is asked for, and a layer that
+	   still comes back NULL destroys the view again - returning with
+	   the view alive leaked it (st->metal_view is only assigned after
+	   both exist). */
 	SDL_MetalView metal_view = SDL_Metal_CreateView(window);
-	CAMetalLayer *layer = (CAMetalLayer *)SDL_Metal_GetLayer(metal_view);
 
-	if (metal_view == NULL || layer == NULL)
+	if (metal_view == NULL)
 	{
 		Com_Printf("ref_mtl: failed to create SDL Metal view: %s\n", SDL_GetError());
+		return false;
+	}
+
+	CAMetalLayer *layer = (CAMetalLayer *)SDL_Metal_GetLayer(metal_view);
+
+	if (layer == NULL)
+	{
+		Com_Printf("ref_mtl: SDL Metal view has no CAMetalLayer: %s\n", SDL_GetError());
+		SDL_Metal_DestroyView(metal_view);
 		return false;
 	}
 
@@ -2533,6 +2560,10 @@ RE_InitContext(void *sdl_window)
 	st->drawable = nil;
 	st->frame_number = 0;
 	st->frame_slot = 0;
+	/* M4 (verify): resetting the slot_busy flags here is safe because
+	   RE_ShutdownContext (L1, round 7B) drains every in-flight frame
+	   before the old context dies, so no previous-context frame can
+	   still be writing the shared rings at this point. */
 	for (int si = 0; si < 3; si++)
 	{
 		atomic_store(&st->slot_busy[si], false);
