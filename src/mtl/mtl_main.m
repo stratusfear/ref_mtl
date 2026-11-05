@@ -3804,15 +3804,20 @@ R_DrawParticles(void)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot, vstart, ubo_off;
+	int numparticles;
 
 	if (!r_newrefdef.num_particles || st->encoder == nil)
 	{
 		return;
 	}
 
-	if (r_newrefdef.num_particles > MAX_PARTICLES)
+	/* P4: clamp in a local; r_newrefdef is a per-frame copy, but there
+	   is no reason to write the clamp into it (ref_vk clamps the same
+	   count into its own local staging, vk_main.c). */
+	numparticles = r_newrefdef.num_particles;
+	if (numparticles > MAX_PARTICLES)
 	{
-		r_newrefdef.num_particles = MAX_PARTICLES;
+		numparticles = MAX_PARTICLES;
 	}
 
 	slot = st->frame_slot;
@@ -3820,14 +3825,16 @@ R_DrawParticles(void)
 
 	if (mtl_custom_particles->value == 1)
 	{
-		/* point mode: one vertex per particle, size computed on the GPU */
-		static aliasvert_t visibleParticles[MAX_PARTICLES];
+		/* point mode: one vertex per particle, size computed on the GPU.
+		   P4: vertices go straight into the particle ring (the space is
+		   checked before the loop); ref_vk's copy through a static
+		   staging array is not needed here and was dropped. */
 		const particle_t *p;
 		unsigned color;
 		aliasvert_t *dst;
 		int i;
 
-		if (vstart + r_newrefdef.num_particles * sizeof(aliasvert_t) > PARTICLE_VERTEX_RING_BYTES)
+		if (vstart + numparticles * sizeof(aliasvert_t) > PARTICLE_VERTEX_RING_BYTES)
 		{
 			MTL_RingDry(RING_PARTICLE_VERTEX);
 			return;	/* ring exhausted */
@@ -3839,10 +3846,10 @@ R_DrawParticles(void)
 			return;	/* UBO ring exhausted */
 		}
 
-		for (i = 0, p = r_newrefdef.particles; i < r_newrefdef.num_particles; i++, p++)
+		dst = (aliasvert_t *)((byte *)st->particle_vertex_buffer[slot].contents + vstart);
+		for (i = 0, p = r_newrefdef.particles; i < numparticles; i++, p++, dst++)
 		{
 			color = d_8to24table[p->color];
-			dst = &visibleParticles[i];
 			dst->position[0] = p->origin[0];
 			dst->position[1] = p->origin[1];
 			dst->position[2] = p->origin[2];
@@ -3854,21 +3861,19 @@ R_DrawParticles(void)
 			dst->color[3] = p->alpha;
 		}
 
-		memcpy((byte *)st->particle_vertex_buffer[slot].contents + vstart,
-		       visibleParticles, r_newrefdef.num_particles * sizeof(aliasvert_t));
-		st->particle_vertex_offset[slot] += r_newrefdef.num_particles * sizeof(aliasvert_t);
+		st->particle_vertex_offset[slot] += numparticles * sizeof(aliasvert_t);
 
 		[st->encoder setRenderPipelineState:st->pipeline_point_particle];
 		[st->encoder setDepthStencilState:st->depth_state];
 		[st->encoder setVertexBuffer:st->particle_vertex_buffer[slot] offset:vstart atIndex:0];
 		[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
-		[st->encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:r_newrefdef.num_particles];
+		[st->encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:numparticles];
 	}
 	else
 	{
 		/* textured mode: one triangle per particle (three vertices),
-		   uvs centered on the dot/square texture */
-		static aliasvert_t visibleParticles[MAX_PARTICLES * 3];
+		   uvs centered on the dot/square texture. P4: straight into
+		   the ring, as in point mode above. */
 		const particle_t *p;
 		vec3_t up, right;
 		image_t *skin;
@@ -3886,7 +3891,7 @@ R_DrawParticles(void)
 			return;
 		}
 
-		if (vstart + r_newrefdef.num_particles * 3 * sizeof(aliasvert_t) > PARTICLE_VERTEX_RING_BYTES)
+		if (vstart + numparticles * 3 * sizeof(aliasvert_t) > PARTICLE_VERTEX_RING_BYTES)
 		{
 			MTL_RingDry(RING_PARTICLE_VERTEX);
 			return;	/* ring exhausted */
@@ -3898,7 +3903,8 @@ R_DrawParticles(void)
 			return;	/* UBO ring exhausted */
 		}
 
-		for (i = 0, p = r_newrefdef.particles; i < r_newrefdef.num_particles; i++, p++)
+		dst = (aliasvert_t *)((byte *)st->particle_vertex_buffer[slot].contents + vstart);
+		for (i = 0, p = r_newrefdef.particles; i < numparticles; i++, p++, dst += 3)
 		{
 			color = d_8to24table[p->color];
 
@@ -3916,43 +3922,38 @@ R_DrawParticles(void)
 				scale = 1 + scale * 0.004;
 			}
 
-			dst = &visibleParticles[i * 3];
-			dst->position[0] = p->origin[0];
-			dst->position[1] = p->origin[1];
-			dst->position[2] = p->origin[2];
-			dst->uv[0] = 0.0625;
-			dst->uv[1] = 0.0625;
-			dst->color[0] = (color & 0xff) / 255.f;
-			dst->color[1] = ((color >> 8) & 0xff) / 255.f;
-			dst->color[2] = ((color >> 16) & 0xff) / 255.f;
-			dst->color[3] = p->alpha;
-			dst++;
+			dst[0].position[0] = p->origin[0];
+			dst[0].position[1] = p->origin[1];
+			dst[0].position[2] = p->origin[2];
+			dst[0].uv[0] = 0.0625;
+			dst[0].uv[1] = 0.0625;
+			dst[0].color[0] = (color & 0xff) / 255.f;
+			dst[0].color[1] = ((color >> 8) & 0xff) / 255.f;
+			dst[0].color[2] = ((color >> 16) & 0xff) / 255.f;
+			dst[0].color[3] = p->alpha;
 
-			dst->position[0] = p->origin[0] + up[0] * scale;
-			dst->position[1] = p->origin[1] + up[1] * scale;
-			dst->position[2] = p->origin[2] + up[2] * scale;
-			dst->uv[0] = 1.0625;
-			dst->uv[1] = 0.0625;
-			dst->color[0] = (color & 0xff) / 255.f;
-			dst->color[1] = ((color >> 8) & 0xff) / 255.f;
-			dst->color[2] = ((color >> 16) & 0xff) / 255.f;
-			dst->color[3] = p->alpha;
-			dst++;
+			dst[1].position[0] = p->origin[0] + up[0] * scale;
+			dst[1].position[1] = p->origin[1] + up[1] * scale;
+			dst[1].position[2] = p->origin[2] + up[2] * scale;
+			dst[1].uv[0] = 1.0625;
+			dst[1].uv[1] = 0.0625;
+			dst[1].color[0] = (color & 0xff) / 255.f;
+			dst[1].color[1] = ((color >> 8) & 0xff) / 255.f;
+			dst[1].color[2] = ((color >> 16) & 0xff) / 255.f;
+			dst[1].color[3] = p->alpha;
 
-			dst->position[0] = p->origin[0] + right[0] * scale;
-			dst->position[1] = p->origin[1] + right[1] * scale;
-			dst->position[2] = p->origin[2] + right[2] * scale;
-			dst->uv[0] = 0.0625;
-			dst->uv[1] = 1.0625;
-			dst->color[0] = (color & 0xff) / 255.f;
-			dst->color[1] = ((color >> 8) & 0xff) / 255.f;
-			dst->color[2] = ((color >> 16) & 0xff) / 255.f;
-			dst->color[3] = p->alpha;
+			dst[2].position[0] = p->origin[0] + right[0] * scale;
+			dst[2].position[1] = p->origin[1] + right[1] * scale;
+			dst[2].position[2] = p->origin[2] + right[2] * scale;
+			dst[2].uv[0] = 0.0625;
+			dst[2].uv[1] = 1.0625;
+			dst[2].color[0] = (color & 0xff) / 255.f;
+			dst[2].color[1] = ((color >> 8) & 0xff) / 255.f;
+			dst[2].color[2] = ((color >> 16) & 0xff) / 255.f;
+			dst[2].color[3] = p->alpha;
 		}
 
-		memcpy((byte *)st->particle_vertex_buffer[slot].contents + vstart,
-		       visibleParticles, r_newrefdef.num_particles * 3 * sizeof(aliasvert_t));
-		st->particle_vertex_offset[slot] += r_newrefdef.num_particles * 3 * sizeof(aliasvert_t);
+		st->particle_vertex_offset[slot] += numparticles * 3 * sizeof(aliasvert_t);
 
 		[st->encoder setRenderPipelineState:st->pipeline_particle];
 		[st->encoder setDepthStencilState:st->depth_state];
@@ -3965,7 +3966,7 @@ R_DrawParticles(void)
 		                                      ? st->world_sampler_nearest
 		                                      : st->world_sampler) atIndex:0];
 		[st->encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
-		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:r_newrefdef.num_particles * 3];
+		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:numparticles * 3];
 	}
 }
 

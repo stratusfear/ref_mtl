@@ -590,6 +590,35 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     2, so `0.3 - 2 * 0.1` gives c = 0.1 and a [0, 0.2] band), and
     `r_newrefdef = *fd` is published before the frame-machinery early
     return so the 2D-side readers can never lag a submitted frame.
+ - Round-11 findings P1-P4 (brief `REVIEW_FINDINGS_11.md`; entity /
+    sprite / particle audit): P1 ported `R_DrawNullModel` - the classic
+    lit octahedron marker ref_vk draws for refdef entities whose model
+    failed to load - into the nil-model branch of both passes of
+    `R_DrawEntitiesOnList` (CPU-computed octahedron normals, so the
+    alias pipeline needs no new state except an explicit
+    `MTLCullModeNone`; marker bbox/centroids match vk within 1 px and
+    8/8 sampled marker colours are equal on a jail1 `spawnentity` rig).
+    P2 made vertex-ring exhaustion observable and bounded: per-ring dry
+    counters for every frame slot ring (`mtl_mem` lines plus
+    once-per-session developer messages, mirroring the round-1
+    `Dropped surface draws` pattern), and particles moved onto a
+    dedicated 1 MiB vertex ring after a gib-shower probe showed the
+    shared 4 MiB alias ring could drain mid-frame and drop whole
+    particle batches; the gib-shower re-run exercises the particle
+    ring directly (it peaks at 45% of the ring) and reports zero drops. P3 verified particle appearance against ref_vk
+    with ROI-isolated captures (machinegun sparks at `custom_particles`
+    1/2/0 and `mtl_pixel_size 2` + `viewsize 50`; rocket-splash gib
+    showers): blob counts/median sizes/colours equivalent within
+    run-to-run simulation variance, all three particle modes and the
+    pixel-size combo match ref_vk's look; recorded numbers and the
+    discarded contaminated capture are in `REVIEW_EXTERNAL.md`. P4 is
+    the nit pass: particles write straight into their ring instead of
+    a 442 KB static staging array plus `memcpy` per frame, the
+    `MAX_PARTICLES` clamp happens in a local instead of mutating
+    `r_newrefdef`, a malformed sprite with `numframes == 0` skips the
+    draw instead of dividing by zero in the frame wrap, and the
+    `R_DrawEntitiesOnList` / `R_DrawBeam` headers record the P1
+    nil-model marker.
 
 ### Intentionally not implemented (parity scope cuts)
 

@@ -1171,6 +1171,14 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 	   a single polygon without a surface cache */
 	psprite = (dsprite_t *)currentmodel->extradata;
 
+	/* P4: a malformed sprite with no frames (R_LoadSpriteModel accepts
+	   one) would divide by zero in the frame wrap below; upstream has
+	   the same trap, skip the draw instead */
+	if (psprite->numframes == 0)
+	{
+		return;
+	}
+
 	currententity->frame %= psprite->numframes;
 	frame = &psprite->frames[currententity->frame];
 
@@ -1303,7 +1311,9 @@ MTL_PutBeamVert(beamvert_t *v, const vec3_t p, const float *color)
  * the tube blends under the front half - the jail1 test laser measured
  * ~1.8x the vk core color density with culling off. The encoder state
  * is restored to the pass baseline afterwards (see the K2 note below
- * the draw).
+ * the draw). RF_BEAM entities are dispatched here before any model
+ * lookup in R_DrawEntitiesOnList, so the P1 nil-model octahedron
+ * marker never applies to them, same as ref_vk.
  */
 static void
 R_DrawBeam(entity_t *currententity)
