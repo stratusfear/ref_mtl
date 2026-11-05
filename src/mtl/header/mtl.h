@@ -801,6 +801,9 @@ typedef struct mtlstate_s
 	/* G2: number of draws dropped by uniform-ring exhaustion across
 	   the session; reported by "mtl_mem". */
 	unsigned		ubo_exhausted;
+	/* N1: world surface chain draws skipped for a nil texture or
+	   sampler state; reported by "mtl_mem". */
+	unsigned		surfaces_dropped;
 	float			pixel_scale;	// layer contentsScale
 	float			inverse_intensity;	// 1.0 / mtl_intensity, texture modulation
 	float			camera_separation;	// RE_BeginFrame argument, stereo

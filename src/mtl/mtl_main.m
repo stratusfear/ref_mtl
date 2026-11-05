@@ -2798,6 +2798,8 @@ Mtl_Mem_f(void)
 
 	/* G2: draws dropped by uniform-ring exhaustion, see MTL_UboRingDry */
 	Com_Printf("Uniform ring drops: %u\n", st->ubo_exhausted);
+	/* N1: chain draws skipped for nil textures/sampler states */
+	Com_Printf("Dropped surface draws: %u\n", st->surfaces_dropped);
 
 	if (st->device != nil)
 	{

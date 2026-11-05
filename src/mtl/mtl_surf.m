@@ -80,6 +80,11 @@ static unsigned	MTL_DynLightmapTexture(unsigned block);
  */
 static byte lmap_stage[BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES];
 
+/* N1: the white substitute handed to failed lightmap slots (declared
+   here so the upload path can recognise it; see MTL_WhiteLightmapTexture
+   for the full comment). */
+static id<MTLTexture>	lmap_white_texture;
+
 static void
 MTL_UploadLightmapRegion(id<MTLTexture> texture, const byte *src, int src_stride,
 	int x, int y, int w, int h)
@@ -87,6 +92,13 @@ MTL_UploadLightmapRegion(id<MTLTexture> texture, const byte *src, int src_stride
 	byte	*out;
 	size_t	bytesPerRow = (size_t)w * LIGHTMAP_BYTES;
 	int		row;
+
+	/* N1: the substitute is 1x1 and must never receive lightmap data;
+	   lightstyle/dlight re-uploads would address regions past its edge
+	   (the debug layer flags that, release drivers may corrupt). The
+	   substitute only needs to exist so the surface draws fullbright. */
+	if (texture == lmap_white_texture)
+		return;
 
 	if (src_stride == BLOCK_WIDTH * LIGHTMAP_BYTES)
 	{
@@ -963,6 +975,43 @@ static void LM_InitBlock( void )
 }
 
 /*
+ * N1: substitute texture for failed lightmap creations. A white 1x1
+ * RGBA8 kept alive for the session (own +1, handed out retained); a
+ * surface sampling it draws fullbright instead of vanishing. Released
+ * in MTL_FreeLightmaps. The warning flag is reset per BSP load in
+ * MTL_BeginBuildingLightmaps. The variable itself is declared above
+ * MTL_UploadLightmapRegion, which skips writes into the substitute.
+ */
+static qboolean		lmap_fail_warned;
+
+static id<MTLTexture>
+MTL_WhiteLightmapTexture(void)
+{
+	mtlstate_t *st = &mtl_state;
+	MTLTextureDescriptor *td;
+	id<MTLTexture> t;
+	const byte		white[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
+
+	if (lmap_white_texture == nil)
+	{
+		td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+		        MTLPixelFormatRGBA8Unorm
+		        width:1
+		        height:1
+		        mipmapped:NO];
+		td.storageMode = MTLStorageModeShared;
+		t = [st->device newTextureWithDescriptor:td];
+		if (t == nil)
+			return nil;
+		[t replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+		        mipmapLevel:0 slice:0 withBytes:white
+		        bytesPerRow:4 bytesPerImage:4];
+		lmap_white_texture = t;
+	}
+	return [lmap_white_texture retain];
+}
+
+/*
  * Creates the GPU lightmap texture at `index` from a 128x128 RGBA buffer
  * (R_BuildLightMap output format, 4 bytes per pixel).
  */
@@ -982,7 +1031,31 @@ MTL_CreateLightmapTexture(unsigned index, const byte *data)
 	texture = [st->device newTextureWithDescriptor:td];
 	if (texture == nil)
 	{
-		Com_DPrintf("ref_mtl: failed to create lightmap texture %u\n", index);
+		/* N1: a nil lightmap used to make every surface on the block
+		   vanish silently (the draw paths skip nil textures). Report
+		   once per BSP load and substitute the white 1x1 so those
+		   surfaces stay visible (fullbright). ref_vk treats lightmap
+		   creation failure as fatal (ERR_DROP at block overflow);
+		   substituting is a deliberate deviation, same direction as
+		   M6's notexture fallback. A slot left nil here is retried
+		   naturally: LM_UploadBlock re-enters the create path for the
+		   static block, MTL_DynLightmapTexture for a dynamic one. */
+		if (!lmap_fail_warned)
+		{
+			lmap_fail_warned = true;
+			Com_Printf("ref_mtl: lightmap texture %u failed to create; "
+				"its surfaces draw unlit (further failures this load "
+				"are silent, dropped draws: mtl_mem)\n", index);
+		}
+		{
+			id<MTLTexture> white = MTL_WhiteLightmapTexture();
+
+			if (white != nil)
+			{
+				st->lightmap_textures[index] = white;
+				return;
+			}
+		}
 		return;
 	}
 
@@ -1239,6 +1312,9 @@ void MTL_BeginBuildingLightmaps (model_t *m)
 
 	mtl_lms.current_lightmap_texture = 0;
 
+	/* N1: new map, new warning budget for lightmap creation failures. */
+	lmap_fail_warned = false;
+
 	/*
 	** G4: dynamic lightmap textures are now per-frame-slot and created
 	** lazily in MTL_DynLightmapTexture(); nothing to do here.
@@ -1301,6 +1377,26 @@ MTL_UboRingDry(void)
 	}
 
 	return SIZE_MAX;
+}
+
+/*
+ * N1: a world surface chain skipped because its texture or sampler
+ * state is nil used to be silent. Count the skipped draw for
+ * "mtl_mem", next to the G2 UBO-drop counter. Texture creation
+ * failures report at their source and substitute (M6's notexture,
+ * N1's white lightmap), so this counter should stay 0: a non-zero
+ * value means some path is dropping draws without reporting them.
+ */
+static void
+MTL_CountSkippedChain(void)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (st->surfaces_dropped++ == 0)
+	{
+		Com_DPrintf("ref_mtl: world surface draw skipped, missing "
+			"texture or sampler state (further skips: mtl_mem)\n");
+	}
 }
 
 /*
@@ -1370,9 +1466,14 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 	polyvert_t *ring;
 	size_t ubo_off;
 
-	if (st->encoder == nil || texture == nil || p == NULL ||
-	    (nolerp ? st->world_sampler_nearest : st->world_sampler) == nil)
+	if (st->encoder == nil || p == NULL)
 		return;
+	if (texture == nil ||
+	    (nolerp ? st->world_sampler_nearest : st->world_sampler) == nil)
+	{
+		MTL_CountSkippedChain();	/* N1 */
+		return;
+	}
 
 	slot = st->frame_slot;
 	ring = (polyvert_t *)st->world_vertex_buffer[slot].contents;
@@ -1501,10 +1602,14 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 	lmappolyvert_t *ring;
 	size_t ubo_off;
 
-	if (st->encoder == nil || texture == nil || lmap == nil || p == NULL ||
-	    st->lmap_sampler == nil ||
-	    (nolerp ? st->world_sampler_nearest : st->world_sampler) == nil)
+	if (st->encoder == nil || p == NULL)
 		return;
+	if (texture == nil || lmap == nil || st->lmap_sampler == nil ||
+	    (nolerp ? st->world_sampler_nearest : st->world_sampler) == nil)
+	{
+		MTL_CountSkippedChain();	/* N1 */
+		return;
+	}
 
 	slot = st->frame_slot;
 	ring = (lmappolyvert_t *)st->world_lmap_vertex_buffer[slot].contents;
@@ -1593,4 +1698,8 @@ void MTL_FreeLightmaps (void)
 		[mtl_state.lightmap_textures[i] release];
 		mtl_state.lightmap_textures[i] = nil;
 	}
+
+	/* N1: the white substitute's own reference. */
+	[lmap_white_texture release];
+	lmap_white_texture = nil;
 }
