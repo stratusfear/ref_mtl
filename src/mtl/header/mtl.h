@@ -735,6 +735,14 @@ typedef struct mtlstate_s
 	// sampler rebuild in its R_BeginFrame.
 	id<MTLSamplerState>		world_sampler;
 	id<MTLSamplerState>		world_sampler_nearest;
+	/* Q3: sky images sample clamp-to-edge in ref_vk (the clampToEdge
+	   flag on QVk_CreateTexture, vk_image.c:1166: only it_sky images
+	   get it). Same filtered + anisotropic settings as world_sampler,
+	   so the mip0 half-texel MakeSkyVec inset never matters: when the
+	   sky quad is minified the mip footprint crosses the edge and the
+	   repeat variant of world_sampler pulled in the opposite cube
+	   face (visible seams along box edges). */
+	id<MTLSamplerState>		world_sampler_sky;
 	id<MTLSamplerState>		lmap_sampler;
 
 	// W5d: UI render pass (color only, no depth), created in

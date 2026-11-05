@@ -665,13 +665,15 @@ MTL_AbandonOpenFrame(void)
  the old constexpr samplers: world repeats, lightmap clamps. On
  failure the partially built set is dropped and the existing
  states (possibly nil at first init) are left untouched, so a
- rebuild failure keeps the previous sampling working.
+ rebuild failure keeps the previous sampling working. Address
+ modes: world/nearest repeat, lmap and sky clamp (Q3 adds the
+ clamp-to-edge sky variant, ref_vk_image.c:1166).
  ==============
 */
 static qboolean
 MTL_BuildWorldSamplers(mtlstate_t *st)
 {
-	id<MTLSamplerState>	world, nearest, lmap;
+	id<MTLSamplerState>	world, nearest, lmap, sky;
 	MTLSamplerDescriptor	*sd;
 	float			aniso;
 
@@ -698,6 +700,12 @@ MTL_BuildWorldSamplers(mtlstate_t *st)
 	sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
 	lmap = [st->device newSamplerStateWithDescriptor:sd];
 
+	/* Q3: the sky variant: same filtering and anisotropy as the
+	   world sampler, but clamp-to-edge, matching ref_vk where only
+	   it_sky images get the clampToEdge flag (vk_image.c:1166; the
+	   sampler itself stays vk_current_sampler, filtered + aniso). */
+	sky = [st->device newSamplerStateWithDescriptor:sd];
+
 	sd.sAddressMode = MTLSamplerAddressModeRepeat;
 	sd.tAddressMode = MTLSamplerAddressModeRepeat;
 	sd.minFilter = MTLSamplerMinMagFilterNearest;
@@ -707,20 +715,23 @@ MTL_BuildWorldSamplers(mtlstate_t *st)
 	nearest = [st->device newSamplerStateWithDescriptor:sd];
 	[sd release];	/* G1: manual RC, sd is +1 and not kept */
 
-	if (world == nil || lmap == nil || nearest == nil)
+	if (world == nil || lmap == nil || nearest == nil || sky == nil)
 	{
 		[world release];
 		[lmap release];
 		[nearest release];
+		[sky release];
 		return false;
 	}
 
 	[st->world_sampler release];
 	[st->lmap_sampler release];
 	[st->world_sampler_nearest release];
+	[st->world_sampler_sky release];
 	st->world_sampler = world;
 	st->lmap_sampler = lmap;
 	st->world_sampler_nearest = nearest;
+	st->world_sampler_sky = sky;
 	return true;
 }
 
@@ -1084,6 +1095,12 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->world_sampler_nearest release];
 		st->world_sampler_nearest = nil;
+	}
+	/* Q3: sky sampling state. */
+	if (st->world_sampler_sky != nil)
+	{
+		[st->world_sampler_sky release];
+		st->world_sampler_sky = nil;
 	}
 	if (st->lmap_sampler != nil)
 	{

@@ -1550,7 +1550,8 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 	if (st->encoder == nil || p == NULL)
 		return;
 	if (texture == nil ||
-	    (nolerp ? st->world_sampler_nearest : st->world_sampler) == nil)
+	    (sky ? st->world_sampler_sky
+	         : (nolerp ? st->world_sampler_nearest : st->world_sampler)) == nil)
 	{
 		MTL_CountSkippedChain();	/* N1 */
 		return;
@@ -1572,9 +1573,13 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 	[st->encoder setFragmentTexture:texture atIndex:0];
 	/* M2: world image sampling, [[sampler(0)]] of world_plain_fragment;
 	   r_nolerp_list images take the nearest variant, like ref_vk's
-	   per-texture nolerp ? S_NEAREST choice (vk_image.c:1166). */
-	[st->encoder setFragmentSamplerState:(nolerp ? st->world_sampler_nearest
-	                                       : st->world_sampler) atIndex:0];
+	   per-texture nolerp ? S_NEAREST choice (vk_image.c:1166). Q3:
+	   sky chains take the clamp-to-edge variant, same vk line — the
+	   it_sky image is the only one with the clampToEdge flag (sky
+	   images never land on the nolerp lists). */
+	[st->encoder setFragmentSamplerState:(sky ? st->world_sampler_sky
+	                                      : (nolerp ? st->world_sampler_nearest
+	                                                 : st->world_sampler)) atIndex:0];
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
 	[st->encoder setRenderPipelineState:sky ? st->pipeline_sky : st->pipeline_plain];
@@ -1638,7 +1643,7 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	size_t ubo_off;
 
 	if (st->encoder == nil || texture == nil || verts == NULL ||
-	    st->world_sampler == nil)
+	    st->world_sampler_sky == nil)
 		return;
 
 	slot = st->frame_slot;
@@ -1675,8 +1680,11 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 		offset:ubo_off atIndex:1];
 	[st->encoder setFragmentTexture:texture atIndex:0];
 	/* M2: sky images are never on the nolerp lists (vk gives it_sky the
-	   filtered sampler too, vk_image.c:1166), so the filtered state. */
-	[st->encoder setFragmentSamplerState:st->world_sampler atIndex:0];
+	   filtered sampler too, vk_image.c:1166), so the filtered state;
+	   Q3: clamp-to-edge (it_sky is the one image class ref_vk clamps),
+	   which stops minified sky mip footprints from wrapping across the
+	   cube face edge. */
+	[st->encoder setFragmentSamplerState:st->world_sampler_sky atIndex:0];
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
 
