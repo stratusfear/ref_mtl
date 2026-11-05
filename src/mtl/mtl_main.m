@@ -4125,10 +4125,19 @@ R_DrawParticles(void)
 RE_ScreenShot_f
 
 `screenshot [tga|bmp|png|jpg] [quality]` - the ref_vk Vk_ScreenShot_f
-equivalent. Metal render targets keep the topmost line at row 0 and the
-host's stbi writers want top-down RGBA, so the BGRA8Unorm scene texture
-(full drawable resolution) is byte-swapped to RGBA in place before it is
-handed to ri.Vid_WriteScreenshot.
+equivalent. Metal render targets keep the topmost line at row 0 and
+the host's stbi writers want top-down RGBA with opaque alpha (the
+swap loop below forces alpha to 255), so the BGRA8Unorm scene texture
+(full drawable resolution) is byte-swapped to RGBA in place before it
+is handed to ri.Vid_WriteScreenshot.
+
+S5 notes (deliberate, like vk): waitUntilCompleted blocks the main
+thread with up to three in-flight frame command buffers queued ahead of
+this one - a console command, so a full stall is fine. A request before
+the first frame takes the "no scene rendered yet" exit above; a request
+from inside a frame (a script under frame_active) blits the *previous*
+frame's ui_target, since this command buffer is enqueued after the
+current frame's and only sees retired contents. Both harmless.
 ==============
 */
 static void

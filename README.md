@@ -683,6 +683,28 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     one-frame MSAA-rebuild hitch recorded as accepted notes. Capture note
     for future rounds: Q2 screenshots are RLE 32bpp TGAs - use
     `tools/drivers/tgadiff.py`, naive decoders silently compare garbage.
+ - Round-14 findings S1-S5 (brief `REVIEW_FINDINGS_14.md`; dlights,
+    screenshot, palette, registration reviewed clean; build and tooling
+    fixes): the reviewed render-code areas (dlights, `RE_SetPalette`,
+    `RE_SetSky`, model registration, `RE_ScreenShot_f`, vendored sources)
+    needed no code changes. S1 rebuilt `tools/fix_verify.sh` into a real
+    assertion gate: `+set vid_renderer mtl`, the ref_mtl init banner and
+    the `Map: jail1` banner are required, `kill -0` liveness plus
+    wait-status classification catch crashes and silent renderer
+    fallback (the old script passed over an abort), and `DEBUG_LAYER=1`
+    is a first-class mode (log shows "Metal API Validation Enabled").
+    S2 added the embedded-shader freshness guard: `make check-shaders`
+    (regenerate-to-temp + `cmp`, called by `fix_verify.sh`) plus a
+    `src/files/mtl_shaders.c: shaders/*.msl` make dependency, so a stale
+    generated shader can no longer build and smoke green. S3 deleted the
+    dead W2 `quad.msl` (its array was still compiled into the dylib,
+    never used) and the stale W2/W3 wording. S4 Makefile nits: full
+    `.PHONY`, BSD `date -u -r` for `SOURCE_DATE_EPOCH` (the GNU form
+    failed on macOS), `-mmacosx-version-min=26.0` compile+link so the
+    Metal 4 requirement rides in `LC_BUILD_VERSION`, and warning flags
+    moved to `override CFLAGS +=` so an env `CFLAGS` cannot drop them.
+    S5 documented the deliberate screenshot quirks (main-thread stall,
+    previous-frame capture under `frame_active`, forced opaque alpha).
 
 ### Intentionally not implemented (parity scope cuts)
 
