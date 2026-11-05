@@ -299,8 +299,18 @@ alias_fragment(alias_out in [[stage_in]],
                sampler world_sampler [[sampler(0)]],
                constant AliasUbo *ubo [[buffer(0)]])
 {
+    /* Q2: ref_vk's model.frag multiplies the texture by
+       clamp(color, 0, 1), not the raw interpolated colour. The CPU
+       side (MTL_WriteAliasVert: shadedots * shadelight, and
+       R_LightPoint's unclamped r_modulate/dlight sums) can produce
+       vertex colors above 1.0; without this clamp the mtl result is
+       min(1, tex * color) against vk's tex * min(1, color), so
+       overbright-lit models rendered brighter than ref_vk (base1 +
+       r_modulate 3: blaster ROI mean 133.9,90.3 vs vk 111.1,65.7).
+       The alpha in in.color is always <= 1 (entity alpha), so the
+       full-rgba clamp matches vk's vec4 clamp exactly. */
     if (ubo->textured > 0.5)
-        return tex.sample(world_sampler, in.uv) * in.color;
+        return tex.sample(world_sampler, in.uv) * clamp(in.color, 0.0, 1.0);
 
     return in.color;	// shell: solid vertex color, no texture
 }
