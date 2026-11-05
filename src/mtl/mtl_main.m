@@ -4149,6 +4149,14 @@ RE_RenderFrame(refdef_t *fd)
 
 	R_SetupFrame();
 
+	/* O1: mark the leaves/nodes in the current cluster's PVS before the
+	   BSP walk, exactly where ref_vk calls it (vk_main.c:951, "done
+	   here so we know if we're in water"). Without it r_visframecount
+	   stayed 0, every visframe test passed, and the whole in-frustum
+	   level was walked and drawn every frame (PVS culling, r_novis and
+	   r_lockpvs were all dead). */
+	R_MarkLeaves();
+
 	R_DrawWorld();
 	R_DrawEntitiesOnList();
 	R_RenderDlights();
