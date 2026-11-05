@@ -4427,7 +4427,11 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 			   pointer unconditionally, so a failed allocation here
 			   was a NULL deref (ref_vk is unchecked the same way;
 			   ours guards). On failure fall back to the unscaled
-			   source: one frame of an unsmoothed video, no crash. */
+			   source: one frame of an unsmoothed video, no crash.
+			   M7B1: L5's guard checked the malloc but left
+			   image_scaled NULL on failure; the fallback now
+			   actually points at the unscaled source, and the
+			   free below skips it (the caller owns data). */
 			byte *scaled = NULL;
 
 			// triple scaling
@@ -4457,11 +4461,19 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 			{
 				image_scaled = scaled;
 			}
-			else if (!raw_scale_oom_warned)
+			else
 			{
-				raw_scale_oom_warned = 1;
-				Com_Printf("RE_Draw_StretchRaw: retexturing "
-						"allocation failed, drawing unscaled\n");
+				/* M7B1: keep drawing the unscaled source; cols/rows
+				   stay unscaled (the *3 / *2 bumps above only ran
+				   on success), so every later size uses match the
+				   source. */
+				image_scaled = (byte *)data;
+				if (!raw_scale_oom_warned)
+				{
+					raw_scale_oom_warned = 1;
+					Com_Printf("RE_Draw_StretchRaw: retexturing "
+							"allocation failed, drawing unscaled\n");
+				}
 			}
 		}
 		else
@@ -4494,7 +4506,13 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 		if (r_retexturing->value)
 		{
 			int scaled_size = cols * rows;
-			free(image_scaled);
+			/* M7B1: on the OOM fallback image_scaled is the caller's
+			   data (the early-return free above already guards this);
+			   freeing it would corrupt the caller. */
+			if (image_scaled != data)
+			{
+				free(image_scaled);
+			}
 			SmoothColorImage(raw_image32, scaled_size, (size_t)scaled_size >> 7);
 		}
 	}
