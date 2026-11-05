@@ -41,6 +41,13 @@ rm -f "$HOSTLOG"
 LOG=$(mktemp /tmp/fix_verify_game_log.XXXXXX)
 trap 'echo "(game log: $LOG)"' EXIT
 
+# T3: FIX_VERIFY_GAME lets tools/fix_verify_selftest.sh point the smoke at a
+# scripted stand-in that reproduces each failure mode the checks below are
+# supposed to catch (fallback renderer, missing map banner, process died
+# early, crash after our kill, injected Metal-diagnostic log lines). Unset,
+# the smoke always runs the real host; nothing else reads this variable.
+GAME="${FIX_VERIFY_GAME:-$ROOT/yquake2/build-sdl3/release/quake2}"
+
 if [ -n "$DEBUG_LAYER" ]; then
 	echo "== smoke run: 20s of jail1 under mtl_w0_test, vid_renderer mtl forced, Metal debug layer on =="
 	export MTL_DEBUG_LAYER=1
@@ -48,7 +55,7 @@ else
 	echo "== smoke run: 20s of jail1 under mtl_w0_test, vid_renderer mtl forced =="
 fi
 caffeinate -i -w $$ &
-"$ROOT/yquake2/build-sdl3/release/quake2" -cfgdir mtl_w0_test \
+"$GAME" -cfgdir mtl_w0_test \
   +set vid_renderer mtl +map jail1 >"$LOG" 2>&1 &
 GPID=$!
 sleep 20
