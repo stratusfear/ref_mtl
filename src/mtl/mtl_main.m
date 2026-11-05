@@ -1546,6 +1546,9 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		if (st->pipeline_alias == nil)
 		{
 			Com_Printf("ref_mtl: alias pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			[vd release];	/* R1: the shared vd would otherwise leak —
+							   the normal-path release sits in the second
+							   block, which this failure return skips */
 			R_ReleaseShaders(st);
 			return false;
 		}
@@ -2220,6 +2223,13 @@ R_InitShaders(void)
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
 
 		st->pipeline_ui_tint = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* R1: this block had no releases at all,
+						   unlike its tex/colour siblings; releasing
+						   before the nil check keeps the failure path
+						   balanced too */
 		if (st->pipeline_ui_tint == nil)
 		{
 			Com_Printf("ref_mtl: ui tint pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
