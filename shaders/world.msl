@@ -656,11 +656,16 @@ warp_fragment(warp_out in [[stage_in]],
        scene texture, so the /pixelSize remap is right only inside
        that rect; outside it the scene holds full-size 2D content
        (border tiles, menu) which the old unconditional remap scaled
-       up into stretched garbage bands. ref_vk hides the equivalent
-       stretched garbage by drawing its UI/tileclear after the warp
-       pass; mtl may encode the 2D before the world (demomap), so the
-       border has to survive the warp itself. Half-open bounds keep a
-       full-screen refdef (viewsize 100) uniformly remapped. */
+       up into stretched garbage bands. ref_vk dodges that the other
+       way: its tileclear is drawn inside the world renderpass with
+       the viewport moved to (0,0) and the quad transform divided by
+       vk_pixel_size (RE_Draw_TileClear, vk_draw.c:226-254), so the
+       unconditional /pixelSize remap scales the border straight
+       back up to full size. mtl encodes the 2D into the scene
+       texture outside the world pass (and before it in the demomap
+       case) at full scale, so the remap has to stop at the refdef
+       rect here instead. Half-open bounds keep a full-screen refdef
+       (viewsize 100) uniformly remapped. */
     const bool in_refdef = fragCoord.x >= ubo.refdefX && fragCoord.x < ubo.refdefX + ubo.refdefW &&
         fragCoord.y >= ubo.refdefY && fragCoord.y < ubo.refdefY + ubo.refdefH;
 
