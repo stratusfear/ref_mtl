@@ -428,6 +428,53 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     `Mod_FreeModelsKnown` itself stays untouched because
     `Mod_Reallocate` depends on the counters (vk dodges the case
     with its `vk_initialized` guard; we have no guard).
+ - Round-8 findings M1-M8 (brief `REVIEW_FINDINGS_8.md`; world-context
+    init paths, filtering, image loading): M1 made `r_vsync` actually
+    steer presentation - `RE_InitContext` never touched the layer's
+    `displaySyncEnabled` (default YES), so every present was display-
+    synced regardless of the cvar while `RE_IsVSyncActive` only steered
+    the host's own pacing wait (measured: r_vsync 0 windowed was capped
+    at the 60 Hz display pre-fix, uncapped post-fix). The layer now
+    takes vk's `vk_setSyncSource` mapping (1 -> YES, 0/2 -> NO) at
+    init, on every layer re-creation, and mid-session on cvar change.
+    M2 wired texture filtering: the world/alias/sprite/particle paths
+    had constexpr samplers baked into `world.msl` (linear+mip always,
+    no anisotropy); five sampling fragments now take explicit
+    [[sampler(0)]]/[[sampler(1)]] arguments fed by `world_sampler`/
+    `world_sampler_nearest`/`lmap_sampler`, `r_anisotropic` registered
+    with vk's name/flag/clamp 1..16 and rebuilt on change, mip-near
+    filter selects the nearest sampler at mip generation, and the
+    r_nolerp_list images keep point sampling in 3D like vk (paired
+    aniso 0-vs-16 captures show the expected shimmer difference).
+    M3 made the `RE_BeginFrame` resize pass publish the new sizes only
+    when all four scene/depth/warp/post allocations succeeded - one
+    failed allocation used to latch "same size" forever and every
+    later frame encoded against nil targets. M4 `RE_InitContext`
+    nits: view NULL check before `SDL_Metal_GetLayer`, the layer-NULL
+    path releases the fresh view, a `supportsFamily:MTLGPUFamilyMetal4`
+    gate replaces the OS-version-only test (clear message + GL3
+    fallback instead of a cryptic pipeline-creation failure; verified
+    with a forced-fail hook), and both early returns release the
+    `MTLCreateSystemDefaultDevice` +1. M5 split `MTL_LoadPic`'s
+    find-or-allocate loop into name-scan-then-free-slot (vk/upstream
+    shape): after `MTL_FreeUnusedImages` punched holes, images past
+    the first hole were missed and re-uploaded as duplicate GPU copies
+    (forced-hole test: dup 1 -> 0). M6 handled the two half-built-
+    image paths: texture-creation failure now logs a one-shot
+    `Com_Printf` and substitutes a retained `r_notexture` (was:
+    silent + nil-textured invisible surface), 8-bit scaling malloc
+    failure rolls the slot back (`memset` + `img_loaded--`) instead
+    of leaving a permanent half-built record (forced-failure test:
+    111+ poisoned slots -> 0, slot reused per retry; ref_vk has the
+    same latent conversion flaw - deviation deliberate, commit body).
+    M7 (verify only): one `pipeline_plain` + per-chain `depth_state`
+    covers vk's solid+blend warp pipelines (both write depth, blend
+    at alpha=1 is identity); paired waste1 translucent-water captures:
+    static regions 0.0-0.7 MAD, water-strip diffs are SURF_FLOWING
+    scroll phase, not depth/blend behaviour (first vk run showed the
+    host's known transient MoltenVK liquid corruption; reruns clean,
+    gl3 ground truth agrees with mtl). M8 (optional upload
+    profiling): deferred - no profiling evidence demands it.
 
 ### Intentionally not implemented (parity scope cuts)
 
