@@ -3956,6 +3956,58 @@ MTL_SetPassDefaults(id<MTLRenderCommandEncoder> encoder)
 
 /*
 ==============
+R_SetLightLevel
+
+O2: ported from ref_vk (vk_main.c:1064). Samples the light grid at the
+view origin and publishes r_lightlevel, which the client ships to the
+server in every usercmd (cl_input.c, cmd->lightlevel). mtl only had the
+weapon-model writer in R_DrawAliasModel (mtl_alias.m), which runs only
+when the gun is actually drawn: with hand 2, no weapon, spectator or
+chase cameras, or any frame without the weapon the value went stale.
+vk keeps both writers; do the same.
+==============
+*/
+static void
+R_SetLightLevel(void)
+{
+	vec3_t	shadelight = {0};
+
+	if (r_newrefdef.rdflags & RDF_NOWORLDMODEL)
+	{
+		return;
+	}
+
+	/* save off light value for server to look at */
+	R_LightPoint(r_worldmodel->grid, r_newrefdef.vieworg, shadelight, NULL);
+
+	/* pick the greatest component, which should be the
+	 * same as the mono value returned by software */
+	if (shadelight[0] > shadelight[1])
+	{
+		if (shadelight[0] > shadelight[2])
+		{
+			r_lightlevel->value = 150 * shadelight[0];
+		}
+		else
+		{
+			r_lightlevel->value = 150 * shadelight[2];
+		}
+	}
+	else
+	{
+		if (shadelight[1] > shadelight[2])
+		{
+			r_lightlevel->value = 150 * shadelight[1];
+		}
+		else
+		{
+			r_lightlevel->value = 150 * shadelight[2];
+		}
+	}
+}
+
+/*
+==============
 RE_RenderFrame
 
 Encodes the world pass: clear color and depth, set up the view from the
@@ -4170,6 +4222,9 @@ RE_RenderFrame(refdef_t *fd)
 	R_DrawAlphaSurfaces();
 	R_RenderFlash();
 
+	/* O2: publish r_lightlevel for the client's usercmd after the view is
+	   drawn, same place and order as ref_vk (vk_main.c:1111). */
+	R_SetLightLevel();
 	[st->encoder endEncoding];
 	st->encoder = nil;
 
