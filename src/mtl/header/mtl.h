@@ -672,6 +672,15 @@ typedef struct mtlstate_s
 	id<MTLSamplerState>		ui_sampler_nearest;
 	id<MTLSamplerState>		ui_sampler_linear;
 
+	/* O5: the tileclear sampling state. RE_Draw_TileClear maps the
+	   fill rect onto (x/64,y/64)-(w/64,h/64), so uv values routinely
+	   pass 1.0 and must wrap. ref_vk's tile rect draw gets that from
+	   the REPEAT sampler half of vk_samplers (vk_common.c:953); the
+	   two UI states above keep the Vulkan default clamp-to-edge,
+	   which pinned every tile past the first to the texture's last
+	   column/row - flat grey borders. */
+	id<MTLSamplerState>		ui_sampler_repeat;
+
 	// M2: world-path sampling, replacing the old constexpr
 	// world_sampler / world_lmap_sampler in world.msl. Filtered
 	// (min/mag/mip linear) with maxAnisotropy from r_anisotropic,

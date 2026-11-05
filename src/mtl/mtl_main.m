@@ -551,6 +551,7 @@ MTL_ReleaseMSAADrawBuffers(mtlstate_t *st);
 /* W5d: 2D UI pass (see the definitions before RE_Draw_FindPic). */
 static void
 MTL_BeginUIPass(void);
+
 static void
 MTL_EndUIPass(void);
 static void
@@ -1061,6 +1062,12 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->ui_sampler_linear release];
 		st->ui_sampler_linear = nil;
+	}
+	/* O5: tileclear repeat sampling. */
+	if (st->ui_sampler_repeat != nil)
+	{
+		[st->ui_sampler_repeat release];
+		st->ui_sampler_repeat = nil;
 	}
 	/* M2: the world-path sampling states. */
 	if (st->world_sampler != nil)
@@ -2087,10 +2094,25 @@ R_InitShaders(void)
 		sd.magFilter = MTLSamplerMinMagFilterLinear;
 		sd.mipFilter = MTLSamplerMipFilterLinear;
 		st->ui_sampler_linear = [st->device newSamplerStateWithDescriptor:sd];
-		[sd release];	/* G1: both samplers built, descriptor released */
 		if (st->ui_sampler_linear == nil)
 		{
+			[sd release];	/* G1: manual RC on the early-out path */
 			Com_Printf("ref_mtl: ui linear sampler creation failed\n");
+			R_ReleaseShaders(st);
+			return false;
+		}
+
+		/* O5: the tileclear sampling state, same filtering but repeat
+		   addressing: RE_Draw_TileClear's uv transform routinely
+		   passes 1.0 and must wrap, ref_vk's REPEAT sampler half
+		   (vk_common.c:953). */
+		sd.sAddressMode = MTLSamplerAddressModeRepeat;
+		sd.tAddressMode = MTLSamplerAddressModeRepeat;
+		st->ui_sampler_repeat = [st->device newSamplerStateWithDescriptor:sd];
+		[sd release];	/* G1: all three samplers built, descriptor released */
+		if (st->ui_sampler_repeat == nil)
+		{
+			Com_Printf("ref_mtl: ui repeat sampler creation failed\n");
 			R_ReleaseShaders(st);
 			return false;
 		}
@@ -3370,6 +3392,74 @@ MTL_RunWarpPass(void)
 		border_fix = st->tiles_saved && divisor > 1.0f;
 	}
 
+	/* H1/O5: ref_vk's world pass draws its tileclear inside RP_WORLD,
+	   so the border texels go through the world postprocess stage and
+	   carry the pow(rgb * 1.5, gamma) intensity. mtl encodes
+	   SCR_TileClear before the world into the scene texture, and at
+	   divisor > 1 the world pass composites over the bands
+	   [vrect/p, vrect), so put the saved pre-world tiles back over
+	   everything outside the warp's refdef rect now - BEFORE the
+	   postprocess stage below, so the restored tiles receive the same
+	   world gamma/intensity as in ref_vk (capture evidence: the mtl
+	   p=1 border, which takes exactly that route through
+	   postprocess, is byte-identical to ref_vk's border on 98.4% of
+	   the strip pixels; restoring after postprocess left the p > 1
+	   border without it). This also covers the scene bands that the
+	   MSAA resolve restore above does not reach, so it is correct for
+	   the MSAA and non-MSAA paths alike. The remaining difference at
+	   divisor > 1 is resolution, not color: ref_vk draws the tiles into
+	   its half-scale world image, so its border texels are 2x-upscaled
+	   copies of the tile, while the restored mtl tiles keep native
+	   sharpness (same tile, same palette values, crisper). */
+	if (border_fix && st->tiles_saved &&
+	    st->border_save_texture != nil && st->ui_target != nil)
+	{
+		const NSUInteger w = (NSUInteger)st->scene_width;
+		const NSUInteger h = (NSUInteger)st->scene_height;
+		const NSUInteger x0 = (NSUInteger)MAX(0, MIN(brect[0], (int)w));
+		const NSUInteger y0 = (NSUInteger)MAX(0, MIN(brect[1], (int)h));
+		const NSUInteger x1 = (NSUInteger)MAX(0, MIN(brect[2], (int)w));
+		const NSUInteger y1 = (NSUInteger)MAX(0, MIN(brect[3], (int)h));
+		id<MTLBlitCommandEncoder> restore =
+			[st->command_buffer blitCommandEncoder];
+
+		/* top, bottom, left, right around the refdef rect (half-open,
+		   empty pieces skipped) */
+		if (y0 > 0)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+				sourceSize:MTLSizeMake(w, y0, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+		}
+		if (y1 < h)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y1, 0)
+				sourceSize:MTLSizeMake(w, h - y1, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y1, 0)];
+		}
+		if (x0 > 0)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y0, 0)
+				sourceSize:MTLSizeMake(x0, y1 - y0, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y0, 0)];
+		}
+		if (x1 < w)
+		{
+			[restore copyFromTexture:st->border_save_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x1, y0, 0)
+				sourceSize:MTLSizeMake(w - x1, y1 - y0, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x1, y0, 0)];
+		}
+		[restore endEncoding];
+	}
+
 	/* Postprocess stage (ref_vk postprocess.frag parity): samples the
 	   warp stage's output (or the plain scene when the warp stage was
 	   skipped) and writes post_texture with pow(rgb * 1.5,
@@ -3418,65 +3508,6 @@ MTL_RunWarpPass(void)
 
 			st->ui_target = st->post_texture;
 		}
-	}
-
-	/* H1: ref_vk draws its 2D border after the warp pass, which hides
-	   the stretched remnant there; mtl encodes SCR_TileClear before the
-	   world, so put the saved pre-world tiles back over everything
-	   outside the warp's refdef rect in the final offscreen target
-	   (post_texture when the postprocess stage ran, else warp_texture).
-	   After the postprocess stage is deliberate: the 2D tiles must not
-	   get the world gamma/intensity pow, matching ref_vk where the UI
-	   is drawn after postprocessing. This also covers the scene bands
-	   [vrect/p, vrect) that the MSAA resolve restore above does not
-	   reach, so it is correct for the MSAA and non-MSAA paths alike. */
-	if (border_fix && st->tiles_saved &&
-	    st->border_save_texture != nil && st->ui_target != nil)
-	{
-		const NSUInteger w = (NSUInteger)st->scene_width;
-		const NSUInteger h = (NSUInteger)st->scene_height;
-		const NSUInteger x0 = (NSUInteger)MAX(0, MIN(brect[0], (int)w));
-		const NSUInteger y0 = (NSUInteger)MAX(0, MIN(brect[1], (int)h));
-		const NSUInteger x1 = (NSUInteger)MAX(0, MIN(brect[2], (int)w));
-		const NSUInteger y1 = (NSUInteger)MAX(0, MIN(brect[3], (int)h));
-		id<MTLBlitCommandEncoder> restore =
-			[st->command_buffer blitCommandEncoder];
-
-		/* top, bottom, left, right around the refdef rect (half-open,
-		   empty pieces skipped) */
-		if (y0 > 0)
-		{
-			[restore copyFromTexture:st->border_save_texture
-				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
-				sourceSize:MTLSizeMake(w, y0, 1)
-				toTexture:st->ui_target
-				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
-		}
-		if (y1 < h)
-		{
-			[restore copyFromTexture:st->border_save_texture
-				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y1, 0)
-				sourceSize:MTLSizeMake(w, h - y1, 1)
-				toTexture:st->ui_target
-				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y1, 0)];
-		}
-		if (x0 > 0)
-		{
-			[restore copyFromTexture:st->border_save_texture
-				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, y0, 0)
-				sourceSize:MTLSizeMake(x0, y1 - y0, 1)
-				toTexture:st->ui_target
-				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, y0, 0)];
-		}
-		if (x1 < w)
-		{
-			[restore copyFromTexture:st->border_save_texture
-				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x1, y0, 0)
-				sourceSize:MTLSizeMake(w - x1, y1 - y0, 1)
-				toTexture:st->ui_target
-				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x1, y0, 0)];
-		}
-		[restore endEncoding];
 	}
 }
 
@@ -4597,7 +4628,8 @@ MTL_EmitUiUbo(size_t slot, const ui_ubo_t *ubo)
  * fragment uses it, so it is always written.
  */
 static void
-MTL_DrawUiTex(image_t *image, const ui_ubo_t *ubo_in, qboolean tint)
+MTL_DrawUiTex(image_t *image, const ui_ubo_t *ubo_in, qboolean tint,
+              qboolean tile)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot = (size_t)st->frame_slot;
@@ -4621,8 +4653,12 @@ MTL_DrawUiTex(image_t *image, const ui_ubo_t *ubo_in, qboolean tint)
 	[st->ui_encoder setVertexBuffer:st->ui_tex_vertex_buffer offset:0 atIndex:0];
 	[st->ui_encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 	[st->ui_encoder setFragmentTexture:image->mtl_texture atIndex:0];
-	[st->ui_encoder setFragmentSamplerState:(image->nolerp ? st->ui_sampler_nearest
-	                                               : st->ui_sampler_linear) atIndex:0];
+	/* O5: tile quads repeat (uv passes 1.0); everything else samples
+	   inside the picture and stays clamp-to-edge, ref_vk's REPEAT /
+	   CLAMP sampler halves (vk_common.c:953-954). */
+	[st->ui_encoder setFragmentSamplerState:(tile ? st->ui_sampler_repeat
+	                              : image->nolerp ? st->ui_sampler_nearest
+	                                              : st->ui_sampler_linear) atIndex:0];
 	[st->ui_encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
 	[st->ui_encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
@@ -4725,7 +4761,7 @@ DrawStretchPicCommon(int x, int y, int w, int h, const char *name, const float *
 	{
 		return;
 	}
-	MTL_DrawUiTex(image, &ubo, color != NULL);
+	MTL_DrawUiTex(image, &ubo, color != NULL, false);
 }
 
 static void
@@ -4831,14 +4867,19 @@ RE_Draw_CharScaled(int x, int y, int num, float scale)
 	{
 		return;
 	}
-	MTL_DrawUiTex(draw_chars, &ubo, false);
+	MTL_DrawUiTex(draw_chars, &ubo, false, false);
 }
 
 /*
- * Repeats a 64x64 tile graphic to fill the screen around a sized-down
- * refresh window. The uv transform maps the (x,y)-(x+w,y+h) pixel region
- * onto (x/64,y/64)-(+w/64,+h/64) so the tile repeats every 64 pixels; the
- * repeating world_sampler wraps it.
+ * Draws one 64x64 tile graphic repeated to fill the screen around a
+ * sized-down refresh window. The uv transform maps the (x,y)-(x+w,y+h)
+ * pixel region onto (x/64,y/64)-(+w/64,+h/64) so the tile repeats every
+ * 64 pixels. O5: that transform passes uv 1.0 (the engine even passes
+ * oversized rects, e.g. w = vid.width for the right band), so the draw
+ * needs the repeat-addressing ui_sampler_repeat, ref_vk's REPEAT
+ * sampler half (vk_common.c:953); with the clamp-to-edge UI samplers
+ * every tile past the first pinned to the backtile's last column/row
+ * and the border turned flat grey.
  */
 static void
 RE_Draw_TileClear(int x, int y, int w, int h, const char *name)
@@ -4876,7 +4917,7 @@ RE_Draw_TileClear(int x, int y, int w, int h, const char *name)
 	{
 		return;
 	}
-	MTL_DrawUiTex(image, &ubo, false);
+	MTL_DrawUiTex(image, &ubo, false, true);
 }
 
 /*
@@ -5157,7 +5198,7 @@ RE_Draw_StretchRaw(int x, int y, int w, int h, int cols, int rows, const byte *d
 		{
 			return;
 		}
-		MTL_DrawUiTex(&fake, &ubo, false);
+		MTL_DrawUiTex(&fake, &ubo, false, false);
 	}
 }
 
