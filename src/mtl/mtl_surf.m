@@ -141,7 +141,8 @@ Fan-expand one polygon and draw it with the plain pipeline.
 */
 static void MTL_DrawPoly (mtlpoly_t *p, image_t *texture, float *color)
 {
-	MTL_DrawPolyChain (p, texture->mtl_texture, NULL, color, 1.f, 0.f, false, 0.f, false);
+	MTL_DrawPolyChain (p, texture->mtl_texture, NULL, color, 1.f, 0.f, false, 0.f,
+		false, texture->nolerp);
 }
 
 //============
@@ -160,7 +161,8 @@ MTL_DrawFlowingPoly(msurface_t *fa, image_t *texture, const float *color)
 	if (scroll == 0.0)
 		scroll = -64.0;
 
-	MTL_DrawPolyChain (fa->polys, texture->mtl_texture, NULL, color, 1.f, scroll, false, 0.f, false);
+	MTL_DrawPolyChain (fa->polys, texture->mtl_texture, NULL, color, 1.f, scroll, false,
+		0.f, false, texture->nolerp);
 }
 
 static void
@@ -564,7 +566,7 @@ MTL_RenderLightmappedPoly(msurface_t *surf, const float *modelMatrix, float alph
 	//==========
 
 	MTL_DrawLightmappedChain(surf->polys, image->mtl_texture,
-		mtl_state.lightmap_textures[lmtex], model, color, scroll);
+		mtl_state.lightmap_textures[lmtex], model, color, scroll, image->nolerp);
 }
 
 static void
@@ -1361,14 +1363,15 @@ static void MTL_WritePolyVert (polyvert_t *dst, const float *src,
 
 void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model,
 	const float *color, float uvscale, float scroll, qboolean sky,
-	float time, qboolean warp)
+	float time, qboolean warp, qboolean nolerp)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
 	polyvert_t *ring;
 	size_t ubo_off;
 
-	if (st->encoder == nil || texture == nil || p == NULL)
+	if (st->encoder == nil || texture == nil || p == NULL ||
+	    (nolerp ? st->world_sampler_nearest : st->world_sampler) == nil)
 		return;
 
 	slot = st->frame_slot;
@@ -1385,6 +1388,11 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 	[st->encoder setVertexBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:1];
 	[st->encoder setFragmentTexture:texture atIndex:0];
+	/* M2: world image sampling, [[sampler(0)]] of world_plain_fragment;
+	   r_nolerp_list images take the nearest variant, like ref_vk's
+	   per-texture nolerp ? S_NEAREST choice (vk_image.c:1166). */
+	[st->encoder setFragmentSamplerState:(nolerp ? st->world_sampler_nearest
+	                                       : st->world_sampler) atIndex:0];
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
 	[st->encoder setRenderPipelineState:sky ? st->pipeline_sky : st->pipeline_plain];
@@ -1444,7 +1452,8 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	size_t vstart;
 	size_t ubo_off;
 
-	if (st->encoder == nil || texture == nil || verts == NULL)
+	if (st->encoder == nil || texture == nil || verts == NULL ||
+	    st->world_sampler == nil)
 		return;
 
 	slot = st->frame_slot;
@@ -1473,6 +1482,9 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	[st->encoder setVertexBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:1];
 	[st->encoder setFragmentTexture:texture atIndex:0];
+	/* M2: sky images are never on the nolerp lists (vk gives it_sky the
+	   filtered sampler too, vk_image.c:1166), so the filtered state. */
+	[st->encoder setFragmentSamplerState:st->world_sampler atIndex:0];
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
 
@@ -1481,14 +1493,17 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 }
 
 void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
-	id<MTLTexture> lmap, const float *model, const float *color, float scroll)
+	id<MTLTexture> lmap, const float *model, const float *color, float scroll,
+	qboolean nolerp)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
 	lmappolyvert_t *ring;
 	size_t ubo_off;
 
-	if (st->encoder == nil || texture == nil || lmap == nil || p == NULL)
+	if (st->encoder == nil || texture == nil || lmap == nil || p == NULL ||
+	    st->lmap_sampler == nil ||
+	    (nolerp ? st->world_sampler_nearest : st->world_sampler) == nil)
 		return;
 
 	slot = st->frame_slot;
@@ -1503,6 +1518,12 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 		offset:ubo_off atIndex:1];
 	[st->encoder setFragmentTexture:texture atIndex:0];
 	[st->encoder setFragmentTexture:lmap atIndex:1];
+	/* M2: base image sampling (nearest for r_nolerp_list images) onto
+	   [[sampler(0)]], lightmap clamp-to-edge state onto [[sampler(1)]]
+	   of world_lmap_fragment. */
+	[st->encoder setFragmentSamplerState:(nolerp ? st->world_sampler_nearest
+	                                       : st->world_sampler) atIndex:0];
+	[st->encoder setFragmentSamplerState:st->lmap_sampler atIndex:1];
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
 	[st->encoder setRenderPipelineState:st->pipeline_lmap];

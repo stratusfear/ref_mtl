@@ -257,7 +257,7 @@ void EmitWaterPolys (msurface_t *fa, image_t *texture,
 		Mat_Identity(model);
 
 	MTL_DrawPolyChain (fa->polys, texture->mtl_texture, model, color,
-		1.f/64.f, scroll, false, r_newrefdef.time, true);
+		1.f/64.f, scroll, false, r_newrefdef.time, true, texture->nolerp);
 }
 
 /*

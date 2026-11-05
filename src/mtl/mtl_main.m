@@ -112,6 +112,7 @@ cvar_t		*mtl_particle_min_size;
 cvar_t		*mtl_particle_max_size;
 cvar_t		*r_lightmap;
 cvar_t		*mtl_mip_nearfilter;
+cvar_t		*r_anisotropic;		/* M2: registered here, see RE_Init */
 cvar_t		*r_retexturing;
 cvar_t		*r_scale8bittextures;
 cvar_t		*r_nolerp_list;
@@ -169,6 +170,10 @@ R_Register(void)
 	mtl_particle_max_size = ri.Cvar_Get("mtl_particle_max_size", "40", CVAR_ARCHIVE);
 	r_lightmap = ri.Cvar_Get("r_lightmap", "0", 0);
 	mtl_mip_nearfilter = ri.Cvar_Get("mtl_mip_nearfilter", "0", CVAR_ARCHIVE);
+	/* M2: max anisotropy, same name/default/semantics as ref_vk's
+	   vk_aniso (vk_main.c:1166): 0 disables, values clamp to the API
+	   maximum (16 on Metal, cf. vk_common.c:906). */
+	r_anisotropic = ri.Cvar_Get("r_anisotropic", "0", CVAR_ARCHIVE);
 	r_retexturing = ri.Cvar_Get("r_retexturing", "1", CVAR_ARCHIVE);
 	r_scale8bittextures = ri.Cvar_Get("r_scale8bittextures", "0", CVAR_ARCHIVE);
 	/* don't bilerp characters and crosshairs */
@@ -630,6 +635,77 @@ MTL_AbandonOpenFrame(void)
 }
 
 /*
+ ==============
+ MTL_BuildWorldSamplers
+
+ M2: (re)create the world-path sampling states. The filtered pair
+ carries maxAnisotropy from r_anisotropic, clamped like ref_vk
+ (vk_common.c:906: max(Q_max(v,1), device max); Metal's range is a
+ fixed 1..16); the nearest variant has no anisotropy, mirroring
+ vk's S_NEAREST which keeps anisotropy off too. Address modes keep
+ the old constexpr samplers: world repeats, lightmap clamps. On
+ failure the partially built set is dropped and the existing
+ states (possibly nil at first init) are left untouched, so a
+ rebuild failure keeps the previous sampling working.
+ ==============
+*/
+static qboolean
+MTL_BuildWorldSamplers(mtlstate_t *st)
+{
+	id<MTLSamplerState>	world, nearest, lmap;
+	MTLSamplerDescriptor	*sd;
+	float			aniso;
+
+	aniso = r_anisotropic->value;
+	if (aniso < 1.f)
+	{
+		aniso = 1.f;
+	}
+	else if (aniso > 16.f)
+	{
+		aniso = 16.f;
+	}
+
+	sd = [MTLSamplerDescriptor new];
+	sd.sAddressMode = MTLSamplerAddressModeRepeat;
+	sd.tAddressMode = MTLSamplerAddressModeRepeat;
+	sd.minFilter = MTLSamplerMinMagFilterLinear;
+	sd.magFilter = MTLSamplerMinMagFilterLinear;
+	sd.mipFilter = MTLSamplerMipFilterLinear;
+	sd.maxAnisotropy = aniso;
+	world = [st->device newSamplerStateWithDescriptor:sd];
+
+	sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+	sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+	lmap = [st->device newSamplerStateWithDescriptor:sd];
+
+	sd.sAddressMode = MTLSamplerAddressModeRepeat;
+	sd.tAddressMode = MTLSamplerAddressModeRepeat;
+	sd.minFilter = MTLSamplerMinMagFilterNearest;
+	sd.magFilter = MTLSamplerMinMagFilterNearest;
+	sd.mipFilter = MTLSamplerMipFilterNearest;
+	sd.maxAnisotropy = 1.f;
+	nearest = [st->device newSamplerStateWithDescriptor:sd];
+	[sd release];	/* G1: manual RC, sd is +1 and not kept */
+
+	if (world == nil || lmap == nil || nearest == nil)
+	{
+		[world release];
+		[lmap release];
+		[nearest release];
+		return false;
+	}
+
+	[st->world_sampler release];
+	[st->lmap_sampler release];
+	[st->world_sampler_nearest release];
+	st->world_sampler = world;
+	st->lmap_sampler = lmap;
+	st->world_sampler_nearest = nearest;
+	return true;
+}
+
+/*
 ==============
 MTL_DrainInFlightFrames
 
@@ -967,6 +1043,22 @@ R_ReleaseShaders(mtlstate_t *st)
 	{
 		[st->ui_sampler_linear release];
 		st->ui_sampler_linear = nil;
+	}
+	/* M2: the world-path sampling states. */
+	if (st->world_sampler != nil)
+	{
+		[st->world_sampler release];
+		st->world_sampler = nil;
+	}
+	if (st->world_sampler_nearest != nil)
+	{
+		[st->world_sampler_nearest release];
+		st->world_sampler_nearest = nil;
+	}
+	if (st->lmap_sampler != nil)
+	{
+		[st->lmap_sampler release];
+		st->lmap_sampler = nil;
 	}
 	if (st->depth_state_none != nil)
 	{
@@ -1936,6 +2028,15 @@ R_InitShaders(void)
 		}
 	}
 
+	/* M2: the world-path sampling states (filtered world/lmap pair with
+	   r_anisotropic, nearest variant for the r_nolerp_list). */
+	if (!MTL_BuildWorldSamplers(st))
+	{
+		Com_Printf("ref_mtl: world sampler creation failed\n");
+		R_ReleaseShaders(st);
+		return false;
+	}
+
 	/* W5d: 2D UI (RE_Draw_*). Three pipelines over one static full-screen
 	   quad pair, all sharing the 56-byte ui_ubo_t (which rides on the world
 	   UBO ring): the tex path samples a picture and applies gamma, the tint
@@ -2786,6 +2887,23 @@ RE_BeginFrame(float camera_separation)
 		((CAMetalLayer *)st->layer).displaySyncEnabled =
 		    (r_vsync->value != 0);
 		r_vsync->modified = false;
+	}
+
+	/* M2: r_anisotropic changed at runtime (video menu / console). ref_vk
+	   rebuilds all samplers on vk_aniso->modified in its R_BeginFrame
+	   (vk_main.c:1396); the Metal equivalent is the world/lmap sampling
+	   states. mtl_mip_nearfilter is deliberately not handled here: like
+	   vk_mip_nearfilter (not in vk's rebuild list) it steers mipmap
+	   generation, so existing images keep their mips until the next
+	   reload. */
+	if (r_anisotropic->modified)
+	{
+		r_anisotropic->modified = false;
+		if (!MTL_BuildWorldSamplers(st))
+		{
+			Com_Printf("ref_mtl: world sampler rebuild failed, "
+			           "keeping the previous sampling\n");
+		}
 	}
 
 	st->frame_number++;
@@ -3679,6 +3797,11 @@ R_DrawParticles(void)
 		[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot] offset:vstart atIndex:0];
 		[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 		[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
+		/* M2: particle dot sampling, [[sampler(0)]] of
+		   particle_fragment (see the alias skin bind for nolerp). */
+		[st->encoder setFragmentSamplerState:(skin->nolerp
+		                                      ? st->world_sampler_nearest
+		                                      : st->world_sampler) atIndex:0];
 		[st->encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
 		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:r_newrefdef.num_particles * 3];
 	}

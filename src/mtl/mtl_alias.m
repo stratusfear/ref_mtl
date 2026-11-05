@@ -427,6 +427,12 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 		[st->encoder setVertexBuffer:st->world_ubo[slot]
 			offset:ubo_off atIndex:1];
 		[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
+		/* M2: model skin sampling, [[sampler(0)]] of alias_fragment;
+		   r_nolerp_list skins take the nearest variant (vk parity:
+		   per-image sampler choice, vk_image.c:1166). */
+		[st->encoder setFragmentSamplerState:(skin->nolerp
+		                                      ? st->world_sampler_nearest
+		                                      : st->world_sampler) atIndex:0];
 		[st->encoder setFragmentBuffer:st->world_ubo[slot]
 			offset:ubo_off atIndex:0];
 
@@ -1005,6 +1011,11 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 	[st->encoder setVertexBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:1];
 	[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
+	/* M2: sprite sampling, [[sampler(0)]] of sprite_fragment (see
+	   the alias skin bind for the nolerp rationale). */
+	[st->encoder setFragmentSamplerState:(skin->nolerp
+	                                      ? st->world_sampler_nearest
+	                                      : st->world_sampler) atIndex:0];
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
 

@@ -316,7 +316,13 @@ extern cvar_t	*mtl_particle_att_c;
 extern cvar_t	*mtl_particle_min_size;
 extern cvar_t	*mtl_particle_max_size;
 extern cvar_t	*r_lightmap;
-extern cvar_t	*mtl_mip_nearfilter;
+extern cvar_t	*mtl_mip_nearfilter;	/* M2: mip-generation filter, see
+					   MTL_MipFilterLevel in mtl_image.m
+					   (ref_vk parity: vk_image.c:172) */
+extern cvar_t	*r_anisotropic;		/* M2: registered here for parity
+					   with ref_vk (vk_main.c:1166); drives
+					   world_sampler / lmap_sampler
+					   maxAnisotropy */
 extern cvar_t	*r_retexturing;
 extern cvar_t	*r_scale8bittextures;
 extern cvar_t	*r_nolerp_list;
@@ -397,9 +403,10 @@ void R_MarkLeaves (void);
  */
 void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model,
 	const float *color, float uvscale, float scroll, qboolean sky,
-	float time, qboolean warp);
+	float time, qboolean warp, qboolean nolerp);
 void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
-	id<MTLTexture> lmap, const float *model, const float *color, float scroll);
+	id<MTLTexture> lmap, const float *model, const float *color, float scroll,
+	qboolean nolerp);
 void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	const float *model, const float *color);
 void MTL_FreeLightmaps (void);
@@ -638,6 +645,20 @@ typedef struct mtlstate_s
 	// r_nolerp_list / r_lerp_list / r_2D_unfiltered.
 	id<MTLSamplerState>		ui_sampler_nearest;
 	id<MTLSamplerState>		ui_sampler_linear;
+
+	// M2: world-path sampling, replacing the old constexpr
+	// world_sampler / world_lmap_sampler in world.msl. Filtered
+	// (min/mag/mip linear) with maxAnisotropy from r_anisotropic,
+	// mirror of ref_vk's vk_current_sampler + lmap sampler
+	// (vk_common.c:906); the nearest variant carries the
+	// r_nolerp_list textures (vk's S_NEAREST), chosen per draw from
+	// image_t.nolerp. world_sampler repeats (was address::repeat in
+	// the shader), lmap_sampler clamps (was address::clamp_to_edge).
+	// Rebuilt when r_anisotropic changes (RE_BeginFrame), like vk's
+	// sampler rebuild in its R_BeginFrame.
+	id<MTLSamplerState>		world_sampler;
+	id<MTLSamplerState>		world_sampler_nearest;
+	id<MTLSamplerState>		lmap_sampler;
 
 	// W5d: UI render pass (color only, no depth), created in
 	// RE_InitContext and reused every frame; the encoder is created

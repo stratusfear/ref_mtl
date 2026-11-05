@@ -495,6 +495,50 @@ MTL_MipBoxFilter(const byte *src, int sw, int sh, byte *dst)
 
 /*
 ================
+MTL_MipNearFilter
+
+M2: mtl_mip_nearfilter variant (ref_vk parity: vk_image.c:172 uses a
+VK_FILTER_NEAREST blit when vk_mip_nearfilter > 0, which at the fixed
+2:1 downscale samples source pixel (2x, 2y)). Point sample, no averaging.
+================
+*/
+static void
+MTL_MipNearFilter(const byte *src, int sw, int sh, byte *dst)
+{
+	int dw = sw >> 1;
+	int dh = sh >> 1;
+	int x, y;
+
+	if (dw < 1)
+		dw = 1;
+	if (dh < 1)
+		dh = 1;
+
+	for (y = 0; y < dh; y++)
+	{
+		for (x = 0; x < dw; x++)
+		{
+			int sx = x << 1;
+			int sy = y << 1;
+			const byte *p;
+			byte *d;
+
+			if (sx >= sw)
+				sx = sw - 1;
+			if (sy >= sh)
+				sy = sh - 1;
+			p = src + (sy * sw + sx) * 4;
+			d = dst + (y * dw + x) * 4;
+			d[0] = p[0];
+			d[1] = p[1];
+			d[2] = p[2];
+			d[3] = p[3];
+		}
+	}
+}
+
+/*
+================
 MTL_UploadTexture
 
 W4: create the GPU texture for a loaded image. RGBA8Unorm shared storage,
@@ -561,7 +605,15 @@ MTL_UploadTexture(image_t *image, byte *texBuffer, int width, int height,
 			src = (level == 1) ? texBuffer : ((level & 1) ? (const byte *)scratch1 : (const byte *)scratch0);
 			dst = (level & 1) ? scratch0 : scratch1;
 
-			MTL_MipBoxFilter(src, sw, sh, dst);
+			/* M2: mtl_mip_nearfilter picks the downsampling filter for
+			   the generated levels, like vk_mip_nearfilter picking the
+			   blit filter in generateMipmaps (vk_image.c:172). Read at
+			   upload time only; existing images keep their mips until
+			   reload (vk parity: no runtime apply there either). */
+			if (mtl_mip_nearfilter->value > 0)
+				MTL_MipNearFilter(src, sw, sh, dst);
+			else
+				MTL_MipBoxFilter(src, sw, sh, dst);
 
 			[texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)dw, (NSUInteger)dh)
 			        mipmapLevel:level slice:0 withBytes:dst

@@ -28,8 +28,11 @@ struct WorldUbo
 // MSL 3.x removed the coord argument from the sampler constructor.
 // W8: the UI tex/tint fragments no longer use world_sampler; they take a
 // per-draw [[sampler(0)]] argument bound from ui_sampler_{nearest,linear}.
-constexpr sampler world_sampler(address::repeat, filter::linear, mip_filter::linear);
-constexpr sampler world_lmap_sampler(address::clamp_to_edge, filter::linear);
+// M2: world_sampler / world_lmap_sampler are no longer constexpr either:
+// the world/alias/sprite/particle fragments take the filtering (and
+// r_anisotropic) from sampler states bound per draw - [[sampler(0)]] is
+// the world image (repeats; nearest variant for r_nolerp_list images),
+// [[sampler(1)]] the lightmap (clamps) on the lmap fragment.
 constexpr sampler present_sampler(address::clamp_to_edge, filter::nearest);
 
 //==================================================================
@@ -63,6 +66,7 @@ world_plain_vertex(world_plain_in in [[stage_in]],
 fragment float4
 world_plain_fragment(world_vertex_out in [[stage_in]],
                      texture2d<float, access::sample> tex [[texture(0)]],
+                     sampler world_sampler [[sampler(0)]],
                      constant WorldUbo *ubo [[buffer(0)]])
 {
     float4 c = tex.sample(world_sampler, in.uv) * ubo->color;
@@ -105,10 +109,12 @@ fragment float4
 world_lmap_fragment(world_lmap_out in [[stage_in]],
                     texture2d<float, access::sample> tex [[texture(0)]],
                     texture2d<float, access::sample> lmap [[texture(1)]],
+                    sampler world_sampler [[sampler(0)]],
+                    sampler lmap_sampler [[sampler(1)]],
                     constant WorldUbo *ubo [[buffer(0)]])
 {
     float4 color = tex.sample(world_sampler, in.uv);
-    float4 light = lmap.sample(world_lmap_sampler, in.lmapuv);
+    float4 light = lmap.sample(lmap_sampler, in.lmapuv);
     return (1.0 - in.viewLightmaps) * color * light + in.viewLightmaps * light;
 }
 
@@ -290,6 +296,7 @@ alias_vertex(alias_in in [[stage_in]],
 fragment float4
 alias_fragment(alias_out in [[stage_in]],
                texture2d<float, access::sample> tex [[texture(0)]],
+               sampler world_sampler [[sampler(0)]],
                constant AliasUbo *ubo [[buffer(0)]])
 {
     if (ubo->textured > 0.5)
@@ -326,6 +333,7 @@ sprite_vertex(alias_in in [[stage_in]],
 fragment float4
 sprite_fragment(alias_out in [[stage_in]],
                 texture2d<float, access::sample> tex [[texture(0)]],
+                sampler world_sampler [[sampler(0)]],
                 constant SpriteUbo *ubo [[buffer(0)]])
 {
     float4 c = tex.sample(world_sampler, in.uv) * in.color;
@@ -350,6 +358,7 @@ sprite_fragment(alias_out in [[stage_in]],
 fragment float4
 particle_fragment(alias_out in [[stage_in]],
                   texture2d<float, access::sample> tex [[texture(0)]],
+                  sampler world_sampler [[sampler(0)]],
                   constant SpriteUbo *ubo [[buffer(0)]])
 {
     float4 c = tex.sample(world_sampler, in.uv) * in.color;
