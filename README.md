@@ -475,6 +475,38 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     host's known transient MoltenVK liquid corruption; reruns clean,
     gl3 ground truth agrees with mtl). M8 (optional upload
     profiling): deferred - no profiling evidence demands it.
+ - Round-9 findings N1-N5 (brief `REVIEW_FINDINGS_9.md`; world surfaces,
+    BSP load, lightmap build): N1 handled lightmap-texture creation
+    failure - `MTL_CreateLightmapTexture` logged a `Com_DPrintf` and
+    left the slot nil, and both draw chains skip nil lightmaps, so the
+    whole BSP block vanished with no console trace (forced all-fail:
+    black world, 17 silent failures at developer 1, zero at developer
+    0). Now one `Com_Printf` per BSP load plus a white 1x1 substitute
+    so those surfaces draw fullbright (deliberate deviation from vk's
+    ERR_DROP, same direction as M6's notexture); the upload path skips
+    the substitute (a 128x128 region into a 1x1 texture is a
+    debug-layer error); a new `mtl_mem` counter "Dropped surface
+    draws" tracks chain draws skipped for missing state (forced
+    no-substitute run: 590426 counted; clean runs: 0). N3 stopped
+    reusing the previous map's static lightmap textures:
+    `MTL_BeginBuildingLightmaps` now releases and nils slots
+    0..MAX_LIGHTMAPS-1, removing the map-change `replaceRegion`-over-
+    live-texture race (H2 class, now at every map change) and up to
+    16 MiB of stale blocks (live-slot hook: 17 stale after jail1 ->
+    security, post-fix exactly the new map's 11). N2 made
+    `MTL_DrawSkyQuad` set `depth_state` explicitly (it worked only by
+    inheritance from the pass-start set) and emit its UBO before
+    advancing `world_vertex_offset` (a dry ring no longer strands a
+    consumed vertex slice); cross-build frame diff at the same-build
+    noise floor. N4 nits: the `MTL_UploadLightmapRegion` fast path is
+    guarded `x == 0 && y == 0` (a compact `smax == 128` source matches
+    the atlas stride by coincidence, and an atlas caller with y > 0
+    would upload the wrong rows), and the dead `skytexture` global in
+    `mtl_warp.m` (written, never read, no vk counterpart) is gone.
+    N5 (optional draw-chain performance: per-source-vertex warp sine
+    reuse, one batched drawPrimitives per chain, UBO record dedup):
+    deferred - no profiling evidence demands it, same disposition
+    as M8.
 
 ### Intentionally not implemented (parity scope cuts)
 
