@@ -169,8 +169,8 @@ Fan-expand one polygon and draw it with the plain pipeline.
 */
 static void MTL_DrawPoly (mtlpoly_t *p, image_t *texture, float *color)
 {
-	MTL_DrawPolyChain (p, texture->mtl_texture, NULL, color, 1.f, 0.f, false, 0.f,
-		false, texture->nolerp);
+	MTL_DrawPolyChain (p, texture->mtl_texture, NULL, color, 1.f, 0.f, false,
+		false, 0.f, false, texture->nolerp);
 }
 
 //============
@@ -190,7 +190,7 @@ MTL_DrawFlowingPoly(msurface_t *fa, image_t *texture, const float *color)
 		scroll = -64.0;
 
 	MTL_DrawPolyChain (fa->polys, texture->mtl_texture, NULL, color, 1.f, scroll, false,
-		0.f, false, texture->nolerp);
+		false, 0.f, false, texture->nolerp);
 }
 
 static void
@@ -1541,7 +1541,7 @@ static void MTL_WritePolyVert (polyvert_t *dst, const float *src,
 
 void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model,
 	const float *color, float uvscale, float scroll, qboolean sky,
-	float time, qboolean warp, qboolean nolerp)
+	qboolean solid, float time, qboolean warp, qboolean nolerp)
 {
 	mtlstate_t *st = &mtl_state;
 	size_t slot;
@@ -1583,7 +1583,15 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 	                                                 : st->world_sampler)) atIndex:0];
 	[st->encoder setFragmentBuffer:st->world_ubo[slot]
 		offset:ubo_off atIndex:0];
-	[st->encoder setRenderPipelineState:sky ? st->pipeline_sky : st->pipeline_plain];
+	/* R3: opaque liquid chains (solid_surface from EmitWaterPolys) take
+	   the blend-off plain variant, matching ref_vk's choice of
+	   vk_drawPolySolidWarpPipeline in vk_warp.c:241-249. With a vanilla
+	   alpha-1 WAL texture the blend is the identity either way; the
+	   difference shows with water textures that carry alpha (hi-res
+	   packs), which stay opaque in vk but smeared in the blend-on
+	   pipeline. */
+	[st->encoder setRenderPipelineState:sky ? st->pipeline_sky
+		: (solid ? st->pipeline_plain_solid : st->pipeline_plain)];
 
 	/* I5: set the depth state per chain instead of inheriting it from
 	   the encoder. ref_vk bakes depth test + write into every brush

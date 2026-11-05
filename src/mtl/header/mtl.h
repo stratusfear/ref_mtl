@@ -440,7 +440,10 @@ void R_MarkLeaves (void);
 /*
  * W4 draw helpers. MTL_DrawPolyChain fan-expands a mtlpoly_t chain into
  * the current frame slot's vertex ring and draws it with the plain-texture
- * pipeline (sky == false) or the sky pipeline (sky == true). `uvscale`/
+ * pipeline (sky == false) or the sky pipeline (sky == true). `solid`
+ * selects the blend-off plain variant for opaque liquid chains (R3: ref_vk
+ * draws solid warp surfaces through vk_drawPolySolidWarpPipeline, which is
+ * the warp pipeline with blending disabled; see EmitWaterPolys). `uvscale`/
  * `scroll` transform the texture coordinates: uv = verts[3..4] * uvscale
  * + scroll (s component only); when warp is set a per-vertex sine turbulence
  * is added on top (classic water/lava warp, evaluated per vertex so the GPU
@@ -452,7 +455,7 @@ void R_MarkLeaves (void);
  */
 void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model,
 	const float *color, float uvscale, float scroll, qboolean sky,
-	float time, qboolean warp, qboolean nolerp);
+	qboolean solid, float time, qboolean warp, qboolean nolerp);
 void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 	id<MTLTexture> lmap, const float *model, const float *color, float scroll,
 	qboolean nolerp);
@@ -638,6 +641,7 @@ typedef struct mtlstate_s
 	// classic encoder per draw (buffer 0 = stage_in verts, buffer 1 =
 	// UBO; frag tex0 = surface, tex1 = lightmap, buffer 0 = UBO).
 	id<MTLRenderPipelineState>	pipeline_plain;	// world_plain_vertex + world_plain_fragment
+	id<MTLRenderPipelineState>	pipeline_plain_solid;	// R3: same stages, blending off (vk solid-warp parity)
 	id<MTLRenderPipelineState>	pipeline_lmap;	// world_lmap_vertex + world_lmap_fragment
 	id<MTLRenderPipelineState>	pipeline_sky;	// world_sky_vertex + world_plain_fragment
 

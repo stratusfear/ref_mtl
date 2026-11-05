@@ -232,7 +232,11 @@ Does a water warp on the pre-fragmented mtlpoly_t chain. Texture
 coordinates are the raw s/t from subdivision scaled by 1/64; scroll is
 added to the s component (matching the gl3/vk shader). The whole chain
 shares one texture/model/color, so it is one draw through
-MTL_DrawPolyChain.
+MTL_DrawPolyChain. R3: solid_surface picks the blend-off plain
+pipeline, the MTL counterpart of ref_vk's vk_drawPolySolidWarpPipeline
+vs vk_drawPolyWarpPipeline choice (vk_warp.c:241-249); the call sites
+pass it exactly as ref_vk's vk_surf.c does (opaque liquid when the
+surface color has alpha 1, otherwise blended).
 =============
 */
 void EmitWaterPolys (msurface_t *fa, image_t *texture,
@@ -241,8 +245,6 @@ void EmitWaterPolys (msurface_t *fa, image_t *texture,
 {
 	float model[16];
 	float scroll;
-
-	(void)solid_surface;
 
 	if (fa->texinfo->flags & SURF_FLOWING)
 		scroll = (-64 * ((r_newrefdef.time*0.5) - (int)(r_newrefdef.time*0.5))) / 64.f;
@@ -255,7 +257,8 @@ void EmitWaterPolys (msurface_t *fa, image_t *texture,
 		Mat_Identity(model);
 
 	MTL_DrawPolyChain (fa->polys, texture->mtl_texture, model, color,
-		1.f/64.f, scroll, false, r_newrefdef.time, true, texture->nolerp);
+		1.f/64.f, scroll, false, solid_surface, r_newrefdef.time, true,
+		texture->nolerp);
 }
 
 /*

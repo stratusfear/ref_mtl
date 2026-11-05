@@ -1220,6 +1220,11 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_plain release];
 		st->pipeline_plain = nil;
 	}
+	if (st->pipeline_plain_solid != nil)
+	{
+		[st->pipeline_plain_solid release];
+		st->pipeline_plain_solid = nil;
+	}
 	if (st->library != nil)
 	{
 		[st->library release];
@@ -1321,21 +1326,29 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	Com_Printf("ref_mtl: sample shading %s (MSAAx%lu)\n",
 	           (sampleCount > 1 && mtl_sampleshading->value > 0) ? "on" : "off",
 	           (unsigned long)sampleCount);
-	/* Render pipelines. All three share the plain fragment shader;
-	   only the vertex stages and the argument tables differ. */
+	/* Render pipelines. The first three share the plain fragment
+	   shader; only the vertex stages and the argument tables differ.
+	   The fourth (R3) reuses the plain pair but with blending off:
+	   ref_vk keeps two warp pipelines, vk_drawPolyWarpPipeline with
+	   blendEnable VK_TRUE and vk_drawPolySolidWarpPipeline (default
+	   blendEnable VK_FALSE) with the same polygon_warp/basic shaders,
+	   and vk_surf.c:271 picks the solid one for opaque liquids
+	   (alpha == 1). MTL_DrawPolyChain makes the same choice. */
 	{
 		static const struct
 		{
 			const char *vertex;
 			const char *fragment;
 			int stride;		// polyvert_t = 20, lmappolyvert_t = 28
-		} pipelines[3] = {
-			{ "world_plain_vertex", "world_plain_fragment", (int)sizeof(polyvert_t) },
-			{ "world_lmap_vertex", "world_lmap_fragment", (int)sizeof(lmappolyvert_t) },
-			{ "world_sky_vertex", "world_plain_fragment", (int)sizeof(polyvert_t) },
+			qboolean blend;	// R3: SRC_ALPHA/ONE_MINUS_SRC_ALPHA or opaque
+		} pipelines[4] = {
+			{ "world_plain_vertex", "world_plain_fragment", (int)sizeof(polyvert_t), YES },
+			{ "world_lmap_vertex", "world_lmap_fragment", (int)sizeof(lmappolyvert_t), NO },
+			{ "world_sky_vertex", "world_plain_fragment", (int)sizeof(polyvert_t), NO },
+			{ "world_plain_vertex", "world_plain_fragment", (int)sizeof(polyvert_t), NO },
 		};
 
-		for (i = 0; i < 3; i++)
+		for (i = 0; i < 4; i++)
 		{
 			MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
@@ -1373,8 +1386,10 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 			   (SRC_ALPHA / ONE_MINUS_SRC_ALPHA); that is how the
 			   SURF_TRANS33/66 alpha-surface chain renders glass at
 			   color[3] = 0.33 / 0.66. Opaque chains pass alpha = 1, where
-			   the blend is the identity, exactly as in ref_vk. */
-			if (i == 0)
+			   the blend is the identity - except when the texture itself
+			   carries alpha < 1, which is what the blend-off entry #3
+			   (R3, vk_drawPolySolidWarpPipeline parity) exists for. */
+			if (pipelines[i].blend)
 			{
 				pd.colorAttachments[0].blendingEnabled = YES;
 				pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -1407,6 +1422,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 				case 0: st->pipeline_plain = pipeline; break;
 				case 1: st->pipeline_lmap = pipeline; break;
 				case 2: st->pipeline_sky = pipeline; break;
+				case 3: st->pipeline_plain_solid = pipeline; break;
 			}
 		}
 	}
@@ -1864,6 +1880,7 @@ MTL_ReleaseWorldPipelines(mtlstate_t *st)
 {
 	id<MTLRenderPipelineState> *pps[] = {
 		&st->pipeline_plain,
+		&st->pipeline_plain_solid,
 		&st->pipeline_lmap,
 		&st->pipeline_sky,
 		&st->pipeline_dlight,
@@ -2082,9 +2099,9 @@ MTL_UpdateMSAA(mtlstate_t *st)
 R_InitShaders
 
 W3: create the MTL4Compiler, compile the embedded world.msl into a
-library, build the three world render pipelines (plain / lightmapped /
-sky), the four shared argument tables, and the per-slot vertex/UBO
-rings.
+library, build the four world-pass plain/lmap/sky render pipelines
+(plain twice: blend-on and the R3 blend-off solid variant), the four
+shared argument tables, and the per-slot vertex/UBO rings.
 
 Called once from RE_InitContext, right after the device is created;
 everything here survives mode changes. Returns false on any failure -
@@ -2845,6 +2862,7 @@ R_CountPipelines(void)
 	mtlstate_t *st = &mtl_state;
 	id<MTLRenderPipelineState> *p[] = {
 		&st->pipeline_plain,
+		&st->pipeline_plain_solid,
 		&st->pipeline_lmap,
 		&st->pipeline_sky,
 		&st->pipeline_dlight,
