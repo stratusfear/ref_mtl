@@ -541,7 +541,10 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     hook (never committed): on this 120 Hz panel `r_vsync 1` pins the
     frame rate at 120.0, `r_vsync 0` removes any Metal-level pacing
     (~203 fps in jail1 at 640x480, debug layer off, ~100 with it on;
-    the cap is the CPU, not the layer), and runtime toggles in both
+    the cap is not the layer - U4 (round 16) later attributed it to
+    the `nextDrawable` wait plus host/engine frame time, with the
+    renderer's own encode work at ~0.4 ms/frame), and runtime
+    toggles in both
     directions take effect within one 2 s measurement window with
     `displaySyncEnabled` tracking the cvar throughout. Noted (no
     change, owner decision): mtl and vk default `r_vsync` to "0"
@@ -746,6 +749,51 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     `mtl_sampleshading`) and GPU-memory numbers (fresh post-O1
     `mtl_mem`: 58.5 MB rings over 3 slots x 8 rings, 90-91 MB device
     footprint, 0 drops).
+    T7 (measurement only, no commit): fresh `mtl_mem`/`r_speeds`
+    figures, a `mtl_sampleshading` cost run on base1 (640x480 and
+    1920x1200, `r_vsync 0`/`busywait 1`/`vid_maxfps 300`) showing a
+    resolution- and MSAA-independent ~212 fps ceiling (per-sample
+    shading inside run-to-run noise), and the `r_vsync` default
+    ("0", archived cvar, same as ref_vk) stated for the owner. The
+    ceiling verdict it drew - "CPU-side, not raster" - was refined
+    by U4 in round 16: the wait sits in `nextDrawable` and the
+    host's frame time, not in the renderer's encode path.
+ - Round-16 findings U1-U5 (brief `REVIEW_FINDINGS_16.md`; re-audit
+    round: old guarantees re-proven against the current tree, no
+    functional code change): U1 re-verified the L1 in-flight drain
+    (`MTL_DrainInFlightFrames` first in both shutdown paths,
+    idempotent, `MTL_AbandonOpenFrame` for the mid-frame-error case,
+    a per-slot release sweep with no missing `id<MTL...>` field) and
+    re-ran the runtime torture under the debug layer: jail1, five
+    `vid_restart`s 5 s apart, quit 2.5 s into the last reload - six
+    clean RE_Shutdown/RE_Init cycles, zero "released while command
+    buffer" / "still in flight" / leak lines (no cinematic content
+    is installed on this machine, so the cinematic variant stays
+    audit-coverage only). U2 re-swept host memory for everything the
+    round-7 L2 teardown never heard of: the eleven dynamic heap
+    objects added since (`mod_known` growth, the lerp/cmd/lightmap
+    scratch arrays, the texture-conversion and scaled-image buffers,
+    the colormap) all belong to the frees-at-teardown or frees-
+    per-call classes; the debug-layer run's six reload cycles kept
+    the leak checkers silent. U3 re-audited the O5 UI-sampler repeat
+    rule against ref_vk's sampler wiring (vk marks only `it_sky`
+    clamp-to-edge, REPEAT elsewhere) and moved the pixel proof to
+    jail1 `viewsize 85`: the three backtile letterbox borders
+    (~62k pixels, uv past 1.0 every frame) are bit-identical mtl vs
+    vk; the bottom border differs only in one 24x10 text-timing
+    cluster, not tile content. U4 profiled the CPU draw/encode path
+    with temporary `clock_gettime` bucket probes (stripped after
+    collection): renderer CPU is ~0.37 ms/frame at both 640x480 and
+    1920x1200 (~210 fps), dominated by neither cull (0.02 ms) nor
+    world encode (0.25 ms); `slot_busy` never waits, `commit` costs
+    0.008 ms, and the ~4.8 ms frame period is mostly the
+    `nextDrawable` wait (2.9 ms, resolution-independent - drawable-
+    pool/present pacing, not raster) plus ~1.5 ms of host/engine
+    frame time the renderer never sees. No bucket near the 30 %
+    fix threshold, so no fix was warranted; the M8B1/T7 "cap is the
+    CPU" wording was corrected accordingly. U5 swept the docs for
+    stale figures and wording (this bullet, the T7 entry above, the
+    M8B1 note) and synced `REVIEW_EXTERNAL.md`.
 
 ### Intentionally not implemented (parity scope cuts)
 
