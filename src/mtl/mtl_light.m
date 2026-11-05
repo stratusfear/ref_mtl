@@ -113,6 +113,7 @@ R_RenderDlight(dlight_t *light)
 	vstart = st->dlight_vertex_offset[slot];
 	if (vstart + 48 * sizeof(dlightvert_t) > DLIGHT_VERTEX_RING_BYTES)
 	{
+		MTL_RingDry(RING_DLIGHT_VERTEX);
 		return;	/* ring exhausted, skip this light */
 	}
 

@@ -396,7 +396,10 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 		tri_count = (count - 2) * 3;
 		vstart = st->alias_vertex_offset[slot];
 		if (vstart + (size_t)tri_count * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+		{
+			MTL_RingDry(RING_ALIAS_VERTEX);
 			return -1;	/* ring exhausted, skip the rest */
+		}
 
 		dst = ring + vstart / sizeof(aliasvert_t);
 		if (fan)
@@ -583,7 +586,10 @@ MTL_DrawAliasShadow(int *order, int *order_end, int num_xyz,
 		tri_count = (count - 2) * 3;
 		vstart = st->alias_vertex_offset[slot];
 		if (vstart + (size_t)tri_count * sizeof(shadowvert_t) > ALIAS_VERTEX_RING_BYTES)
+		{
+			MTL_RingDry(RING_ALIAS_VERTEX);
 			return;	/* ring exhausted, skip the rest */
+		}
 
 		dst = ring + vstart / sizeof(shadowvert_t);
 		if (fan)
@@ -1194,7 +1200,10 @@ R_DrawSpriteModel(entity_t *currententity, const model_t *currentmodel)
 	slot = st->frame_slot;
 	vstart = st->alias_vertex_offset[slot];
 	if (vstart + 6 * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+	{
+		MTL_RingDry(RING_ALIAS_VERTEX);
 		return;	/* ring exhausted */
+	}
 
 	ubo_off = MTL_EmitSpriteUbo(slot);
 	if (ubo_off == SIZE_MAX)
@@ -1351,6 +1360,7 @@ R_DrawBeam(entity_t *currententity)
 	vstart = st->beam_vertex_offset[slot];
 	if (vstart + 36 * sizeof(beamvert_t) > BEAM_VERTEX_RING_BYTES)
 	{
+		MTL_RingDry(RING_BEAM_VERTEX);
 		return;	/* ring exhausted, skip this beam */
 	}
 

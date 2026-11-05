@@ -996,6 +996,11 @@ R_ReleaseShaders(mtlstate_t *st)
 			[st->alias_vertex_buffer[i] release];
 			st->alias_vertex_buffer[i] = nil;
 		}
+		if (st->particle_vertex_buffer[i] != nil)
+		{
+			[st->particle_vertex_buffer[i] release];
+			st->particle_vertex_buffer[i] = nil;
+		}
 	}
 	if (st->flash_vertex_buffer != nil)
 	{
@@ -2304,6 +2309,9 @@ R_InitShaders(void)
 		st->beam_vertex_buffer[i] = [st->device newBufferWithLength:BEAM_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->showtris_vertex_buffer[i] = [st->device newBufferWithLength:SHOWTRIS_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 		st->alias_vertex_buffer[i] = [st->device newBufferWithLength:ALIAS_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
+		/* P2: particles no longer share the alias ring with the entity
+		   draws that come before them (see PARTICLE_VERTEX_RING_BYTES). */
+		st->particle_vertex_buffer[i] = [st->device newBufferWithLength:PARTICLE_VERTEX_RING_BYTES options:MTLResourceStorageModeShared];
 
 		if (st->world_vertex_buffer[i] == nil ||
 		    st->world_lmap_vertex_buffer[i] == nil ||
@@ -2311,7 +2319,8 @@ R_InitShaders(void)
 		    st->dlight_vertex_buffer[i] == nil ||
 		    st->beam_vertex_buffer[i] == nil ||
 		    st->showtris_vertex_buffer[i] == nil ||
-		    st->alias_vertex_buffer[i] == nil)
+		    st->alias_vertex_buffer[i] == nil ||
+		    st->particle_vertex_buffer[i] == nil)
 		{
 			Com_Printf("ref_mtl: failed to create vertex/UBO ring buffers\n");
 			R_ReleaseShaders(st);
@@ -2852,43 +2861,55 @@ device-wide allocation, ref_vk's Vk_Mem_f() parity. Command "mtl_mem".
 ==============
 */
 static void
-Mtl_RingStats(const char *name, size_t used, size_t max, size_t size)
+Mtl_RingStats(const char *name, size_t used, size_t max, size_t size,
+	unsigned drops)
 {
-	Com_Printf("%-12s : %u/%ukB (%.1f%% max: %ukB)\n", name,
+	Com_Printf("%-12s : %u/%ukB (%.1f%% max: %ukB, %u drops)\n", name,
 		(unsigned)(used / 1024), (unsigned)(size / 1024),
 		size ? 100.0 * (double)used / (double)size : 0.0,
-		(unsigned)(max / 1024));
+		(unsigned)(max / 1024), drops);
 }
 
 void
 Mtl_Mem_f(void)
 {
 	mtlstate_t *st = &mtl_state;
-	static const char *names[6] = {
-		"World vertex", "World lmap", "Uniform",
-		"Dlight", "Showtris", "Alias/sprite"
-	};
-	static const size_t sizes[6] = {
+	/* P2: indexed by mtl_ring_id_t, sharing mtl_ring_names with the
+	   one-shot exhaustion messages. The old 6-entry table left the beam
+	   ring out of the report entirely. */
+	static const size_t sizes[RING_COUNT] = {
 		WORLD_VERTEX_RING_BYTES, WORLD_LMAP_VERTEX_RING_BYTES,
 		WORLD_UBO_RING_BYTES, DLIGHT_VERTEX_RING_BYTES,
-		SHOWTRIS_VERTEX_RING_BYTES, ALIAS_VERTEX_RING_BYTES
+		BEAM_VERTEX_RING_BYTES, SHOWTRIS_VERTEX_RING_BYTES,
+		ALIAS_VERTEX_RING_BYTES, PARTICLE_VERTEX_RING_BYTES
 	};
 	size_t total = 0;
+	unsigned drops_total = 0;
 	int i;
 
 	Com_Printf("\nDynamic ring buffer stats (last frame, 3 slots rotating):\n");
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < RING_COUNT; i++)
 	{
-		Mtl_RingStats(names[i], st->ring_usage[i], st->ring_usage_max[i],
-			sizes[i]);
+		Mtl_RingStats(mtl_ring_names[i], st->ring_usage[i],
+			st->ring_usage_max[i], sizes[i], st->ring_drops[i]);
 		total += sizes[i];
+		drops_total += st->ring_drops[i];
 	}
 
-	Com_Printf("Rings resident: %.1f MB (3 slots x 6 rings)\n",
-		(double)total * 3 / (1024.0 * 1024.0));
+	Com_Printf("Rings resident: %.1f MB (3 slots x %d rings)\n",
+		(double)total * 3 / (1024.0 * 1024.0), RING_COUNT);
 
-	/* G2: draws dropped by uniform-ring exhaustion, see MTL_UboRingDry */
-	Com_Printf("Uniform ring drops: %u\n", st->ubo_exhausted);
+	/* G2 / P2: draws dropped by ring exhaustion, per ring; the counters
+	   are bumped by MTL_UboRingDry / MTL_RingDry. */
+	Com_Printf("Ring drops (session): %u", drops_total);
+	for (i = 0; i < RING_COUNT; i++)
+	{
+		if (st->ring_drops[i])
+		{
+			Com_Printf(", %s %u", mtl_ring_names[i], st->ring_drops[i]);
+		}
+	}
+	Com_Printf("\n");
 	/* N1: chain draws skipped for nil textures/sampler states */
 	Com_Printf("Dropped surface draws: %u\n", st->surfaces_dropped);
 
@@ -3071,6 +3092,7 @@ RE_BeginFrame(float camera_separation)
 	st->beam_vertex_offset[st->frame_slot] = 0;
 	st->showtris_vertex_offset[st->frame_slot] = 0;
 	st->alias_vertex_offset[st->frame_slot] = 0;
+	st->particle_vertex_offset[st->frame_slot] = 0;
 
 	// W6b: per-frame world-warp pass bookkeeping. ui_target stays nil
 	// (consumers fall back to scene_texture) so it can never dangle when
@@ -3612,19 +3634,22 @@ RE_EndFrame(void)
 
 	/* W9: snapshot this frame's ring consumption before the next
 	   RE_BeginFrame resets the slot offsets, so "mtl_mem" can report
-	   real per-frame usage (ref_vk's vk_config.*_buffer_usage). */
+	   real per-frame usage (ref_vk's vk_config.*_buffer_usage). P2:
+	   indexed by mtl_ring_id_t, which also brings in the beam ring. */
 	{
-		size_t used[6] = {
+		size_t used[RING_COUNT] = {
 			st->world_vertex_offset[st->frame_slot],
 			st->world_lmap_vertex_offset[st->frame_slot],
 			st->world_ubo_offset[st->frame_slot],
 			st->dlight_vertex_offset[st->frame_slot],
+			st->beam_vertex_offset[st->frame_slot],
 			st->showtris_vertex_offset[st->frame_slot],
-			st->alias_vertex_offset[st->frame_slot]
+			st->alias_vertex_offset[st->frame_slot],
+			st->particle_vertex_offset[st->frame_slot]
 		};
 		int i;
 
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < RING_COUNT; i++)
 		{
 			st->ring_usage[i] = used[i];
 			if (used[i] > st->ring_usage_max[i])
@@ -3735,10 +3760,10 @@ R_RenderFlash(void)
  *   1 (default) - point sprites, size and attenuation computed on the GPU
  *   2           - textured triangles with r_squaretexture
  *   otherwise   - textured triangles with the dot texture
- * Vertices ride on the alias vertex ring (36B pos3+uv2+color4; uv is
- * unused in point mode); UBOs ride on the world UBO ring. Blending and
- * depth state match the vk particle pipelines (default blendOpts, depth
- * test + write).
+ * Vertices ride on the particle vertex ring (36B pos3+uv2+color4; uv
+ * is unused in point mode); UBOs ride on the world UBO ring. Blending
+ * and depth state match the vk particle pipelines (default blendOpts,
+ * depth test + write).
  */
 
 /*
@@ -3791,7 +3816,7 @@ R_DrawParticles(void)
 	}
 
 	slot = st->frame_slot;
-	vstart = st->alias_vertex_offset[slot];
+	vstart = st->particle_vertex_offset[slot];
 
 	if (mtl_custom_particles->value == 1)
 	{
@@ -3802,8 +3827,9 @@ R_DrawParticles(void)
 		aliasvert_t *dst;
 		int i;
 
-		if (vstart + r_newrefdef.num_particles * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+		if (vstart + r_newrefdef.num_particles * sizeof(aliasvert_t) > PARTICLE_VERTEX_RING_BYTES)
 		{
+			MTL_RingDry(RING_PARTICLE_VERTEX);
 			return;	/* ring exhausted */
 		}
 
@@ -3828,13 +3854,13 @@ R_DrawParticles(void)
 			dst->color[3] = p->alpha;
 		}
 
-		memcpy((byte *)st->alias_vertex_buffer[slot].contents + vstart,
+		memcpy((byte *)st->particle_vertex_buffer[slot].contents + vstart,
 		       visibleParticles, r_newrefdef.num_particles * sizeof(aliasvert_t));
-		st->alias_vertex_offset[slot] += r_newrefdef.num_particles * sizeof(aliasvert_t);
+		st->particle_vertex_offset[slot] += r_newrefdef.num_particles * sizeof(aliasvert_t);
 
 		[st->encoder setRenderPipelineState:st->pipeline_point_particle];
 		[st->encoder setDepthStencilState:st->depth_state];
-		[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot] offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->particle_vertex_buffer[slot] offset:vstart atIndex:0];
 		[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 		[st->encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:r_newrefdef.num_particles];
 	}
@@ -3860,8 +3886,9 @@ R_DrawParticles(void)
 			return;
 		}
 
-		if (vstart + r_newrefdef.num_particles * 3 * sizeof(aliasvert_t) > ALIAS_VERTEX_RING_BYTES)
+		if (vstart + r_newrefdef.num_particles * 3 * sizeof(aliasvert_t) > PARTICLE_VERTEX_RING_BYTES)
 		{
+			MTL_RingDry(RING_PARTICLE_VERTEX);
 			return;	/* ring exhausted */
 		}
 
@@ -3923,13 +3950,13 @@ R_DrawParticles(void)
 			dst->color[3] = p->alpha;
 		}
 
-		memcpy((byte *)st->alias_vertex_buffer[slot].contents + vstart,
+		memcpy((byte *)st->particle_vertex_buffer[slot].contents + vstart,
 		       visibleParticles, r_newrefdef.num_particles * 3 * sizeof(aliasvert_t));
-		st->alias_vertex_offset[slot] += r_newrefdef.num_particles * 3 * sizeof(aliasvert_t);
+		st->particle_vertex_offset[slot] += r_newrefdef.num_particles * 3 * sizeof(aliasvert_t);
 
 		[st->encoder setRenderPipelineState:st->pipeline_particle];
 		[st->encoder setDepthStencilState:st->depth_state];
-		[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot] offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->particle_vertex_buffer[slot] offset:vstart atIndex:0];
 		[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
 		[st->encoder setFragmentTexture:skin->mtl_texture atIndex:0];
 		/* M2: particle dot sampling, [[sampler(0)]] of

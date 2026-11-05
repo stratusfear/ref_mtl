@@ -246,6 +246,7 @@ R_DrawTriangleOutlines(void)
 					vstart = st->showtris_vertex_offset[slot];
 					if (vstart + 4 * sizeof(dlightvert_t) > SHOWTRIS_VERTEX_RING_BYTES)
 					{
+						MTL_RingDry(RING_SHOWTRIS_VERTEX);
 						goto done;	/* ring exhausted, stop outlining */
 					}
 
@@ -1418,21 +1419,45 @@ static const float s_identity_model[16] = {
 /*
  * G2: shared uniform-ring exhaustion path. Every world UBO emitter
  * (world/alias/sprite/viewproj/particle/UI) returns SIZE_MAX when the
- * ring is dry and the draw is skipped; that used to be silent. Count
- * the drop (reported by "mtl_mem") and say so once per session.
+ * ring is dry and the draw is skipped; that used to be silent. P2
+ * folded the counting into the per-ring path below, so the one-shot
+ * message is now per ring (here it names "uniform").
  */
 size_t
 MTL_UboRingDry(void)
 {
-	mtlstate_t *st = &mtl_state;
-
-	if (st->ubo_exhausted++ == 0)
-	{
-		Com_DPrintf("MTL_UboRingDry: uniform ring exhausted, draw "
-			"dropped (further drops: mtl_mem)\n");
-	}
+	MTL_RingDry(RING_WORLD_UBO);
 
 	return SIZE_MAX;
+}
+
+/* P2: ring names in mtl_ring_id_t order, shared by the one-shot
+ * messages below and the "mtl_mem" report. */
+const char *const mtl_ring_names[RING_COUNT] = {
+	"world vertex", "world lmap", "uniform", "dlight",
+	"beam", "showtris", "alias/sprite", "particle"
+};
+
+/*
+ * P2: shared ring-exhaustion path. Alias models, sprites, beams and
+ * particles used to share one 4 MiB ring and every capacity check
+ * simply returned, so in a big fight the particles — drawn last — were
+ * the first thing to disappear, with nothing printed and nothing
+ * counted (only UBO-ring drops were). Route every capacity failure
+ * through here: the ring's session counter is what "mtl_mem" reports
+ * next to its per-frame and high-water usage numbers, and the first
+ * drop of a ring says so at developer level.
+ */
+void
+MTL_RingDry(mtl_ring_id_t ring)
+{
+	mtlstate_t *st = &mtl_state;
+
+	if (st->ring_drops[ring]++ == 0)
+	{
+		Com_DPrintf("MTL_RingDry: %s ring exhausted, draw dropped "
+			"(further drops: mtl_mem)\n", mtl_ring_names[ring]);
+	}
 }
 
 /*
@@ -1577,7 +1602,10 @@ void MTL_DrawPolyChain (mtlpoly_t *p, id<MTLTexture> texture, const float *model
 		count = (nv - 2) * 3;
 		vstart = st->world_vertex_offset[slot];
 		if (vstart + (size_t)count * sizeof(polyvert_t) > WORLD_VERTEX_RING_BYTES)
+		{
+			MTL_RingDry(RING_WORLD_VERTEX);
 			break;	/* ring exhausted, skip the rest of the chain */
+		}
 
 		dst = ring + vstart / sizeof(polyvert_t);
 		for (k = 0; k < nv - 2; k++)
@@ -1616,7 +1644,10 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 	slot = st->frame_slot;
 	vstart = st->world_vertex_offset[slot];
 	if (vstart + 6 * sizeof(polyvert_t) > WORLD_VERTEX_RING_BYTES)
+	{
+		MTL_RingDry(RING_WORLD_VERTEX);
 		return;
+	}
 
 	dst = (polyvert_t *)st->world_vertex_buffer[slot].contents + vstart / sizeof(polyvert_t);
 	for (int i = 0; i < 6; i++)
@@ -1718,7 +1749,10 @@ void MTL_DrawLightmappedChain (mtlpoly_t *p, id<MTLTexture> texture,
 		count = (nv - 2) * 3;
 		vstart = st->world_lmap_vertex_offset[slot];
 		if (vstart + (size_t)count * sizeof(lmappolyvert_t) > WORLD_LMAP_VERTEX_RING_BYTES)
+		{
+			MTL_RingDry(RING_WORLD_LMAP);
 			break;	/* ring exhausted, skip the rest of the chain */
+		}
 
 		dst = ring + vstart / sizeof(lmappolyvert_t);
 		for (k = 0; k < nv - 2; k++)

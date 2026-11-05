@@ -272,6 +272,32 @@ typedef struct
 #define BEAM_VERTEX_RING_BYTES		(256 * 1024)
 #define SHOWTRIS_VERTEX_RING_BYTES	(4 * 1024 * 1024)
 #define ALIAS_VERTEX_RING_BYTES		(4 * 1024 * 1024)
+/* P2: particles get their own ring instead of sharing the alias ring.
+   The entity draws come first, so a full alias ring (a 1000-triangle
+   alias model expands to ~108 kB of triangle-list vertices) used to
+   leave nothing for particles: they disappeared with no trace in the
+   middle of a big fight. The worst textured-mode frame is
+   MAX_PARTICLES x 3 vertices x 36 B = 442 kB, so 1 MiB per slot can
+   never be overflown by the particle draw itself. */
+#define PARTICLE_VERTEX_RING_BYTES	(1024 * 1024)
+
+/* P2: stable indices for the per-slot rings. They key both the
+   usage reporting ("mtl_mem") and the per-ring drop counters
+   (MTL_RingDry / MTL_UboRingDry), so a ring only has to be
+   registered in one place; keep Mtl_Mem_f's name/size tables in
+   this order. */
+typedef enum
+{
+	RING_WORLD_VERTEX = 0,
+	RING_WORLD_LMAP,
+	RING_WORLD_UBO,
+	RING_DLIGHT_VERTEX,
+	RING_BEAM_VERTEX,
+	RING_SHOWTRIS_VERTEX,
+	RING_ALIAS_VERTEX,
+	RING_PARTICLE_VERTEX,
+	RING_COUNT
+} mtl_ring_id_t;
 
 //====================================================================
 
@@ -436,9 +462,20 @@ void MTL_FreeLightmaps (void);
  * showtris outlines. */
 size_t MTL_EmitViewProjUbo (size_t slot);
 /* G2: shared uniform-ring exhaustion path: counts the dropped draw in
-   st->ubo_exhausted (one-shot Com_DPrintf on the first drop) and
-   returns SIZE_MAX, the emitters' sentinel for "ring dry". */
+   st->ring_drops[RING_WORLD_UBO] (one-shot Com_DPrintf on the first
+   drop for that ring) and returns SIZE_MAX, the emitters' sentinel for
+   "ring dry". */
 size_t MTL_UboRingDry (void);
+/* P2: the shared ring-exhaustion path behind MTL_UboRingDry and every
+   vertex-ring capacity check in the renderer: counts a skipped draw or
+   the tail of a skipped chain against the ring's session counter and,
+   on the ring's first drop, says so once at developer level. Silent
+   disappearances are no longer possible; "mtl_mem" reports the
+   per-ring totals next to the per-frame and high-water usage numbers. */
+void MTL_RingDry (mtl_ring_id_t ring);
+/* P2: ring names in mtl_ring_id_t order, shared by the one-shot
+   messages and the "mtl_mem" report. */
+extern const char *const mtl_ring_names[RING_COUNT];
 
 /* K2: the world pass's raster-state baseline: Clockwise front winding
  * and MTLCullModeNone - Metal's documented fresh-encoder defaults,
@@ -725,6 +762,11 @@ typedef struct mtlstate_s
 	id<MTLBuffer>			alias_vertex_buffer[3];
 	size_t				alias_vertex_offset[3];
 
+	// P2: per-slot particle vertex ring (aliasvert_t records, 36B);
+	// separate from the alias ring so a full one cannot starve particles
+	id<MTLBuffer>			particle_vertex_buffer[3];
+	size_t				particle_vertex_offset[3];
+
 	// W3: lightmap textures (static [0..MAX_LIGHTMAPS-1] lazily
 	// created; dynamic range G4: three per-frame-slot sets, block b of
 	// slot s at DYNLIGHTMAP_OFFSET + s*MAX_LIGHTMAPS + b, also lazily
@@ -829,13 +871,16 @@ typedef struct mtlstate_s
 	qboolean			frame_active;	// frame in flight (Begin..End)
 	/* W9: ring consumption of the last completed frame, plus lifetime
 	   maxima, snapshotted in RE_EndFrame before RE_BeginFrame resets
-	   the per-slot offsets; reported by the "mtl_mem" command (ring
-	   order: world vertex, world lmap, UBO, dlight, showtris, alias). */
-	size_t			ring_usage[6];
-	size_t			ring_usage_max[6];
-	/* G2: number of draws dropped by uniform-ring exhaustion across
-	   the session; reported by "mtl_mem". */
-	unsigned		ubo_exhausted;
+	   the per-slot offsets; reported by the "mtl_mem" command. P2: the
+	   arrays are indexed by mtl_ring_id_t, so every ring (the beam ring
+	   included, which the old 6-entry table silently left out) is
+	   reported. */
+	size_t			ring_usage[RING_COUNT];
+	size_t			ring_usage_max[RING_COUNT];
+	/* G2 / P2: draws dropped per ring by ring exhaustion across the
+	   session, indexed by mtl_ring_id_t; reported by "mtl_mem", with a
+	   one-shot Com_DPrintf per ring on its first drop. */
+	unsigned		ring_drops[RING_COUNT];
 	/* N1: world surface chain draws skipped for a nil texture or
 	   sampler state; reported by "mtl_mem". */
 	unsigned		surfaces_dropped;
