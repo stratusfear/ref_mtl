@@ -109,9 +109,12 @@ endif
 
 # ----------
 
-# Base CFLAGS. These may be overridden by the environment.
+# Base CFLAGS. The optimization part may be overridden by the
+# environment; the warning flags are not (S4: a CFLAGS coming from
+# the environment used to silently replace the whole base line,
+# warnings included).
 ifdef DEBUG
-CFLAGS ?= -O0 -g -Wall -Wpointer-arith -pipe -Werror=format-security -DDEBUG
+CFLAGS ?= -O0 -g -pipe -Werror=format-security -DDEBUG
 ifdef ASAN
 override CFLAGS += -fsanitize=address -DUSE_SANITIZER
 endif
@@ -119,8 +122,10 @@ ifdef UBSAN
 override CFLAGS += -fsanitize=undefined -DUSE_SANITIZER
 endif
 else
-CFLAGS ?= -O2 -Wall -Wpointer-arith -pipe -fomit-frame-pointer
+CFLAGS ?= -O2 -pipe -fomit-frame-pointer
 endif
+
+override CFLAGS += -Wall -Wpointer-arith
 
 # Treat warnings as errors
 ifdef WERR
@@ -139,6 +144,14 @@ override CFLAGS += -fno-strict-aliasing -fwrapv -fvisibility=hidden
 
 # OS X architecture.
 override CFLAGS += -arch $(YQ2_ARCH)
+
+# S4: state the Metal 4 requirement at build time. Without a
+# deployment target clang assumes the build host's OS version, so
+# availability warnings for the Metal 4 API surface were silently
+# "always new enough"; with this the requirement is consistent and
+# also rides in the binary (LC_BUILD_VERSION), next to the runtime
+# OS check in RE_InitContext.
+override CFLAGS += -mmacosx-version-min=26.0
 
 # ----------
 
@@ -162,8 +175,12 @@ override CFLAGS += -DYQ2OSTYPE=\"$(YQ2_OSTYPE)\" -DYQ2ARCH=\"$(YQ2_ARCH)\"
 
 # For reproduceable builds, look here for details:
 # https://reproducible-builds.org/specs/source-date-epoch/
+# S4: this Makefile is macOS-only (OS check above), and BSD date has
+# no GNU --date=@EPOCH form, so the epoch is formatted with the BSD
+# form: date -u -r EPOCH. %e is BSD's space-padded day of month,
+# matching what the GNU form's %_d produced.
 ifdef SOURCE_DATE_EPOCH
-override CFLAGS += -DBUILD_DATE=\"$(shell date --utc --date="@${SOURCE_DATE_EPOCH}" +"%b %_d %Y" | sed -e 's/ /\\ /g')\"
+override CFLAGS += -DBUILD_DATE=\"$(shell date -u -r "$(SOURCE_DATE_EPOCH)" +"%b %e %Y" | sed -e 's/ /\\ /g')\"
 endif
 
 # ----------
@@ -201,6 +218,10 @@ endif
 # Required libraries.
 LDLIBS ?= -arch $(YQ2_ARCH) -framework Metal -framework QuartzCore -framework Foundation
 
+# S4: link with the same deployment target (see CFLAGS above) so the
+# minos recorded in the dylib's LC_BUILD_VERSION matches.
+override LDFLAGS += -mmacosx-version-min=26.0
+
 # ----------
 
 # Extra LDFLAGS for SDL
@@ -222,8 +243,9 @@ endif
 
 # ----------
 
-# Phony targets
-.PHONY : all check-shaders
+# Phony targets (S4: ref_mtl/clean/cleanall so a stray file or
+# directory with those names cannot make the target a no-op)
+.PHONY : all check-shaders ref_mtl clean cleanall
 
 # ----------
 
@@ -265,7 +287,9 @@ src/files/mtl_shaders.c: $(SRC_MSL) shaders/gen_msl.sh
 
 # ----------
 
-# Cleanup
+# Cleanup. clean drops release/* (and debug/*), which includes the
+# dylib that tools/fix_verify.sh builds and deploys next to the game
+# binary - the next fix_verify run simply rebuilds it.
 clean:
 	@echo "===> CLEAN"
 	${Q}rm -Rf build debug/* release/*
