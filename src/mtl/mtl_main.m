@@ -667,7 +667,11 @@ MTL_AbandonOpenFrame(void)
  states (possibly nil at first init) are left untouched, so a
  rebuild failure keeps the previous sampling working. Address
  modes: world/nearest repeat, lmap and sky clamp (Q3 adds the
- clamp-to-edge sky variant, ref_vk_image.c:1166).
+ clamp-to-edge sky variant, vk_image.c:1166). ref_vk picks the
+ lightmap filtering from its own vk_lmaptexturemode cvar (default
+ VK_MIPMAP_LINEAR, vk_main.c:1165); mtl has no such cvar and keeps
+ the lmap state linear/mip-linear + aniso unconditionally, i.e. the
+ vk default mode.
  ==============
 */
 static qboolean

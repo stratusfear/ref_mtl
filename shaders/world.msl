@@ -4,12 +4,16 @@
 // Compiled at runtime by the MTL4Compiler from the embedded source
 // (see src/files/mtl_shaders.c, generated from this file).
 //
-// Vertex data comes from [[stage_in]] (bound through the vertex-stage
-// argument table at buffer index 0); everything else is delivered
-// through an MTL4ArgumentTable:
+// Vertex data comes from [[stage_in]]: every world pipeline is created
+// with a vertexDescriptor matching the [[attribute(n)]] decorations
+// below, and the draw binds the interleaved vertex data at buffer
+// index 0 (useStageInResources). Everything else is set per draw on
+// the classic encoder:
 //   vertex stage : [[buffer(1)]] = WorldUbo
-//   fragment     : [[texture(0)]] = surface (and [[texture(1)]] lightmap
-//                  for the lmap path), [[buffer(0)]] = WorldUbo
+//   fragment     : [[buffer(0)]] = WorldUbo, [[texture(0)]] = surface
+//                  (and [[texture(1)]] lightmap for the lmap path),
+//                  [[sampler(0)]] world image sampling (M2: bound
+//                  sampler state), [[sampler(1)]] lightmap sampling
 //
 // The WorldUbo layout must match world_ubo_t in mtl.h exactly.
 

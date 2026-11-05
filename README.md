@@ -619,6 +619,41 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     draw instead of dividing by zero in the frame wrap, and the
     `R_DrawEntitiesOnList` / `R_DrawBeam` headers record the P1
     nil-model marker.
+ - Round-12 findings Q1-Q5 (brief `REVIEW_FINDINGS_12.md`; world.msl
+    shader audit against ref_vk's GLSL): Q1 (tileclear repeat
+    addressing) and Q4's code half were already closed by round 10's
+    O5, so they re-ran as verify rows: at `viewsize 50` the mtl border
+    ring (196608 px) is byte-identical between `mtl_pixel_size` 1 and
+    2 (sumd 0) and byte-identical to ref_vk's border at pixel size 1
+    (sumd 0); ref_vk's own border changes with pixel size because its
+    tileclear rides the divided world buffer (resolution difference
+    only, accepted in O5). Q2 was a real parity bug:
+    `alias_fragment` multiplied the texture by the raw interpolated
+    vertex colour while `model.frag` clamps to [0,1] first, so
+    overbright-lit models rendered brighter than ref_vk - fixed with
+    `clamp(in.color, 0.0, 1.0)` before the multiply (evidence:
+    blaster muzzle flash at `r_modulate 3`, pre/post/vk triple). Q3:
+    sky images sampled through the repeating `world_sampler`;
+    ref_vk gives clamp-to-edge to `it_sky` images only
+    (`vk_image.c:1166`), and a minified sky quad pulls the opposite
+    cube face through the wrap - added a third runtime sampler
+    `world_sampler_sky` (same filtering/anisotropy as `world_sampler`,
+    clamp-to-edge; the brief's constexpr sampler would have dropped
+    `r_anisotropic`, which M2 keeps runtime) bound by
+    `MTL_DrawSkyQuad` and sky surface chains: on power1's `e2u3/sky1`
+    dome at `pixel_size 8` (sky at mip ~2) the right-edge band had
+    832 differing samples against vk before the fix, 0 after. Q4's
+    comment half: the stale G5 note in `warp_fragment` claimed
+    ref_vk draws its tileclear after the warp pass - it draws it
+    inside RP_WORLD at (0,0) with the quad transform divided by
+    `vk_pixel_size`, and the warp's unconditional `uv /= pixelSize`
+    scales it back up; comment rewritten. Q5 nits: the world.msl
+    header preamble still described `MTL4ArgumentTable` delivery -
+    rewritten for `vertexDescriptor`/stage_in plus classic-encoder
+    bindings - and the `MTL_BuildWorldSamplers` doc records that
+    ref_vk picks lightmap filtering from `vk_lmaptexturemode`
+    (default `VK_MIPMAP_LINEAR`) while mtl pins that default; the
+    half-open warp bounds note was verified present.
 
 ### Intentionally not implemented (parity scope cuts)
 
