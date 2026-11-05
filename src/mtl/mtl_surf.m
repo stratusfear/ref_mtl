@@ -1046,9 +1046,15 @@ MTL_CreateLightmapTexture(unsigned index, const byte *data)
 		   surfaces stay visible (fullbright). ref_vk treats lightmap
 		   creation failure as fatal (ERR_DROP at block overflow);
 		   substituting is a deliberate deviation, same direction as
-		   M6's notexture fallback. A slot left nil here is retried
-		   naturally: LM_UploadBlock re-enters the create path for the
-		   static block, MTL_DynLightmapTexture for a dynamic one. */
+		   M6's notexture fallback. N9B1: the substitute's lifetime
+		   depends on the slot kind. Static slots (index <
+		   MAX_LIGHTMAPS) keep it until the next
+		   MTL_BeginBuildingLightmaps releases the whole static range
+		   (N3) and the next map creates fresh textures - LM_UploadBlock
+		   does NOT retry within this map, the slot is non-nil. Dynamic
+		   slots (index >= DYNLIGHTMAP_OFFSET) are retried:
+		   MTL_DynLightmapTexture recognises the substitute, releases
+		   it and re-attempts creation on each use until it succeeds. */
 		if (!lmap_fail_warned)
 		{
 			lmap_fail_warned = true;
@@ -1088,8 +1094,23 @@ MTL_DynLightmapTexture(unsigned block)
 {
 	unsigned index = DYNLIGHTMAP_OFFSET
 		+ (unsigned)mtl_state.frame_slot * MAX_LIGHTMAPS + block;
+	id<MTLTexture> tex = mtl_state.lightmap_textures[index];
 
-	if (mtl_state.lightmap_textures[index] == nil)
+	/* N9B1: a white substitute parked in a dynamic slot by a failed
+	   creation is not a permanent state - unlike the static slots, the
+	   dynamic sets are never released at BSP reload, so holding the
+	   substitute would leave this block fullbright (with uploads
+	   skipped) for the rest of the session. Detect the substitute,
+	   release it - that hands back exactly the retain Create gave the
+	   slot - and retry the real creation below. A transient failure
+	   therefore costs only the uses between attempts. */
+	if (tex != nil && tex == lmap_white_texture)
+	{
+		[tex release];
+		tex = mtl_state.lightmap_textures[index] = nil;
+	}
+
+	if (tex == nil)
 	{
 		byte dummy[BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES];
 
