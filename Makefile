@@ -223,12 +223,45 @@ endif
 # ----------
 
 # Phony targets
-.PHONY : all
+.PHONY : all check-shaders
 
 # ----------
 
 # Builds everything
 all: ref_mtl
+
+# ----------
+
+# S2: the MSL that actually runs is the generated C array, not the .msl
+# files; a stale src/files/mtl_shaders.c otherwise builds and smokes
+# green with the old shader baked in. Regenerate to a temp file and
+# compare; on mismatch run the generator into place with
+# "sh shaders/gen_msl.sh". tools/fix_verify.sh calls this first, so the
+# gate can never pass on a stale embedded shader.
+check-shaders:
+	@echo "===> CHECK-SHADERS"
+	${Q}tmp=$$(mktemp /tmp/mtl_shaders_check.XXXXXX); \
+	sh shaders/gen_msl.sh "$$tmp" >/dev/null; \
+	if cmp -s "$$tmp" src/files/mtl_shaders.c; then \
+		rm -f "$$tmp"; \
+	else \
+		rm -f "$$tmp"; \
+		echo "check-shaders: FAIL: src/files/mtl_shaders.c is stale, run: sh shaders/gen_msl.sh" >&2; \
+		exit 1; \
+	fi
+
+# S2: also keep the generated file current inside a normal build when a
+# .msl is newer. Without python3 the regeneration cannot run, so the
+# rule only shouts; check-shaders then blocks the gate.
+SRC_MSL := $(wildcard shaders/*.msl)
+
+src/files/mtl_shaders.c: $(SRC_MSL) shaders/gen_msl.sh
+	@if command -v python3 >/dev/null; then \
+		sh shaders/gen_msl.sh; \
+	else \
+		echo "src/files/mtl_shaders.c is out of date and python3 is unavailable; regenerate on a machine that has it" >&2; \
+		false; \
+	fi
 
 # ----------
 

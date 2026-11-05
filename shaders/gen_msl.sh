@@ -10,13 +10,14 @@
 #   sh shaders/gen_msl.sh
 #
 # Output is checked in (like ref_vk's spirv/*.c), so the build itself has
-# no generator dependency.
+# no generator dependency. An optional first argument redirects the output
+# (used by "make check-shaders", which compares against a temp file).
 
 set -e
 
 cd "$(dirname "$0")/.."
 
-OUT=src/files/mtl_shaders.c
+OUT=${1:-src/files/mtl_shaders.c}
 
 python3 - "$OUT" <<'PYEOF'
 import sys, os, glob

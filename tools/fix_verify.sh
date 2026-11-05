@@ -16,6 +16,9 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+echo "== embedded shaders fresh (make check-shaders) =="
+( cd "$ROOT/ref_mtl" && make check-shaders )
+
 echo "== build ref_mtl (WERR=1) =="
 ( cd "$ROOT/ref_mtl" && WERR=1 make )
 
