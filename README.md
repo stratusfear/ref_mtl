@@ -507,6 +507,29 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     reuse, one batched drawPrimitives per chain, UBO record dedup):
     deferred - no profiling evidence demands it, same disposition
     as M8.
+ - Round-9b follow-ups N9B1-N9B2 (brief `REVIEW_FINDINGS_9B.md`;
+    re-verification of the round-9 lightmap fixes): N9B1 closed a
+    lifetime hole in N1's white substitute - the retry story differs
+    per slot kind. Static slots are released wholesale by
+    `MTL_BeginBuildingLightmaps` (N3) at the next BSP load, but the
+    dynamic frame-slot sets are only freed in `MTL_FreeLightmaps` and
+    `MTL_DynLightmapTexture` created only on a nil slot, so a failed
+    dynamic creation left its block fullbright with uploads skipped
+    for the whole session (pre-fix sim: 1 forced failure, 27566
+    substitute upload skips still growing, shot mean luma 100.8 vs
+    18.4 clean). `MTL_DynLightmapTexture` now recognises the
+    substitute in a dynamic slot, releases it and retries creation on
+    each use until it succeeds (same trigger: exactly 1 failure, 1
+    retry, 1 skipped frame, shot back to baseline; all-creates-fail
+    stress: 380885 retries, no debug-layer/leak errors). N9B2 made
+    the source layout of `MTL_UploadLightmapRegion` an explicit
+    `atlas_src` parameter instead of inferring it from
+    `src_stride == BLOCK_WIDTH*LIGHTMAP_BYTES`: a compact source with
+    `smax == 128` matches that stride by coincidence (the N4 nit's
+    y-guard kept it from over-reading) and atlas callers are now
+    distinguishable from the three compact per-surface call sites by
+    inspection; jail1 and base1 cross-build frame diffs stayed at the
+    same-build noise floor.
 
 ### Intentionally not implemented (parity scope cuts)
 

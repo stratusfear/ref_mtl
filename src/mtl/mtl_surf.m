@@ -65,15 +65,23 @@ static unsigned	MTL_DynLightmapTexture(unsigned block);
 /*
  * Uploads a w x h lightmap region to texture position (x, y).
  *
- * Two source layouts are supported, matching gl1's two upload paths:
- *   - compact buffer (src_stride != BLOCK_WIDTH*LIGHTMAP_BYTES): src is the
- *     w x h region itself, packed with src_stride bytes per row, starting at
- *     column 0. This is the dynamic-draw path (R_BuildLightMap into a small
- *     temp buffer), equivalent to gl1's glTexSubImage2D(..., light_s,
- *     light_t, smax, tmax, ..., temp).
- *   - full-width buffer (src_stride == BLOCK_WIDTH*LIGHTMAP_BYTES): src is a
- *     BLOCK_WIDTH-wide atlas and the region sits at column x of each row.
- *     This is the load-time path (whole-buffer upload, x = y = 0).
+ * Two source layouts are supported, matching gl1's two upload paths; the
+ * caller states which one it passes via atlas_src (N9B2 - the layout used
+ * to be inferred from src_stride == BLOCK_WIDTH*LIGHTMAP_BYTES, but a
+ * compact buffer with smax == 128 has exactly that stride by coincidence
+ * and was then misread as an atlas: the atlas branch indexes src at row
+ * (y + row), reading past a compact region when y > 0. Today's compact
+ * surfaces stay under ~18 luxels so that coincidence was unreachable, but
+ * the inference was a latent trap; an explicit parameter also states at
+ * each call site which layout the buffer argument really is):
+ *   - compact (atlas_src false): src is the w x h region itself, packed
+ *     with src_stride bytes per row, starting at row 0, column 0. This is
+ *     the dynamic-draw path (R_BuildLightMap into a small temp buffer),
+ *     equivalent to gl1's glTexSubImage2D(..., light_s, light_t, smax,
+ *     tmax, ..., temp).
+ *   - atlas (atlas_src true): src is a BLOCK_WIDTH-wide atlas and the
+ *     region sits at column x, row (y + row) of it. This is the load-time
+ *     path (whole-buffer upload, x = y = 0).
  *
  * The destination offset (x, y) is applied only to MTLRegionMake2D, never to
  * the source pointer for the compact layout.
@@ -87,7 +95,7 @@ static id<MTLTexture>	lmap_white_texture;
 
 static void
 MTL_UploadLightmapRegion(id<MTLTexture> texture, const byte *src, int src_stride,
-	int x, int y, int w, int h)
+	qboolean atlas_src, int x, int y, int w, int h)
 {
 	byte	*out;
 	size_t	bytesPerRow = (size_t)w * LIGHTMAP_BYTES;
@@ -100,19 +108,18 @@ MTL_UploadLightmapRegion(id<MTLTexture> texture, const byte *src, int src_stride
 	if (texture == lmap_white_texture)
 		return;
 
-	if (src_stride == BLOCK_WIDTH * LIGHTMAP_BYTES)
+	if (atlas_src)
 	{
-		// Full-width atlas: region starts at column x of each row.
+		// Full-width atlas: region starts at column x of row (y + row).
 		// Fast path when the whole buffer is uploaded at the origin.
-		/* N4: y == 0 is part of the guard, not decoration: a compact
-		   source with smax == 128 lands in this branch by coincidence
-		   of stride (128 * LIGHTMAP_BYTES == BLOCK_WIDTH *
-		   LIGHTMAP_BYTES), and its rows already start at row 0 - the
-		   staging loop below would index src at row (y + row) and read
-		   past the region. Today's only full-width caller
-		   (LM_UploadBlock) uploads the whole buffer at x = y = 0; a
-		   future x==0, y>0 atlas caller takes the staging loop, which
-		   is correct for a true atlas. */
+		/* N4 (made moot by N9B2): the y == 0 in this test used to be
+		   load-bearing - a compact source with smax == 128 matched the
+		   stride test by coincidence and its rows already start at row
+		   0, so the staging loop below would index src at (y + row)
+		   and read past the region. With the layout now explicit the
+		   fast path is just the whole-buffer shortcut it always was
+		   for atlases; atlas callers with x == 0, y > 0 correctly
+		   take the staging loop. */
 		if (x == 0 && y == 0)
 		{
 			out = (byte *)src;
@@ -354,7 +361,7 @@ R_RenderBrushPoly(msurface_t *fa, const float *modelMatrix, float alpha,
 			   lightmap textures (~24 MB + rebuild cost) to hide a rare
 			   single-frame glitch. */
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[fa->lightmaptexturenum],
-				(const byte *)temp, smax * LIGHTMAP_BYTES,
+				(const byte *)temp, smax * LIGHTMAP_BYTES, false,
 				fa->light_s, fa->light_t, smax, tmax);
 
 			fa->lightmapchain = mtl_lms.lightmap_surfaces[fa->lightmaptexturenum];
@@ -547,7 +554,7 @@ MTL_RenderLightmappedPoly(msurface_t *surf, const float *modelMatrix, float alph
 			/* H2: same accepted static-texture replaceRegion race as in
 			   R_RenderBrushPoly above. */
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[surf->lightmaptexturenum],
-				(const byte *)temp, smax * LIGHTMAP_BYTES,
+				(const byte *)temp, smax * LIGHTMAP_BYTES, false,
 				surf->light_s, surf->light_t, smax, tmax);
 		}
 		else
@@ -563,7 +570,7 @@ MTL_RenderLightmappedPoly(msurface_t *surf, const float *modelMatrix, float alph
 			lmtex = MTL_DynLightmapTexture(surf->lightmaptexturenum);
 
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[lmtex],
-				(const byte *)temp, smax * LIGHTMAP_BYTES,
+				(const byte *)temp, smax * LIGHTMAP_BYTES, false,
 				surf->light_s, surf->light_t, smax, tmax);
 		}
 
@@ -1143,14 +1150,14 @@ static void LM_UploadBlock( qboolean dynamic )
 
 		if (height > 0 && mtl_state.lightmap_textures[texture])
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[texture],
-				mtl_lms.lightmap_buffer, BLOCK_WIDTH * LIGHTMAP_BYTES,
+				mtl_lms.lightmap_buffer, BLOCK_WIDTH * LIGHTMAP_BYTES, true,
 				0, 0, BLOCK_WIDTH, height);
 	}
 	else
 	{
 		if (mtl_state.lightmap_textures[texture])
 			MTL_UploadLightmapRegion(mtl_state.lightmap_textures[texture],
-				mtl_lms.lightmap_buffer, BLOCK_WIDTH * LIGHTMAP_BYTES,
+				mtl_lms.lightmap_buffer, BLOCK_WIDTH * LIGHTMAP_BYTES, true,
 				0, 0, BLOCK_WIDTH, BLOCK_HEIGHT);
 		else
 			MTL_CreateLightmapTexture(texture, mtl_lms.lightmap_buffer);
