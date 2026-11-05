@@ -401,6 +401,33 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
    cull argument there is structural. UI bind-caching
    (`RE_Draw_CharScaled` per-glyph state churn) stays deferred
    until profiling says otherwise.
+  - Round-7b follow-ups M7B1-M7B3 (re-verification of the L1-L5
+    commits): M7B1 fixed the L5 `scale2x/3x` OOM fallback itself
+    dereferencing NULL - on malloc failure `image_scaled` now falls
+    back to the caller's `data` and both frees are guarded
+    (`image_scaled != data`), so the retexturing-failure path draws
+    unscaled instead of faulting (forced-malloc-NULL + synthetic
+    StretchRaw call: pre-fix SIGSEGV `KERN_INVALID_ADDRESS at 0x0`,
+    post-fix graceful frame + one-shot console note). M7B2 closed
+    the live half of L1's open-frame case: an ERR_DROP mid-frame
+    while the renderer stays alive (warp numverts/MAX_CLIP_VERTS,
+    bad world model, lightmap errors) left the abandoned slot busy
+    forever - every third frame then stalled 1 s on the CPU gate
+    (measured: 20 x "CPU gate timed out" at frames 91,94,97,...).
+    The drain's open-frame block became `MTL_AbandonOpenFrame()`
+    (now also ending open encoders before releasing the buffer) and
+    RE_BeginFrame calls it before advancing the frame counter, so
+    the abandoned frame's own slot is released; post-fix, one
+    "discarding frame" DPrintf, zero stalls. M7B3 hardened the
+    teardown against a second `RE_Shutdown`:
+    `Mod_FreeModelsKnown` left `mod_numknown`/`mod_loaded` set over
+    a NULL table, so a second pass would walk it in `Mod_FreeAll`
+    (recursive-shutdown test: pre-fix SIGSEGV in `Mod_FreeAll` at
+    0x240, post-fix clean); the counters are reset by a new
+    `Mod_ResetKnown()` in `mtl_model.m` called from RE_Shutdown -
+    `Mod_FreeModelsKnown` itself stays untouched because
+    `Mod_Reallocate` depends on the counters (vk dodges the case
+    with its `vk_initialized` guard; we have no guard).
 
 ### Intentionally not implemented (parity scope cuts)
 

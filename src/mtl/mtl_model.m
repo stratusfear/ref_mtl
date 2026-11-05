@@ -138,6 +138,23 @@ Mod_FreeModelsKnown(void)
 	models_known = NULL;
 }
 
+/*
+===============
+Mod_ResetKnown
+
+M7B3: pair with Mod_FreeModelsKnown at shutdown: that leaves
+mod_numknown/mod_loaded set, so a second Mod_FreeAll would walk a
+NULL table. Kept out of Mod_FreeModelsKnown itself because
+Mod_Reallocate calls it mid-load and depends on the counters.
+===============
+*/
+void
+Mod_ResetKnown(void)
+{
+	mod_numknown = 0;
+	mod_loaded = 0;
+}
+
 static void
 Mod_LoadSubmodels(model_t *loadmodel, const byte *mod_base, const lump_t *l)
 {

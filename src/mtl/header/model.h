@@ -188,5 +188,6 @@ void Hunk_Free(void *base);
 
 void Mod_FreeAll(void);
 void	Mod_FreeModelsKnown (void);
+void	Mod_ResetKnown (void);
 
 #endif

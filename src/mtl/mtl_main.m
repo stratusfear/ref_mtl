@@ -762,9 +762,15 @@ RE_Shutdown(void)
 	   images they reference go away, matching QVk_WaitAndShutdownAll
 	   (Mod_FreeAll/Mod_FreeModelsKnown before Vk_ShutdownImages);
 	   both were missing entirely, so the known-model table and the
-	   loaded models' hunks leaked on every renderer restart. */
+	   loaded models' hunks leaked on every renderer restart.
+	   M7B3: reset the model counters afterwards (helper lives in
+	   mtl_model.m; mod_numknown/mod_loaded are static there) so a
+	   second RE_Shutdown cannot walk a freed table in Mod_FreeAll;
+	   vk dodges this with its vk_initialized guard, we have no
+	   guard, so the teardown must leave the tables self-consistent. */
 	Mod_FreeAll();
 	Mod_FreeModelsKnown();
+	Mod_ResetKnown();
 
 	/* G1: MTL_ShutdownImages had no call site, so the image textures
 	   and lightmap textures survived (leaked) a renderer shutdown;
