@@ -422,8 +422,13 @@ R_SetupFrame(void)
 	c_brush_polys = 0;
 	c_alias_polys = 0;
 
-	/* W3.0: the RDF_NOWORLDMODEL clear rectangle is a no-op; the full
-	   clear happens in RE_RenderFrame. */
+	/* O3: the RDF_NOWORLDMODEL backdrop ref_vk draws here
+	   (QVk_DrawColorRect, vk_main.c:684) needs the mtl UI pass and the
+	   refdef rectangle before the world pass descriptor is built, so it
+	   lives in RE_RenderFrame instead; see the noworld block there. The
+	   rest of this function follows ref_vk: the cluster lookup above is
+	   skipped for the flag, and the projection/view matrices are built
+	   from the (menu) refdef so the model lands inside the rect. */
 
 	// set up projection matrix
 	{
@@ -537,6 +542,8 @@ static void
 MTL_BeginUIPass(void);
 static void
 MTL_EndUIPass(void);
+static void
+MTL_DrawUiColor(const ui_ubo_t *ubo_in);	/* O3: used from RE_RenderFrame */
 
 static void
 RE_ScreenShot_f(void);
@@ -4028,6 +4035,55 @@ RE_RenderFrame(refdef_t *fd)
 
 	r_newrefdef = *fd;
 
+	/* O3: ref_vk special-cases RDF_NOWORLDMODEL frames (the player-setup
+	   menu renders its 3-D model through this entry point with no world):
+	   R_SetupFrame first fills the refdef rectangle with a 0.3 grey
+	   backdrop quad through the UI colour pass (vk_main.c:684), the model
+	   viewport is never divided by vk_pixel_size, and R_SetVulkan2D skips
+	   both the warp and the postprocess blit for such frames
+	   (vk_main.c:1042, 1052) - the model and the menu UI reach the screen
+	   raw, without the 1.5x-intensity world gamma pow. mtl treated them as
+	   ordinary world frames: the pass cleared the whole scene texture to
+	   black (no backdrop, and in a menu-only frame even the previous UI
+	   content), the model rendered divisor-scaled expecting the warp to
+	   upscale it back, and world_rendered = true made the following UI
+	   draw run the warp/postprocess chain over everything drawn before it.
+	   All three fixes are gated on the flag below. */
+	qboolean noworld = ((r_newrefdef.rdflags & RDF_NOWORLDMODEL) != 0);
+	if (noworld)
+	{
+		/* O3 (1): the grey backdrop, through the UI colour path - the
+		   same quad RE_Draw_Fill draws, at the refdef rectangle with
+		   colour .3,.3,.3,1 (vk clearArea array, vk_main.c:684). The UI
+		   pass targets the very texture this frame's world pass then
+		   loads, so the backdrop survives (non-MSAA) or is re-made the
+		   pass clear colour (MSAA, see below); either way the model
+		   lands on top of it. */
+		if (st->ui_encoder == nil)
+		{
+			MTL_BeginUIPass();
+		}
+
+		if (st->ui_encoder != nil)
+		{
+			ui_ubo_t ubo;
+
+			memset(&ubo, 0, sizeof(ubo));
+			ubo.offset[0] = (float)r_newrefdef.x / vid.width;
+			ubo.offset[1] = (float)r_newrefdef.y / vid.height;
+			ubo.scale[0] = (float)r_newrefdef.width / vid.width;
+			ubo.scale[1] = (float)r_newrefdef.height / vid.height;
+			ubo.uv_scale[0] = 1.f;
+			ubo.uv_scale[1] = 1.f;
+			ubo.color[0] = 0.3f;
+			ubo.color[1] = 0.3f;
+			ubo.color[2] = 0.3f;
+			ubo.color[3] = 1.f;
+			ubo.gamma = 2.1f - vid_gamma->value;
+			MTL_DrawUiColor(&ubo);
+		}
+	}
+
 	/* W5d: if the 2D UI opened a pass before the world (SCR_TileClear runs
 	   before V_RenderView when viewsize < 100), end it first so the two
 	   passes do not overlap, and LOAD the color attachment so the tiles the
@@ -4096,12 +4152,20 @@ RE_RenderFrame(refdef_t *fd)
 		   scene texture, and the undefined texels outside the scissored
 		   world rect would otherwise resolve into the view borders. With
 		   pre-world tiles the save/restore blits below cover every texel
-		   outside the world rect, so DontCare stays fine there. */
+		   outside the world rect, so DontCare stays fine there.
+		   O3: a NOWORLDMODEL frame is the exception - the grey backdrop
+		   was drawn into the (single-sample) scene texture, and the
+		   resolve would overwrite exactly the rectangle it covers. So
+		   clear the multisample attachment to the same grey: inside the
+		   world rect it resolves into the backdrop, outside the rect the
+		   save/restore blits put the pre-world tiles back. */
 		st->pass_descriptor.colorAttachments[0].loadAction =
-			ui_before_world ? MTLLoadActionDontCare : MTLLoadActionClear;
+			(ui_before_world && !noworld) ? MTLLoadActionDontCare : MTLLoadActionClear;
 		st->pass_descriptor.colorAttachments[0].storeAction =
 			MTLStoreActionMultisampleResolve;
-		st->pass_descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+		st->pass_descriptor.colorAttachments[0].clearColor = noworld ?
+			MTLClearColorMake(0.3, 0.3, 0.3, 1.0) :
+			MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 		st->pass_descriptor.colorAttachments[0].resolveTexture = st->scene_texture;
 		st->pass_descriptor.colorAttachments[0].resolveLevel = 0;
 		st->pass_descriptor.colorAttachments[0].resolveSlice = 0;
@@ -4110,8 +4174,17 @@ RE_RenderFrame(refdef_t *fd)
 	}
 	else
 	{
-		st->pass_descriptor.colorAttachments[0].texture = st->scene_texture;
-		st->pass_descriptor.colorAttachments[0].loadAction = ui_before_world ? MTLLoadActionLoad : MTLLoadActionClear;
+		/* O3: a NOWORLDMODEL frame composites straight into the live UI
+		   target - the scene texture in a menu-only frame, or the
+		   postprocess output when a real world pass already ran this
+		   frame (exactly ref_vk, which draws the setup model in the UI
+		   render pass, "draws directly to swapchain", vk_main.c:1052).
+		   The backdrop quad went into that same target, so the load is
+		   always Load: the model lands on top of it. */
+		st->pass_descriptor.colorAttachments[0].texture =
+			(noworld && st->ui_target != nil) ? st->ui_target : st->scene_texture;
+		st->pass_descriptor.colorAttachments[0].loadAction =
+			(noworld || ui_before_world) ? MTLLoadActionLoad : MTLLoadActionClear;
 		st->pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
 		st->pass_descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 		st->pass_descriptor.colorAttachments[0].resolveTexture = nil;
@@ -4169,9 +4242,12 @@ RE_RenderFrame(refdef_t *fd)
 	   (its uv /= pixelSize sampling addresses exactly this
 	   refdef/divisor-anchored content). At viewsize 100 the vrect is
 	   the full screen, which is the same rectangle the pass used
-	   before. */
+	   before. O3 (2): a NOWORLDMODEL frame never runs the warp chain
+	   (see the world_rendered gate below), exactly like ref_vk's
+	   R_SetVulkan2D skip, so the model renders at full resolution:
+	   divisor 1. */
 	{
-		const double divisor = (double)MTL_PixelDivisor();
+		const double divisor = noworld ? 1.0 : (double)MTL_PixelDivisor();
 		const double scX = (double)st->scene_width / (double)vid.width;
 		const double scY = (double)st->scene_height / (double)vid.height;
 		const double x0 = floor((double)r_newrefdef.x * scX);
@@ -4267,9 +4343,52 @@ RE_RenderFrame(refdef_t *fd)
 		[restore endEncoding];
 	}
 
+	/* O3: MSAA NOWORLDMODEL frame in a mixed frame (a real world pass
+	   already ran, so the UI/present chain follows ui_target): the world
+	   pipelines can only run at the MSAA sample count, so the model
+	   renders through the multisample attachments and resolves into the
+	   scene texture as usual; copy just the model rectangle from there
+	   onto the live UI target, the way the non-MSAA path draws into it
+	   directly. The clear grey travelled with the resolve, so the model
+	   keeps its backdrop. Menu-only frames need no copy: ui_target is
+	   the scene texture there. */
+	if (msaa && noworld && st->ui_target != nil &&
+	    st->ui_target != st->scene_texture)
+	{
+		const NSUInteger w = (NSUInteger)st->scene_width;
+		const NSUInteger h = (NSUInteger)st->scene_height;
+		const NSUInteger x0 = (NSUInteger)MAX(0, MIN(st->world_vx, (int)w));
+		const NSUInteger y0 = (NSUInteger)MAX(0, MIN(st->world_vy, (int)h));
+		const NSUInteger x1 = (NSUInteger)MAX(0, MIN(st->world_vx + st->world_vw, (int)w));
+		const NSUInteger y1 = (NSUInteger)MAX(0, MIN(st->world_vy + st->world_vh, (int)h));
+
+		if (x1 > x0 && y1 > y0)
+		{
+			id<MTLBlitCommandEncoder> copy =
+				[st->command_buffer blitCommandEncoder];
+
+			[copy copyFromTexture:st->scene_texture
+				sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x0, y0, 0)
+				sourceSize:MTLSizeMake(x1 - x0, y1 - y0, 1)
+				toTexture:st->ui_target
+				destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(x0, y0, 0)];
+			[copy endEncoding];
+		}
+	}
+
 	// W6b: the world pass produced content this frame; the warp pass
-	// (RE_EndWorldRenderpass) becomes eligible.
-	st->world_rendered = true;
+	// (RE_EndWorldRenderpass) becomes eligible. O3 (3): a NOWORLDMODEL
+	// frame does not qualify - ref_vk skips the warp/postprocess chain
+	// for it (R_SetVulkan2D, vk_main.c:1042, 1052), and here it keeps
+	// ui_target on the plain scene texture so the backdrop, the model
+	// and the menu UI after it are presented raw, without the world
+	// gamma pow. (The flag is never lowered again: if a real world pass
+	// already ran this frame its chain state stands, the way ref_vk's
+	// "skip finishing RP_WORLD twice" guard keeps the first chain.)
+	if (!noworld)
+	{
+		st->world_rendered = true;
+	}
 }
 
 /*
