@@ -497,9 +497,19 @@ MTL_MipBoxFilter(const byte *src, int sw, int sh, byte *dst)
 ================
 MTL_MipNearFilter
 
-M2: mtl_mip_nearfilter variant (ref_vk parity: vk_image.c:172 uses a
-VK_FILTER_NEAREST blit when vk_mip_nearfilter > 0, which at the fixed
-2:1 downscale samples source pixel (2x, 2y)). Point sample, no averaging.
+M2: mtl_mip_nearfilter variant. ref_vk parity: vk_image.c generates
+mips with VK_FILTER_NEAREST blits (vk_mip_nearfilter > 0). M8B2: the
+round-8 note that the blit samples source texel (2x, 2y) was wrong.
+A nearest blit at 2:1 evaluates at source coordinate 2x + 1, exactly
+on the boundary between texels 2x and 2x + 1, and the blit resolves
+the tie to 2x + 1. Paired jail1 captures under the same conditions
+(mtl_mip_nearfilter / vk_mip_nearfilter = 1, spawn view): with the
+old (2x, 2y) rule mtl differed from vk on 0.8% of pixels (mean
+absdelta 1.7), while the vk-vs-vk reboot floor at the same setting
+is 0.1%; sampling (2x + 1, 2y + 1) brings the mtl-vs-vk pair down
+to 0.1-0.2%, i.e. vk's own floor. The nearfilter=0 (box filter) pair
+was already at the floor, confirming the test isolates mip selection.
+Point sample, no averaging.
 ================
 */
 static void
@@ -518,8 +528,8 @@ MTL_MipNearFilter(const byte *src, int sw, int sh, byte *dst)
 	{
 		for (x = 0; x < dw; x++)
 		{
-			int sx = x << 1;
-			int sy = y << 1;
+			int sx = (x << 1) + 1;
+			int sy = (y << 1) + 1;
 			const byte *p;
 			byte *d;
 

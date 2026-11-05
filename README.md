@@ -530,6 +530,28 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     distinguishable from the three compact per-surface call sites by
     inspection; jail1 and base1 cross-build frame diffs stayed at the
     same-build noise floor.
+ - Round-8b follow-ups M8B1-M8B3 (brief `REVIEW_FINDINGS_8B.md`;
+    verification pass over the round-8 dispositions): M8B1 confirmed
+    the M1 `r_vsync` wiring end to end with a temporary frame-window
+    hook (never committed): on this 120 Hz panel `r_vsync 1` pins the
+    frame rate at 120.0, `r_vsync 0` removes any Metal-level pacing
+    (~203 fps in jail1 at 640x480, debug layer off, ~100 with it on;
+    the cap is the CPU, not the layer), and runtime toggles in both
+    directions take effect within one 2 s measurement window with
+    `displaySyncEnabled` tracking the cvar throughout. Noted (no
+    change, owner decision): mtl and vk default `r_vsync` to "0"
+    while gl1/gl3/soft and the video menu default differ. M8B2 fixed
+    a mip-selection divergence found by paired pixel-exact captures:
+    ref_vk's nearest-blit mip generation resolves the 2:1 downscale
+    tie to source texel (2x+1, 2y+1), not (2x, 2y) as round-8 M2
+    assumed - before: mtl-vs-vk at nearfilter=1 differed on 0.8% of
+    pixels (mean absdelta 1.7) vs a 0.1% vk reboot floor; after:
+    0.1-0.2%, i.e. vk's own floor, while the box-filter
+    (nearfilter=0) pair was already at the floor. M8B3 is docs-only:
+    `r_clear` is registered but deliberately unused (mtl always
+    clears to black) and moved out of the shared-name parity list in
+    `REVIEW_EXTERNAL.md`, which also gained the requested
+    registered-cvar status table.
 
 ### Intentionally not implemented (parity scope cuts)
 
