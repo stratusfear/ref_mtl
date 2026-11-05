@@ -31,10 +31,6 @@
 
 #include <stddef.h>
 
-// shaders/quad.msl - W2 full-screen textured quad (vertex + fragment).
-extern const char quad[];
-extern const size_t quad_size;
-
 // shaders/world.msl - W3 world-rendering shaders (plain / lmap / sky).
 extern const char world[];
 extern const size_t world_size;

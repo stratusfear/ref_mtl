@@ -1,5 +1,5 @@
 //
-// world.msl - W3 world-rendering shaders for the Metal 4 refresher.
+// world.msl - world-rendering shaders for the Metal 4 refresher.
 //
 // Compiled at runtime by the MTL4Compiler from the embedded source
 // (see src/files/mtl_shaders.c, generated from this file).

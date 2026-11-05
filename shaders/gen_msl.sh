@@ -3,7 +3,7 @@
 # gen_msl.sh - embed the Metal Shading Language sources in shaders/ as
 # C byte arrays in src/files/mtl_shaders.c.
 #
-# The MSL is compiled at runtime by the MTL4Compiler (W2+), so unlike
+# The MSL is compiled at runtime by the MTL4Compiler, so unlike
 # ref_vk (which precompiles GLSL to SPIR-V with glslangValidator) we only
 # need the raw source text embedded. Regenerate after editing any .msl:
 #

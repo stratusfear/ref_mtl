@@ -39,7 +39,10 @@ vid_restart
 or from the command line: `quake2 +vid_renderer mtl` (note: command-line
 cvar sets run *after* video init, so they take effect on the next
 `vid_restart`; a config file is the reliable way to select the renderer
-at startup).
+at startup — that is why `tools/fix_verify.sh` keeps its `mtl_w0_test`
+config as the selection mechanism, adds `+set vid_renderer mtl` belt-
+and-braces, and fails the smoke unless the ref_mtl init banner shows up
+in the log).
 
 ### Handshake / compatibility checks
 
