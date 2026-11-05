@@ -623,8 +623,9 @@ typedef struct mtlstate_s
 	// Command encoding uses the classic (MTL3-era) queue/encoder API:
 	// drawing through MTL4 queues with an app-created render target
 	// corrupts the displayed image on M3 (Bug C, see tools/bugc_repro).
-	// Pipelines are still runtime-compiled with MTL4Compiler; those are
-	// plain id<MTLRenderPipelineState> and encode unchanged.
+	// The MSL is still runtime-compiled with the MTL4Compiler, but the
+	// pipeline states come from the classic newRenderPipelineState
+	// API: plain id<MTLRenderPipelineState>, encoding unchanged.
 	id<MTLDevice>			device;
 	id<MTLCommandQueue>		command_queue;
 	id<MTLCommandBuffer>		command_buffer;	// one per frame (retained)
@@ -665,7 +666,7 @@ typedef struct mtlstate_s
 	// W4: showtris (R_DrawTriangleOutlines): white line-strip outlines of
 	// every lightmapped triangle, drawn over the world with no depth test,
 	// cull or blend. Reuses the dlight vertex/fragment functions and the
-	// dlight vertex argument table (identical 24B pos+color layout).
+	// dlight vertex layout (identical 24B pos+color layout).
 	id<MTLRenderPipelineState>	pipeline_showtris;	// dlight_vertex + dlight_fragment
 
 	// W5a: alias models (MD2/SP2). CPU-expanded triangle lists of 36-byte

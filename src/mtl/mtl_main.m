@@ -1313,7 +1313,10 @@ only changes are `pd.rasterSampleCount = sampleCount;`,
 world pass always carries a Depth32Float attachment and the debug layer
 asserts on the mismatch) and the failure
 returns. Called with sampleCount 1 from R_InitShaders and again from
-MTL_UpdateMSAA when r_msaa_samples changes.
+MTL_UpdateMSAA when r_msaa_samples changes. R4 note: that rebuild is
+synchronous inside RE_BeginFrame and hitches the frame it happens on
+(all fourteen world-pass pipeline states are recreated); rare enough
+to accept.
 ============
 */
 static qboolean
@@ -1327,7 +1330,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	           (sampleCount > 1 && mtl_sampleshading->value > 0) ? "on" : "off",
 	           (unsigned long)sampleCount);
 	/* Render pipelines. The first three share the plain fragment
-	   shader; only the vertex stages and the argument tables differ.
+	   shader; only the vertex stages and the vertex layouts differ.
 	   The fourth (R3) reuses the plain pair but with blending off:
 	   ref_vk keeps two warp pipelines, vk_drawPolyWarpPipeline with
 	   blendEnable VK_TRUE and vk_drawPolySolidWarpPipeline (default
@@ -1339,19 +1342,25 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		{
 			const char *vertex;
 			const char *fragment;
+			const char *label;	// R4: names the pipeline state for the debug layer
 			int stride;		// polyvert_t = 20, lmappolyvert_t = 28
 			qboolean blend;	// R3: SRC_ALPHA/ONE_MINUS_SRC_ALPHA or opaque
 		} pipelines[4] = {
-			{ "world_plain_vertex", "world_plain_fragment", (int)sizeof(polyvert_t), YES },
-			{ "world_lmap_vertex", "world_lmap_fragment", (int)sizeof(lmappolyvert_t), NO },
-			{ "world_sky_vertex", "world_plain_fragment", (int)sizeof(polyvert_t), NO },
-			{ "world_plain_vertex", "world_plain_fragment", (int)sizeof(polyvert_t), NO },
+			{ "world_plain_vertex", "world_plain_fragment",
+				"ref_mtl.world.plain", (int)sizeof(polyvert_t), YES },
+			{ "world_lmap_vertex", "world_lmap_fragment",
+				"ref_mtl.world.lmap", (int)sizeof(lmappolyvert_t), NO },
+			{ "world_sky_vertex", "world_plain_fragment",
+				"ref_mtl.world.sky", (int)sizeof(polyvert_t), NO },
+			{ "world_plain_vertex", "world_plain_fragment",
+				"ref_mtl.world.plain_solid", (int)sizeof(polyvert_t), NO },
 		};
 
 		for (i = 0; i < 4; i++)
 		{
 			MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 
+			pd.label = [NSString stringWithUTF8String:pipelines[i].label];
 			pd.vertexFunction = [st->library newFunctionWithName:
 			    [NSString stringWithUTF8String:pipelines[i].vertex]];
 			pd.fragmentFunction = MTL_WorldFragmentFunction(st,
@@ -1411,8 +1420,11 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 			[vd release];
 			if (pipeline == nil)
 			{
+				/* R4: name the failing pipeline by its table label -
+				   entry 3 reuses entry 0's vertex function, so the old
+				   vertex-name print was ambiguous. */
 				Com_Printf("ref_mtl: pipeline creation failed (%s): %s\n",
-				           pipelines[i].vertex, err.localizedDescription.UTF8String);
+				           pipelines[i].label, err.localizedDescription.UTF8String);
 				R_ReleaseShaders(st);
 				return false;
 			}
@@ -1428,10 +1440,11 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	}
 
 	/* W4: dynamic light billboard quads. 24-byte vertices (pos3 +
-	   color3), additive blend, no depth write. The fragment stage has no
-	   resource bindings, so only the vertex argument table exists. */
+	   color3), additive blend, no depth write. The fragment stage has
+	   no resource bindings. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.dlight";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
 
@@ -1480,6 +1493,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   the CLOCKWISE global frontFace; see R_DrawBeam). */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.beam";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"beam_vertex"];
 
@@ -1525,6 +1539,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   static; the color is written into the world UBO ring per frame. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.flash";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"flash_vertex"];
 
@@ -1568,6 +1583,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   (see R_DrawTriangleOutlines). */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.showtris";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
 
@@ -1606,6 +1622,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   flash pipeline. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.alias";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
 
@@ -1644,6 +1661,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 		}
 
 		pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.alias_translucent";
 		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
 		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"alias_fragment", sampleCount);
 		pd.vertexDescriptor = vd;
@@ -1682,6 +1700,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   on, like QVKPIPELINE_INIT), back-face cull set at draw time. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.shadow";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"shadow_vertex"];
 
@@ -1724,6 +1743,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   like ref_vk's sprite pipeline; depth state is set per draw. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.sprite";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
 
@@ -1775,6 +1795,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 	   all. Both blend like the sprite pipeline (ref_vk default blendOpts). */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.particle";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
 
@@ -1821,6 +1842,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.point_particle";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"particle_point_vertex"];
 
@@ -2099,9 +2121,11 @@ MTL_UpdateMSAA(mtlstate_t *st)
 R_InitShaders
 
 W3: create the MTL4Compiler, compile the embedded world.msl into a
-library, build the four world-pass plain/lmap/sky render pipelines
-(plain twice: blend-on and the R3 blend-off solid variant), the four
-shared argument tables, and the per-slot vertex/UBO rings.
+library, then build the render pipelines with the classic
+newRenderPipelineStateWithDescriptor API on top of it: first the four
+world-pass plain/lmap/sky entries (plain twice: blend-on and the R3
+blend-off solid variant) via MTL_InitWorldPipelines, then the other
+passes. Plus the sampler states and the per-slot vertex/UBO rings.
 
 Called once from RE_InitContext, right after the device is created;
 everything here survives mode changes. Returns false on any failure -
@@ -2130,7 +2154,10 @@ R_InitShaders(void)
 		}
 	}
 
-	/* Compile the embedded MSL source into a library. */
+	/* Compile the embedded MSL source into a library. R4 note: the
+	   ~670-line source is recompiled at every launch and nothing is
+	   cached; an MTL4Archive would remove the cost if startup time ever
+	   matters, but not without a measurement first. */
 	{
 		MTLCompileOptions *opts = [MTLCompileOptions new];
 		opts.languageVersion = MTLLanguageVersion3_2;
@@ -2258,6 +2285,7 @@ R_InitShaders(void)
 	   no depth attachment. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.ui_tex";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"ui_tex_vertex"];
 
@@ -2295,6 +2323,7 @@ R_InitShaders(void)
 		/* tint path: same vertex function and quad, the fragment multiplies
 		   by the UBO color after gamma. */
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.ui_tint";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"ui_tex_vertex"];
 
@@ -2334,8 +2363,9 @@ R_InitShaders(void)
 	{
 		/* color path: the UBO color is output by the vertex stage and
 		   returned raw by the fragment, standard alpha blend. No fragment
-		   argument table (no resource bindings). */
+		   resource bindings. */
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.ui_color";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"ui_color_vertex"];
 
@@ -2450,22 +2480,11 @@ R_InitShaders(void)
 		}
 	}
 
-	/* Argument tables, one per pipeline stage. Buffer and texture index
-	   spaces are separate within one table. The vertex tables carry the
-	   vertex data buffer (index 0) and the UBO (index 1); the fragment
-	   tables the surface (index 0), lightmap (index 1, lmap path) and the
-	   UBO (index 0). Bindings are updated before each draw. */
-	{
-
-
-
-
-
-	}
-
-	/* W4: single depth state for the whole world pass - less-than compare,
-	   writes enabled. The pass descriptor's depth attachment clears to 1.0
-	   in RE_RenderFrame. */
+	/* W4: three depth-stencil states for the world pass, sharing one
+	   descriptor: less-than compare with writes for the world surfaces,
+	   less-than without writes for the dlight billboards, and always /
+	   no writes for the final flash. The pass descriptor's depth
+	   attachment clears to 1.0 in RE_RenderFrame. */
 	{
 		MTLDepthStencilDescriptor *dsd = [[MTLDepthStencilDescriptor alloc] init];
 
@@ -2511,6 +2530,7 @@ R_InitShaders(void)
 	   the quad covers the whole drawable. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.present";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"present_vertex"];
 		pd.fragmentFunction = [st->library newFunctionWithName:@"present_fragment"];
@@ -2544,6 +2564,7 @@ R_InitShaders(void)
 	   between the world and UI passes. Plus its 64-byte fragment UBO. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.warp";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"warp_vertex"];
 		pd.fragmentFunction = [st->library newFunctionWithName:@"warp_fragment"];
@@ -2580,6 +2601,7 @@ R_InitShaders(void)
 	   fragment UBO. */
 	{
 		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.label = @"ref_mtl.postprocess";
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"warp_vertex"];
 		pd.fragmentFunction = [st->library newFunctionWithName:@"postprocess_fragment"];
@@ -2680,8 +2702,9 @@ RE_InitContext(void *sdl_window)
 		/* Classic (MTL3-era) command queue: drawing through an MTL4
 		   queue with an app-created render target corrupts the
 		   displayed image on M3 (Bug C, tools/bugc_repro/NOTES.md).
-		   The pipelines are still MTL4Compiler-created and encode
-		   unchanged on classic command buffers and encoders. */
+		   The MSL is still compiled by the MTL4Compiler; the pipeline
+		   states use the classic descriptor API and encode unchanged
+		   on classic command buffers and encoders. */
 		id<MTLCommandQueue> command_queue = [device newCommandQueue];
 
 		if (command_queue == nil)

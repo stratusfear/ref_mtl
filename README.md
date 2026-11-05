@@ -654,6 +654,32 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     ref_vk picks lightmap filtering from `vk_lmaptexturemode`
     (default `VK_MIPMAP_LINEAR`) while mtl pins that default; the
     half-open warp bounds note was verified present.
+ - Round-13 findings R1-R4 (brief `REVIEW_FINDINGS_13.md`; pipeline
+    creation RCs, MSAA sample shading, solid-liquid blend, comment sweep):
+    R1 fixed manual-RC imbalance around the `ui_tint` and `alias` pipeline
+    creation blocks (the shared `vd` was released twice on the success path
+    and leaked on the alias failure path). R2 added per-sample shading
+    parity: the world fragment function is specialized with
+    `function_constant(0)` `per_sample_shading` when MSAA > 1, driven by the
+    new archived cvar `mtl_sampleshading` (default 1), seven sampling
+    fragments annotated; a keep-alive UBO probe proved real per-sample
+    execution (flag on: 282,898 px shifted, checker averaged by the MSAAx4
+    resolve; flag off: within 1 px of baseline), final captures 0-14 px from
+    the pre-R2 baseline. R3: opaque liquids went through the blend-on plain
+    pipeline everywhere; added the fourth world-pass pipeline
+    `pipeline_plain_solid` (same plain shader pair, blending off) selected
+    by the `EmitWaterPolys` solid flag, vk
+    `vk_drawPolySolidWarpPipeline` parity - the alpha-0.5 probe showed the
+    blend-vs-solid pipeline choice moves 16,887 px (sumd 379,907) while
+    vanilla captures stay identical (0 px). R4 nits: every pipeline
+    descriptor labeled (`ref_mtl.world.plain` ...), the
+    "MTL4Compiler-created pipelines" wording corrected (states come from the
+    classic descriptor API), "single depth state" reworded to the actual
+    three, vestigial argument-table blocks and wording left over from the
+    classic-encoder port removed, and the MTL4Archive startup cost plus the
+    one-frame MSAA-rebuild hitch recorded as accepted notes. Capture note
+    for future rounds: Q2 screenshots are RLE 32bpp TGAs - use
+    `tools/drivers/tgadiff.py`, naive decoders silently compare garbage.
 
 ### Intentionally not implemented (parity scope cuts)
 

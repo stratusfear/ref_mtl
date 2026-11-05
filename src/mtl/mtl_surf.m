@@ -1394,11 +1394,12 @@ void MTL_EndBuildingLightmaps (void)
   DRAWING
 
   World polys are fan-expanded into the current frame slot's vertex ring
-  and drawn through the shared argument tables: buffer 0 of the vertex
-  table is the stage_in vertex data, buffer 1 the per-draw world UBO;
-  the fragment table carries the surface texture (plus the lightmap for
-  the lmap path) and the same UBO at buffer 0. Tables are snapshotted at
-  draw-encode time, so sequential draws sharing them are safe.
+  and drawn with per-draw encoder bindings: the ring is the vertex stage's
+  stage_in buffer (index 0) and the per-draw world UBO rides at vertex
+  buffer index 1; the fragment stage takes the same UBO at buffer index 0
+  plus the surface texture (and the lightmap for the lmap path). The
+  setBuffer:offset:atIndex bindings are snapshotted at draw-encode time,
+  so sequential draws sharing the ring are safe.
 
 =============================================================================
 */
