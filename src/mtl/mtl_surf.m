@@ -901,6 +901,14 @@ R_MarkLeaves(void)
 	int i;
 	mleaf_t *leaf;
 
+	/* T1: defensive counterpart of the caller's RDF_NOWORLDMODEL
+	   guard: never touch a worldmodel that does not exist (classic
+	   code assumes one is loaded whenever this runs). */
+	if (!r_worldmodel)
+	{
+		return;
+	}
+
 	if ((r_oldviewcluster == r_viewcluster) &&
 		(r_oldviewcluster2 == r_viewcluster2) &&
 		!r_novis->value &&

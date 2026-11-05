@@ -4584,7 +4584,18 @@ RE_RenderFrame(refdef_t *fd)
 	   stayed 0, every visframe test passed, and the whole in-frustum
 	   level was walked and drawn every frame (PVS culling, r_novis and
 	   r_lockpvs were all dead). */
-	R_MarkLeaves();
+	/* T1: skip it on RDF_NOWORLDMODEL frames, the same guard
+	   R_SetupFrame's cluster lookup and R_DrawWorld use. R_MarkLeaves
+	   itself has no NOWORLDMODEL early-out: with r_novis 1 its top
+	   early-return is bypassed too, and on a worldmodel-less frame
+	   (fresh start, setup menu) the mark-everything branch then
+	   dereferences a NULL r_worldmodel, and after a map unload it
+	   reads a stale model. ref_vk has the same latent flaw at
+	   vk_main.c:951; not copied. */
+	if (!noworld)
+	{
+		R_MarkLeaves();
+	}
 
 	R_DrawWorld();
 	R_DrawEntitiesOnList();
