@@ -1503,6 +1503,7 @@ MTL_EmitWorldUbo(size_t slot, const float *model, const float *color)
 	memcpy(ubo->color, color, sizeof(float) * 4);
 	ubo->gamma = 2.1f - vid_gamma->value;
 	ubo->viewLightmaps = r_lightmap->value ? 1.f : 0.f;
+	ubo->samplepad = 0.f;	/* R2: keep-alive field, must stay 0 */
 	/* F4: advance keeps the next ring offset 16-byte aligned */
 	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(world_ubo_t));
 

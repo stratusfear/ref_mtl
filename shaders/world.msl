@@ -27,6 +27,7 @@ struct WorldUbo
     float4   color;		// @128
     float    gamma;		// @144
     float    viewLightmaps;	// @148
+    float    samplepad;		// @152 (R2, always 0: see R2_SAMPLE_KEEP)
 };
 
 // MSL 3.x removed the coord argument from the sampler constructor.
@@ -38,6 +39,50 @@ struct WorldUbo
 // the world image (repeats; nearest variant for r_nolerp_list images),
 // [[sampler(1)]] the lightmap (clamps) on the lmap fragment.
 constexpr sampler present_sampler(address::clamp_to_edge, filter::nearest);
+
+// R2: sample-rate shading toggle (parity with vk's vk_sampleshading,
+// which vk_pipeline.c:117-118 turns into sampleShadingEnable with
+// minSampleShading = 1.0 on every pipeline when the cvar is > 0 and
+// the device supports sampleRateShading). Metal has no pipeline-side
+// flag; a fragment that uses [[sample_id]] in its shaded output runs
+// once per sample instead of once per pixel. The function constant
+// below selects that behaviour (newFunctionWithName:constantValues:
+// in MTL_WorldFragmentFunction, driven by the mtl_sampleshading cvar
+// at MSAA sample counts > 1; the driver aborts pipeline creation for
+// any unspecialized function that declares a function constant, so
+// the NO specialization is explicit too).
+//
+// Keeping the sample dependency alive takes a data dependency, not
+// just a read: an earlier revision used an unreachable guard branch
+// on sample_id, but the compiler dead-cancels provably-constant
+// branches on [[sample_id]] (sample ids are below the raster sample
+// count) and dropped the read even in the YES specialization - per-
+// sample execution then came and went between builds. The macro
+// below instead folds sample_id into the shader's output through a
+// UBO field (samplepad) that the CPU always writes as 0. The YES
+// build emits a real multiply (the compiler cannot prove a device-
+// buffer read is zero); at runtime the term is exactly +0.0 (exact
+// in IEEE once float(sid & 1) is folded to 0.0/1.0) so the raster
+// result is unchanged. The NO build constant-folds the whole term
+// away, so that variant stays per-pixel. Only the fragments that
+// read per-sample-varying data (texture taps, point_coord, and the
+// constant-colour shadow which rides the alias UBO binding) get the
+// term. The interpolated-colour-only fragments (dlight / beam /
+// flash) instead get R2_ANNOTATE_SAMPLE: it references the constant
+// so every world fragment goes through the one specialization path
+// (the driver aborts pipeline creation on unspecialized functions
+// that declare the constant, and an undeclared function must not be
+// specialized), but it folds to +0.0 at library compile time in
+// BOTH specializations - those fragments stay per-pixel, which is
+// output-identical to vk's per-sample execution of them because
+// their colour carries no per-sample data.
+constant bool per_sample_shading [[function_constant(0)]];
+
+#define R2_SAMPLE_KEEP(sid, ubo) \
+	(per_sample_shading ? ubo->samplepad * float(sid & 1u) : 0.0)
+
+#define R2_ANNOTATE_SAMPLE(sid) \
+	(per_sample_shading ? float(sid & 1u) * 0.0 : 0.0)
 
 //==================================================================
 // Plain (unlightmapped) world polys. World-space vertices for the
@@ -71,11 +116,12 @@ fragment float4
 world_plain_fragment(world_vertex_out in [[stage_in]],
                      texture2d<float, access::sample> tex [[texture(0)]],
                      sampler world_sampler [[sampler(0)]],
-                     constant WorldUbo *ubo [[buffer(0)]])
+                     constant WorldUbo *ubo [[buffer(0)]],
+                     uint sid [[sample_id]])
 {
     float4 c = tex.sample(world_sampler, in.uv) * ubo->color;
     c.rgb = pow(c.rgb, float3(ubo->gamma));
-    return c;
+    return c + float4(R2_SAMPLE_KEEP(sid, ubo));
 }
 
 //==================================================================
@@ -115,11 +161,13 @@ world_lmap_fragment(world_lmap_out in [[stage_in]],
                     texture2d<float, access::sample> lmap [[texture(1)]],
                     sampler world_sampler [[sampler(0)]],
                     sampler lmap_sampler [[sampler(1)]],
-                    constant WorldUbo *ubo [[buffer(0)]])
+                    constant WorldUbo *ubo [[buffer(0)]],
+                    uint sid [[sample_id]])
 {
     float4 color = tex.sample(world_sampler, in.uv);
     float4 light = lmap.sample(lmap_sampler, in.lmapuv);
-    return (1.0 - in.viewLightmaps) * color * light + in.viewLightmaps * light;
+    return (1.0 - in.viewLightmaps) * color * light + in.viewLightmaps * light
+           + float4(R2_SAMPLE_KEEP(sid, ubo));
 }
 
 //==================================================================
@@ -173,9 +221,9 @@ dlight_vertex(dlight_in in [[stage_in]],
 }
 
 fragment float4
-dlight_fragment(dlight_out in [[stage_in]])
+dlight_fragment(dlight_out in [[stage_in]], uint sid [[sample_id]])
 {
-    return float4(in.color, 1.0);
+    return float4(in.color, 1.0) + float4(R2_ANNOTATE_SAMPLE(sid));
 }
 
 //==================================================================
@@ -211,9 +259,9 @@ beam_vertex(beam_in in [[stage_in]],
 }
 
 fragment float4
-beam_fragment(beam_out in [[stage_in]])
+beam_fragment(beam_out in [[stage_in]], uint sid [[sample_id]])
 {
-    return in.color;
+    return in.color + float4(R2_ANNOTATE_SAMPLE(sid));
 }
 
 //==================================================================
@@ -250,9 +298,9 @@ flash_vertex(flash_in in [[stage_in]],
 }
 
 fragment float4
-flash_fragment(flash_out in [[stage_in]])
+flash_fragment(flash_out in [[stage_in]], uint sid [[sample_id]])
 {
-    return in.color;
+    return in.color + float4(R2_ANNOTATE_SAMPLE(sid));
 }
 
 //==================================================================
@@ -270,6 +318,7 @@ struct AliasUbo
     float4x4 viewproj;		// @0
     float4x4 model;		// @64
     float    textured;		// @128
+    float    samplepad;		// @132 (R2, always 0: see R2_SAMPLE_KEEP)
 };
 
 struct alias_in
@@ -301,7 +350,8 @@ fragment float4
 alias_fragment(alias_out in [[stage_in]],
                texture2d<float, access::sample> tex [[texture(0)]],
                sampler world_sampler [[sampler(0)]],
-               constant AliasUbo *ubo [[buffer(0)]])
+               constant AliasUbo *ubo [[buffer(0)]],
+               uint sid [[sample_id]])
 {
     /* Q2: ref_vk's model.frag multiplies the texture by
        clamp(color, 0, 1), not the raw interpolated colour. The CPU
@@ -314,7 +364,8 @@ alias_fragment(alias_out in [[stage_in]],
        The alpha in in.color is always <= 1 (entity alpha), so the
        full-rgba clamp matches vk's vec4 clamp exactly. */
     if (ubo->textured > 0.5)
-        return tex.sample(world_sampler, in.uv) * clamp(in.color, 0.0, 1.0);
+        return tex.sample(world_sampler, in.uv) * clamp(in.color, 0.0, 1.0)
+               + float4(R2_SAMPLE_KEEP(sid, ubo));
 
     return in.color;	// shell: solid vertex color, no texture
 }
@@ -354,9 +405,9 @@ shadow_vertex(shadow_in in [[stage_in]],
 }
 
 fragment float4
-shadow_fragment(const device AliasUbo *ubo [[buffer(1)]])
+shadow_fragment(const device AliasUbo *ubo [[buffer(1)]], uint sid [[sample_id]])
 {
-    return float4(0.0, 0.0, 0.0, 0.5);
+    return float4(0.0, 0.0, 0.0, 0.5) + float4(R2_SAMPLE_KEEP(sid, ubo));
 }
 
 //==================================================================
@@ -371,6 +422,7 @@ struct SpriteUbo
 {
     float4x4 viewproj;		// @0
     float    gamma;		// @64
+    float    samplepad;		// @68 (R2, always 0: see R2_SAMPLE_KEEP)
 };
 
 vertex alias_out
@@ -388,13 +440,14 @@ fragment float4
 sprite_fragment(alias_out in [[stage_in]],
                 texture2d<float, access::sample> tex [[texture(0)]],
                 sampler world_sampler [[sampler(0)]],
-                constant SpriteUbo *ubo [[buffer(0)]])
+                constant SpriteUbo *ubo [[buffer(0)]],
+                uint sid [[sample_id]])
 {
     float4 c = tex.sample(world_sampler, in.uv) * in.color;
     if (c.a < 0.0666)
         discard_fragment();
     c.rgb = pow(c.rgb, float3(ubo->gamma));
-    return c;
+    return c + float4(R2_SAMPLE_KEEP(sid, ubo));
 }
 
 //==================================================================
@@ -413,13 +466,14 @@ fragment float4
 particle_fragment(alias_out in [[stage_in]],
                   texture2d<float, access::sample> tex [[texture(0)]],
                   sampler world_sampler [[sampler(0)]],
-                  constant SpriteUbo *ubo [[buffer(0)]])
+                  constant SpriteUbo *ubo [[buffer(0)]],
+                  uint sid [[sample_id]])
 {
     float4 c = tex.sample(world_sampler, in.uv) * in.color;
     if (c.a < 0.5)
         discard_fragment();
     c.rgb = pow(c.rgb, float3(ubo->gamma));
-    return c;
+    return c + float4(R2_SAMPLE_KEEP(sid, ubo));
 }
 
 struct ParticlePointUbo
@@ -432,6 +486,7 @@ struct ParticlePointUbo
     float    att_a;
     float    att_b;
     float    att_c;
+    float    samplepad;		// @92 (R2, always 0: see R2_SAMPLE_KEEP)
 };
 
 struct particle_point_out
@@ -457,12 +512,18 @@ particle_point_vertex(alias_in in [[stage_in]],
 
 fragment float4
 particle_point_fragment(particle_point_out in [[stage_in]],
-                        float2 point_coord [[point_coord]])
+                        float2 point_coord [[point_coord]],
+                        const device ParticlePointUbo *ubo [[buffer(0)]],
+                        uint sid [[sample_id]])
 {
+    /* point_coord is per-sample under MSAA, so this fragment is one
+       of the places where vk's minSampleShading really changes the
+       result (the round point's edge position). The keepalive term
+       forces per-sample execution in the YES specialization. */
     float2 cxy = 2.0 * point_coord - 1.0;
     if (dot(cxy, cxy) > 1.0)
         discard_fragment();
-    return in.color;
+    return in.color + float4(R2_SAMPLE_KEEP(sid, ubo));
 }
 
 //==================================================================

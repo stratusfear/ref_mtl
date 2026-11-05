@@ -191,7 +191,8 @@ typedef struct
 	float color[4];				// @128
 	float gamma;					// @144
 	float viewLightmaps;			// @148
-} world_ubo_t;					// 152 bytes
+	float samplepad;				// @152 (R2 keep-alive, always 0)
+} world_ubo_t;					// 156 bytes
 
 // Per-draw uniform block for dynamic light billboards: only the
 // view-projection matrix (matches the vk dlight pipeline, which uploads
@@ -210,7 +211,8 @@ typedef struct
 	float viewproj[16];			// @0
 	float model[16];				// @64
 	float textured;				// @128
-} alias_ubo_t;					// 132 bytes
+	float samplepad;				// @132 (R2 keep-alive, always 0)
+} alias_ubo_t;					// 136 bytes
 
 // Per-draw uniform block for sprites: the view-projection matrix and
 // the gamma exponent (2.1 - vid_gamma), matching ref_vk's sprite push
@@ -219,6 +221,7 @@ typedef struct
 {
 	float viewproj[16];			// @0
 	float gamma;					// @64
+	float samplepad;				// @68 (R2 keep-alive, always 0)
 } sprite_ubo_t;					// 72 bytes
 
 // Per-draw uniform block for point particles: the view-projection
@@ -234,7 +237,8 @@ typedef struct
 	float att_a;
 	float att_b;
 	float att_c;
-} particle_point_ubo_t;			// 92 bytes
+	float samplepad;				// @92 (R2 keep-alive, always 0)
+} particle_point_ubo_t;			// 96 bytes
 
 // Per-draw uniform block for the 2D UI (RE_Draw_*): NDC offset/scale of
 // the static full-screen quad, the uv transform (tex paths) and the

@@ -81,6 +81,7 @@ static cvar_t	*mtl_underwater;	// W6b: underwater screen warp (vk_underwater par
 static cvar_t	*mtl_postprocess;	// W6c: world postprocess (vk_postprocess parity)
 static cvar_t	*mtl_pixel_size;	// W6e: world downscale (vk_pixel_size parity)
 static cvar_t	*mtl_msaa;		// W7: world MSAA (vk_msaa parity)
+static cvar_t	*mtl_sampleshading;	// R2: sample-rate shading (vk_sampleshading parity)
 
 cvar_t		*r_lefthand;
 cvar_t		*r_drawworld;
@@ -211,6 +212,13 @@ R_Register(void)
 	{
 		ri.Cvar_SetValue("r_msaa_samples", 0);
 	}
+	/* R2: name/default/ARCHIVE parity with ref_vk's vk_sampleshading
+	   (vk_main.c:1168); drives the per-sample-shading function-constant
+	   specialization of the world fragment functions (see
+	   MTL_WorldFragmentFunction). Read when the world pipelines are
+	   built - like ref_vk, whose sampleShadingEnable only moves when
+	   pipelines are recreated (device reinit on vk_msaa change). */
+	mtl_sampleshading = ri.Cvar_Get("mtl_sampleshading", "1", CVAR_ARCHIVE);
 }
 
 /*
@@ -1226,6 +1234,66 @@ R_ReleaseShaders(mtlstate_t *st)
 
 /*
 ============
+MTL_WorldFragmentFunction
+
+R2: fetch a world-pass fragment function with the per_sample_shading
+function constant (world.msl) specialized to YES only when the world
+pipelines rasterize multisampled and mtl_sampleshading is on. ref_vk
+parity: vk_pipeline.c:117-118 sets sampleShadingEnable with
+minSampleShading 1.0 on every pipeline when vk_sampleshading (default
+1, CVAR_ARCHIVE, vk_main.c:1168) is > 0 and the device supports
+sampleRateShading. Metal has no such pipeline flag - a fragment whose
+shaded output depends on [[sample_id]] runs once per sample, and the
+constant specialization is what makes that dependency live (world.msl
+R2_SAMPLE_KEEP: sample_id folded into the colour through a UBO field
+the CPU keeps at 0, a data dependency the compiler cannot dead-cancel
+the way it cancelled the earlier unreachable-guard revision; the NO
+specialization constant-folds the term away and stays per-pixel).
+Fragments with no per-sample input (dlight / beam / flash) carry a
+constant-folded R2_ANNOTATE_SAMPLE reference instead so they still
+declare the constant and can be specialized through here; they stay
+per-pixel, which for them is output-identical to vk's per-sample run.
+All Apple-silicon GPUs (Metal 4's floor) do per-sample shading, so no
+device feature query is needed. At sampleCount 1 the constant is NO:
+per-sample shading is a no-op without MSAA.
+
+The constant must be specialized explicitly even to NO: the driver
+aborts pipeline creation on an unspecialized function that declares
+function constants (observed: "fragmentFunction world_plain_fragment
+cannot be used to build a pipeline state. Use
+newFunctionWithName:constantValues:..."). So every world fragment
+goes through here.
+
+Like ref_vk - whose pipelines only see a vk_sampleshading change on a
+full device reinit - a mid-session cvar change lands with the next
+world pipeline rebuild (r_msaa_samples change or restart). The
+returned function is +1 exactly like newFunctionWithName, so the
+callers' [pd.fragmentFunction release] sequence keeps balancing.
+Failure (bad constant index etc.) returns nil: the caller's existing
+pipeline-error path logs and bails, no abort.
+============
+*/
+static id<MTLFunction>
+MTL_WorldFragmentFunction(mtlstate_t *st, NSString *name, NSUInteger sampleCount)
+{
+	NSError *err = nil;
+	MTLFunctionConstantValues *fcv = [MTLFunctionConstantValues new];
+	BOOL on = (sampleCount > 1 && mtl_sampleshading->value > 0);
+	id<MTLFunction> fn;
+
+	[fcv setConstantValue:&on type:MTLDataTypeBool atIndex:0];
+	fn = [st->library newFunctionWithName:name constantValues:fcv error:&err];
+	[fcv release];	/* R2: +1 object, not kept by the function */
+	if (fn == nil)
+	{
+		Com_Printf("ref_mtl: fragment specialization of %s failed: %s\n",
+		           name.UTF8String, err.localizedDescription.UTF8String);
+	}
+	return fn;
+}
+
+/*
+============
 MTL_InitWorldPipelines
 
 W7: all world-pass render pipelines, created at the given raster sample
@@ -1248,6 +1316,11 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 {
 	NSError *err = nil;
 	int i;
+
+	/* R2: observability for the per-sample specialization state */
+	Com_Printf("ref_mtl: sample shading %s (MSAAx%lu)\n",
+	           (sampleCount > 1 && mtl_sampleshading->value > 0) ? "on" : "off",
+	           (unsigned long)sampleCount);
 	/* Render pipelines. All three share the plain fragment shader;
 	   only the vertex stages and the argument tables differ. */
 	{
@@ -1268,8 +1341,9 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 			pd.vertexFunction = [st->library newFunctionWithName:
 			    [NSString stringWithUTF8String:pipelines[i].vertex]];
-			pd.fragmentFunction = [st->library newFunctionWithName:
-			    [NSString stringWithUTF8String:pipelines[i].fragment]];
+			pd.fragmentFunction = MTL_WorldFragmentFunction(st,
+			    [NSString stringWithUTF8String:pipelines[i].fragment],
+			    sampleCount);
 
 			/* Vertex layout: float3 position at offset 0, float2 uv at
 			   offset 12 (and float2 lmapuv at offset 20 for the lightmapped
@@ -1345,7 +1419,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"dlight_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"dlight_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1393,7 +1467,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"beam_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"beam_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"beam_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1438,7 +1512,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"flash_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"flash_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"flash_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat2;
@@ -1481,7 +1555,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"dlight_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"dlight_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"dlight_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1519,7 +1593,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"alias_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1555,7 +1629,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd = [MTLRenderPipelineDescriptor new];
 		pd.vertexFunction = [st->library newFunctionWithName:@"alias_vertex"];
-		pd.fragmentFunction = [st->library newFunctionWithName:@"alias_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"alias_fragment", sampleCount);
 		pd.vertexDescriptor = vd;
 
 		pd.rasterSampleCount = sampleCount;
@@ -1595,7 +1669,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"shadow_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"shadow_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"shadow_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1637,7 +1711,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"sprite_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"sprite_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1688,7 +1762,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"sprite_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"particle_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -1734,7 +1808,7 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 		pd.vertexFunction = [st->library newFunctionWithName:@"particle_point_vertex"];
 
-		pd.fragmentFunction = [st->library newFunctionWithName:@"particle_point_fragment"];
+		pd.fragmentFunction = MTL_WorldFragmentFunction(st, @"particle_point_fragment", sampleCount);
 
 		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
 		vd.attributes[0].format = MTLVertexFormatFloat3;
@@ -3824,6 +3898,7 @@ MTL_EmitParticlePointUbo(size_t slot)
 	ubo->att_a = mtl_particle_att_a->value;
 	ubo->att_b = mtl_particle_att_b->value;
 	ubo->att_c = mtl_particle_att_c->value;
+	ubo->samplepad = 0.f;	/* R2: keep-alive field, must stay 0 */
 	/* F4: advance keeps the next ring offset 16-byte aligned */
 	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(particle_point_ubo_t));
 
@@ -3898,6 +3973,9 @@ R_DrawParticles(void)
 		[st->encoder setDepthStencilState:st->depth_state];
 		[st->encoder setVertexBuffer:st->particle_vertex_buffer[slot] offset:vstart atIndex:0];
 		[st->encoder setVertexBuffer:st->world_ubo[slot] offset:ubo_off atIndex:1];
+		/* R2: the fragment side reads the same ParticlePointUbo block
+		   (samplepad keep-alive for per-sample shading) */
+		[st->encoder setFragmentBuffer:st->world_ubo[slot] offset:ubo_off atIndex:0];
 		[st->encoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:numparticles];
 	}
 	else

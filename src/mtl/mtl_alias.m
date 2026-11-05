@@ -153,6 +153,7 @@ MTL_EmitAliasUbo(size_t slot, const float *model, const float *viewproj, float t
 	memcpy(ubo->viewproj, viewproj, sizeof(float) * 16);
 	memcpy(ubo->model, model, sizeof(float) * 16);
 	ubo->textured = textured;
+	ubo->samplepad = 0.f;	/* R2: keep-alive field, must stay 0 */
 	/* F4: advance keeps the next ring offset 16-byte aligned */
 	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(alias_ubo_t));
 
@@ -223,6 +224,7 @@ MTL_EmitSpriteUbo(size_t slot)
 	ubo = (sprite_ubo_t *)((byte *)st->world_ubo[slot].contents + off);
 	memcpy(ubo->viewproj, r_viewproj_matrix, sizeof(r_viewproj_matrix));
 	ubo->gamma = 2.1f - vid_gamma->value;
+	ubo->samplepad = 0.f;	/* R2: keep-alive field, must stay 0 */
 	/* F4: advance keeps the next ring offset 16-byte aligned */
 	st->world_ubo_offset[slot] += MTL_UBO_ALIGN(sizeof(sprite_ubo_t));
 
