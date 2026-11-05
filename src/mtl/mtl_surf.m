@@ -1591,11 +1591,15 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 		dst->texCoord[1] = verts[i * 5 + 4];
 		dst++;
 	}
-	st->world_vertex_offset[slot] += 6 * sizeof(polyvert_t);
-
+	/* N2: emit the UBO before advancing world_vertex_offset, so a dry
+	   ring (SIZE_MAX below) does not strand a consumed 6-vertex slice.
+	   The vertex data itself is already written; the ring allocator
+	   only reuses bytes once the offset moves. */
 	ubo_off = MTL_EmitWorldUbo(slot, model, color);
 	if (ubo_off == SIZE_MAX)
 		return;
+
+	st->world_vertex_offset[slot] += 6 * sizeof(polyvert_t);
 
 	[st->encoder setVertexBuffer:st->world_vertex_buffer[slot]
 		offset:vstart atIndex:0];
@@ -1609,6 +1613,14 @@ void MTL_DrawSkyQuad (id<MTLTexture> texture, const float *verts,
 		offset:ubo_off atIndex:0];
 
 	[st->encoder setRenderPipelineState:st->pipeline_sky];
+
+	/* N2: explicit depth state, see MTL_DrawPolyChain (I5). It worked
+	   by inheritance from RE_RenderFrame's pass-start set; making it
+	   explicit means a reorder in R_DrawWorld can't silently change
+	   the sky quad's depth test/write. vk's it_sky uses the pipeline
+	   default (test and write on), same as st->depth_state. */
+	[st->encoder setDepthStencilState:st->depth_state];
+
 	[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
 }
 
