@@ -45,8 +45,6 @@ static float	skyrotate;
 static vec3_t	skyaxis;
 static image_t	*sky_images[6];
 
-image_t	*skytexture;
-
 #define	SUBDIVIDE_SIZE	64
 
 static msurface_t	*warpface;
@@ -503,8 +501,6 @@ R_ClearSkyBox
 void R_ClearSkyBox (void)
 {
 	int		i;
-
-	skytexture = NULL;
 
 	for (i=0 ; i<6 ; i++)
 	{

@@ -103,8 +103,17 @@ MTL_UploadLightmapRegion(id<MTLTexture> texture, const byte *src, int src_stride
 	if (src_stride == BLOCK_WIDTH * LIGHTMAP_BYTES)
 	{
 		// Full-width atlas: region starts at column x of each row.
-		// Fast path when the whole buffer is uploaded (x == 0).
-		if (x == 0)
+		// Fast path when the whole buffer is uploaded at the origin.
+		/* N4: y == 0 is part of the guard, not decoration: a compact
+		   source with smax == 128 lands in this branch by coincidence
+		   of stride (128 * LIGHTMAP_BYTES == BLOCK_WIDTH *
+		   LIGHTMAP_BYTES), and its rows already start at row 0 - the
+		   staging loop below would index src at row (y + row) and read
+		   past the region. Today's only full-width caller
+		   (LM_UploadBlock) uploads the whole buffer at x = y = 0; a
+		   future x==0, y>0 atlas caller takes the staging loop, which
+		   is correct for a true atlas. */
+		if (x == 0 && y == 0)
 		{
 			out = (byte *)src;
 		}
