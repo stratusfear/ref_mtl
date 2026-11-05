@@ -104,7 +104,8 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 - **W3: BSP world.** Portals/vis culling, plain + lightmapped surface
   chains with per-frame vertex/UBO rings (three slots, allocator-backed
   ring buffers), lightstyles, sky (`skytexture` path), water/slimesky,
-  `r_fullbright`/`r_showtris`.
+  `mtl_showtris` (`r_fullbright` is not registered — ref_vk registers
+  it but never reads it, dead there too; see the round-8 status table).
 - **W4: CPU lightmaps + dynamic lights.** Static lightmap atlas pages
   uploaded once; per-page dynamic copies re-encoded when dlights touch
   them (`mtl_dynamic`), dlight additive blend pass
@@ -112,7 +113,8 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   `ref_vk` frame order).
 - **W5a–W5d: alias models, sprites, particles, 2D UI.** Alias/frame
   interpolation (`r_lerpmodels`), sprites (oriented + `MTL_DRAW2D`
-  fixed-facing), particles (point + textured, `mtl_polyblend`), and the
+  fixed-facing), particles (point + textured; the view-flash blend
+  cvar was `mtl_polyblend` there, the shared `r_polyblend` since O4), and the
   2D UI pass: pics (`DrawStretchPic`), conchars via an 8×8 atlas,
   crosshair, fades, HUD statusbar icons drawn as individual quads.
 - **Bug B (superseded): intermittent magenta corruption under blended
@@ -572,7 +574,9 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     scene to ref_vk's debug pink like vk's render-pass clear, instead of
     leaving the last 3D frame frozen), `r_speeds` (same counters as ref_vk)
     and ported the deferred `r_shadows` planar ground shadow (own
-    pipeline, `MTL_BuildShadowViewproj`, per-entity stencil-free draw;
+    pipeline, matrix rebuilt inside `MTL_DrawAliasShadow` from the
+    entity's pitch-restored angles like ref_vk does, per-entity
+    stencil-free draw;
     `base1`/`jail1` captures match ref_vk's shadow silhouettes). O5
     found a real bug behind a comment contradiction: at `viewsize <
     100` the whole mtl 2D border rendered as one flat grey, because
@@ -707,6 +711,41 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     moved to `override CFLAGS +=` so an env `CFLAGS` cannot drop them.
     S5 documented the deliberate screenshot quirks (main-thread stall,
     previous-frame capture under `frame_active`, forced opaque alpha).
+ - Round-15 findings T1-T6 (brief `REVIEW_FINDINGS_15.md`; verification
+    of the round-10..14 fixes against the source, plus the owed T7
+    measurement pass):
+    T1 guarded `R_MarkLeaves` against frames with no worldmodel — with
+    `r_novis 1` the player-setup menu at a fresh start SIGSEGVed in the
+    mark-everything branch dereferencing a NULL `r_worldmodel` (ref_vk
+    shares the latent flaw; fixed in mtl only).
+    T2 fixed a map-registration ordering accident:
+    `RE_BeginRegistration` now invalidates *both* halves of the
+    viewcluster state (current pair and previous pair), so a new map's
+    first frame always marks leaves — previously a previous-map cluster
+    colliding with the new spawn cluster early-out the marking and the
+    world drew as nothing until the player changed clusters.
+    T3 added `tools/fix_verify_selftest.sh`: scripted stand-ins inject
+    each failure mode the S1 checks guard (fallback renderer, missing
+    map, died early, crashed after the kill, injected Metal-diagnostic
+    lines) and must produce the matching FAIL line, closing with a
+    green positive control.
+    T4 made the shader-regen rule's no-python3 branch warn and succeed
+    — a fresh checkout on a python3-less machine builds from the
+    checked-in array — while `make check-shaders` keeps the gate closed
+    on stale content.
+    T5 replaced the `r_norefresh` frozen-last-frame behaviour with
+    ref_vk's exact flat debug-pink scene clear ({1.0, 0.0, 0.5, 1.0},
+    vk's world-RP clear value), removing the 2D-layer accumulation on
+    the backdrop.
+    T6 was the doc sweep: stale README statements (`r_fullbright`
+    listing, `mtl_polyblend` history, the nonexistent
+    `MTL_BuildShadowViewproj`), the `world.msl` "useStageInResources"
+    header (the classic encoder calls
+    `setVertexBuffer:offset:atIndex:`; regenerated array), and the
+    review report's summary, cvar tables (`r_anisotropic`,
+    `mtl_sampleshading`) and GPU-memory numbers (fresh post-O1
+    `mtl_mem`: 58.5 MB rings over 3 slots x 8 rings, 90-91 MB device
+    footprint, 0 drops).
 
 ### Intentionally not implemented (parity scope cuts)
 
