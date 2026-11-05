@@ -104,6 +104,28 @@ Alias_CmdvertRealloc(int count)
 }
 
 /*
+==============
+MTL_ShutdownAliasScratch
+
+L2: free the alias scratch buffers on renderer shutdown; ref_vk
+frees its lerped-vertex buffer in Mesh_Free(), called from
+QVk_WaitAndShutdownAll. Zeroing the capacity counters makes the
+next RE_Init reallocate on demand.
+==============
+*/
+void
+MTL_ShutdownAliasScratch(void)
+{
+	free(s_lerped);
+	s_lerped = NULL;
+	s_lerped_count = 0;
+
+	free(s_cmdverts);
+	s_cmdverts = NULL;
+	s_cmdverts_count = 0;
+}
+
+/*
  * Writes one alias_ubo_t into the slot's world UBO ring and returns its
  * byte offset within the ring buffer (SIZE_MAX when exhausted). The
  * model matrix is in model space (rotation + translation only); the

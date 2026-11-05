@@ -690,8 +690,29 @@ RE_Shutdown(void)
 	   zeroes mtl_state, and nothing in flight may touch any of it. */
 	MTL_DrainInFlightFrames();
 
+	/* L2: remove every command this dylib registered, not just
+	   "screenshot": the host dlcloses the renderer right after
+	   RE_Shutdown, and a leftover command keeps a function pointer
+	   into unmapped code (typing imagelist/modellist after a
+	   renderer switch jumps into freed memory, and the next
+	   RE_Init's Cmd_AddCommand would fail "already defined" and
+	   keep the stale pointer). ref_vk removes its five the same way
+	   (vk_main.c:1342-1346). */
 	ri.Cmd_RemoveCommand("screenshot");
+	ri.Cmd_RemoveCommand("mtl_strings");
+	ri.Cmd_RemoveCommand("mtl_mem");
+	ri.Cmd_RemoveCommand("imagelist");
+	ri.Cmd_RemoveCommand("modellist");
+
 	RE_ShutdownContext();
+
+	/* L2: free the model tables and loaded model data before the
+	   images they reference go away, matching QVk_WaitAndShutdownAll
+	   (Mod_FreeAll/Mod_FreeModelsKnown before Vk_ShutdownImages);
+	   both were missing entirely, so the known-model table and the
+	   loaded models' hunks leaked on every renderer restart. */
+	Mod_FreeAll();
+	Mod_FreeModelsKnown();
 
 	/* G1: MTL_ShutdownImages had no call site, so the image textures
 	   and lightmap textures survived (leaked) a renderer shutdown;
@@ -740,6 +761,13 @@ RE_Shutdown(void)
 	{
 		[st->device release];
 	}
+
+	/* L2: host-memory scratch buffers, freed last (ref_vk frees
+	   s_blocklights at the end of its RE_Shutdown, and the lerped
+	   vertex buffer in Mesh_Free); their capacity counters reset so
+	   the next RE_Init reallocates on demand. */
+	MTL_ShutdownLightScratch();
+	MTL_ShutdownAliasScratch();
 
 	memset(&mtl_state, 0, sizeof(mtl_state));
 }

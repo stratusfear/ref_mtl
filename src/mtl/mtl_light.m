@@ -608,6 +608,28 @@ void R_SetCacheState( msurface_t *surf )
 float *s_blocklights = NULL, *s_blocklights_max = NULL;
 
 /*
+==============
+MTL_ShutdownLightScratch
+
+L2: free the blocklights scratch on renderer shutdown, like
+ref_vk's free(s_blocklights) + nil in its RE_Shutdown
+(vk_main.c:1351-1357). Zeroing both pointers makes the next
+RE_Init reallocate on demand.
+==============
+*/
+void
+MTL_ShutdownLightScratch(void)
+{
+	if (s_blocklights)
+	{
+		free(s_blocklights);
+	}
+
+	s_blocklights = NULL;
+	s_blocklights_max = NULL;
+}
+
+/*
 ===============
 R_BuildLightMap
 

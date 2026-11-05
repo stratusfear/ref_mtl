@@ -337,6 +337,9 @@ extern float	r_projection_matrix[16];
 extern float	r_viewproj_matrix[16];
 
 extern float *s_blocklights, *s_blocklights_max;
+/* L2: free the blocklights scratch at renderer shutdown; ref_vk
+   frees it in its RE_Shutdown (vk_main.c:1351-1357). */
+void MTL_ShutdownLightScratch (void);
 
 extern model_t	*r_worldmodel;
 
@@ -469,6 +472,9 @@ void R_DrawBrushModel (entity_t *currententity, const model_t *currentmodel);
  */
 void R_DrawEntitiesOnList (void);
 size_t MTL_EmitAliasUbo (size_t slot, const float *model, const float *viewproj, float textured);
+/* L2: free the alias scratch buffers (s_lerped, s_cmdverts) at
+   renderer shutdown; ref_vk's Mesh_Free parity. */
+void MTL_ShutdownAliasScratch (void);
 size_t MTL_EmitSpriteUbo (size_t slot);
 void R_DrawSpriteModel (entity_t *currententity, const model_t *currentmodel);
 void MTL_BuildDepthHackViewproj (const entity_t *e, float *out);
