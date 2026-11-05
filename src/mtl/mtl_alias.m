@@ -30,10 +30,10 @@
  * matrix + viewproj + textured flag) is written to the world UBO ring
  * per model and shared by all of its draws.
  *
- * Deferred from ref_vk: shadows (vk_shadows). The depth-hack / gun-FOV
- * projection (I2) rides on the per-draw alias UBO and the r_lefthand
- * mirror (I2) on the encoder cull state; neither disturbs the global
- * view matrices.
+ * r_shadows planar shadows were ported with O4 (MTL_DrawAliasShadow
+ * below). The depth-hack / gun-FOV projection (I2) rides on the
+ * per-draw alias UBO and the r_lefthand mirror (I2) on the encoder
+ * cull state; neither disturbs the global view matrices.
  *
  * =======================================================================
  */
@@ -51,6 +51,9 @@ static float r_avertexnormal_dots[SHADEDOT_QUANT][256] = {
 
 static float shadelight[3];
 static float *shadedots;
+static vec3_t	shadevector;	/* O4: r_shadows ground-projection
+				   vector, computed in R_DrawAliasModel
+				   like ref_vk vk_mesh.c:926-930 */
 
 /*
  * Lerped vertex positions in model space, one vec3 per vertex of the
@@ -462,6 +465,170 @@ MTL_DrawAliasGlcmds(int *order, int *order_end, float alpha, image_t *skin,
 }
 
 /*
+ * O4: one shadow ring record: the lerped model position projected onto
+ * the shadow plane - ref_vk Vk_DrawAliasShadow's per-vertex math
+ * (vk_mesh.c:608-611), in model space like s_lerped itself (the entity
+ * model matrix is applied in the vertex shader).
+ */
+static void
+MTL_WriteShadowVert(shadowvert_t *dst, const alias_cmdvert_t *cv,
+    float lheight, float height)
+{
+	const float *src = s_lerped + cv->index * 3;
+
+	dst->position[0] = src[0] - shadevector[0] * (src[2] + lheight);
+	dst->position[1] = src[1] - shadevector[1] * (src[2] + lheight);
+	dst->position[2] = height;
+}
+
+/*
+ * O4: draw one mesh node's planar ground shadow (ref_vk
+ * Vk_DrawAliasShadow, vk_mesh.c:557): the lerped frame projected along
+ * shadevector onto the plane the entity's light ray crosses at its base
+ * (lheight), at height -lheight + 1, drawn through the shadow pipeline
+ * (constant black 0.5, SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend, depth test
+ * + write). Walks the same glcmd structure as MTL_DrawAliasGlcmds and
+ * CPU-expands fans/strips into the same per-slot alias ring, as 12-byte
+ * shadowvert_t records; winding and cull match the model's own draws
+ * (K2). Call after MTL_DrawAliasFrameLerp for the entity: s_lerped
+ * holds its lerped frame.
+ */
+static void
+MTL_DrawAliasShadow(int *order, int *order_end, int num_xyz,
+    const float *modelMatrix, entity_t *currententity)
+{
+	mtlstate_t *st = &mtl_state;
+	size_t slot;
+	shadowvert_t *ring;
+	float lheight, height;
+	size_t ubo_off;
+
+	if (st->encoder == nil || st->pipeline_shadow == nil)
+		return;
+
+	slot = st->frame_slot;
+	ring = (shadowvert_t *)st->alias_vertex_buffer[slot].contents;
+
+	lheight = currententity->origin[2] - lightspot[2];
+	height = -lheight + 1.0f;
+
+	/* one alias_ubo_t per model (vk keeps one descriptor set for the
+	   whole shadow too); the viewproj is the global one: vk restores
+	   prev_viewproj before the shadow draws (vk_mesh.c:1026-1030),
+	   and the entities drawing with a viewproj variant (depth-hack,
+	   mirrored lefthand) are gated out of the shadow draw or use the
+	   global matrix there as well. The textured flag is unused by
+	   the shadow shaders. */
+	ubo_off = MTL_EmitAliasUbo(slot, modelMatrix, r_viewproj_matrix, 0.f);
+	if (ubo_off == SIZE_MAX)
+		return;	/* UBO ring exhausted */
+
+	while (1)
+	{
+		int count;
+		qboolean fan;
+		size_t vstart;
+		shadowvert_t *dst;
+		int tri_count;
+		int i, k;
+
+		count = *order++;
+
+		if (!count || order >= order_end)
+			break;	/* done */
+
+		fan = count < 0;
+		if (fan)
+			count = -count;
+
+		if (count < 3)
+		{
+			/* I3 malformed-command skip, as in MTL_DrawAliasGlcmds */
+			order += Q_min(3 * count, (int)(order_end - order));
+			continue;
+		}
+
+		if (Alias_CmdvertRealloc(count))
+		{
+			Com_Error(ERR_FATAL, "MTL_DrawAliasShadow: can't allocate memory\n");
+		}
+
+		for (i = 0; i < count; i++)
+		{
+			int index_xyz;
+
+			if (order + 3 > order_end)
+			{
+				Com_Printf("MTL_DrawAliasShadow: truncated glcmd list\n");
+				return;
+			}
+
+			index_xyz = order[2];
+
+			if (index_xyz < 0 || index_xyz >= num_xyz)
+			{
+				Com_Printf("MTL_DrawAliasShadow: model has issues with lerped index\n");
+				return;
+			}
+
+			/* shadows ignore uv */
+			s_cmdverts[i].index = index_xyz;
+			order += 3;
+		}
+
+		/* expand the strip/fan into a triangle list (same winding as
+		   MTL_DrawAliasGlcmds, ref_vk's indexed strip/fan IBOs) */
+		tri_count = (count - 2) * 3;
+		vstart = st->alias_vertex_offset[slot];
+		if (vstart + (size_t)tri_count * sizeof(shadowvert_t) > ALIAS_VERTEX_RING_BYTES)
+			return;	/* ring exhausted, skip the rest */
+
+		dst = ring + vstart / sizeof(shadowvert_t);
+		if (fan)
+		{
+			for (i = 0; i < count - 2; i++)
+			{
+				for (k = 0; k < 3; k++)
+					MTL_WriteShadowVert(dst++, &s_cmdverts[k == 0 ? 0 : i + k], lheight, height);
+			}
+		}
+		else
+		{
+			for (i = 2; i < count; i++)
+			{
+				if (i & 1)
+				{
+					MTL_WriteShadowVert(dst++, &s_cmdverts[i], lheight, height);
+					MTL_WriteShadowVert(dst++, &s_cmdverts[i - 1], lheight, height);
+					MTL_WriteShadowVert(dst++, &s_cmdverts[i - 2], lheight, height);
+				}
+				else
+				{
+					MTL_WriteShadowVert(dst++, &s_cmdverts[i - 2], lheight, height);
+					MTL_WriteShadowVert(dst++, &s_cmdverts[i - 1], lheight, height);
+					MTL_WriteShadowVert(dst++, &s_cmdverts[i], lheight, height);
+				}
+			}
+		}
+		st->alias_vertex_offset[slot] += (size_t)tri_count * sizeof(shadowvert_t);
+
+		[st->encoder setVertexBuffer:st->alias_vertex_buffer[slot]
+			offset:vstart atIndex:0];
+		[st->encoder setVertexBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:1];
+		[st->encoder setFragmentBuffer:st->world_ubo[slot]
+			offset:ubo_off atIndex:1];
+
+		[st->encoder setRenderPipelineState:st->pipeline_shadow];
+		[st->encoder setDepthStencilState:st->depth_state];
+		[st->encoder setFrontFacingWinding:MTLWindingClockwise];
+		[st->encoder setCullMode:MTLCullModeBack];
+		[st->encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)tri_count];
+		MTL_SetPassDefaults(st->encoder);
+	}
+}
+
+/*
  * Draws the model's lerped frame for each mesh node (ref_vk
  * Vk_DrawAliasFrameLerp). The model matrix and UBO are computed once;
  * all of the model's glcmd draws share them.
@@ -705,13 +872,14 @@ R_CullAliasModel(vec3_t bbox[8], entity_t *e, const model_t *currentmodel)
 }
 
 /*
- * Draws one alias model (ref_vk R_DrawAliasModel, minus the deferred
- * depthhack/lefthand/shadow paths).
+ * Draws one alias model (ref_vk R_DrawAliasModel, including its
+ * depthhack / lefthand / shadow paths - I2 and O4).
  */
 void
 R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 {
 	int i;
+	float an;
 	dmdl_t *paliashdr;
 
 	if (!(currententity->flags & RF_WEAPONMODEL))
@@ -827,6 +995,16 @@ R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 
 	shadedots = r_avertexnormal_dots[((int)(currententity->angles[1] * (SHADEDOT_QUANT / 360.0))) & (SHADEDOT_QUANT - 1)];
 
+	/* O4: r_shadows ground-projection vector, verbatim from ref_vk
+	   (vk_mesh.c:926-930); consumed by MTL_WriteShadowVert in model
+	   space. Unread unless r_shadows is set, computed unconditionally
+	   like vk. */
+	an = currententity->angles[1] / 180 * M_PI;
+	shadevector[0] = cos(-an);
+	shadevector[1] = sin(-an);
+	shadevector[2] = 1;
+	VectorNormalize(shadevector);
+
 	/* locate the proper data */
 	c_alias_polys += paliashdr->num_tris;
 
@@ -913,6 +1091,45 @@ R_DrawAliasModel(entity_t *currententity, const model_t *currentmodel)
 
 			MTL_DrawAliasFrameLerp(paliashdr, currententity->backlerp, skin,
 			    model, viewproj, currententity);
+		}
+
+		/* O4: planar ground shadow (ref_vk vk_mesh.c:1034-1063): same
+		   mesh-node iteration as the model draw, through the shadow
+		   pipeline. Translucent and weapon entities never cast one.
+		   vk recomputes Mat_Identity + R_RotateForEntity for the shadow
+		   at the current (pitch-restored) angles rather than reusing the
+		   model matrix, which was built with PITCH negated; ported
+		   verbatim - the two matrices differ for pitched entities and
+		   match vk pixel for pixel that way. */
+		if (r_shadows->value &&
+		    !(currententity->flags & (RF_TRANSLUCENT | RF_WEAPONMODEL)))
+		{
+			float shadow_model[16];
+			int *order;
+			int num_mesh_nodes;
+			short *mesh_nodes;
+
+			Mat_Identity(shadow_model);
+			R_RotateForEntity(currententity, shadow_model);
+
+			order = (int *)((byte *)paliashdr + paliashdr->ofs_glcmds);
+			num_mesh_nodes = (paliashdr->ofs_skins - sizeof(dmdl_t)) / sizeof(short) / 2;
+			mesh_nodes = (short *)((char *)paliashdr + sizeof(dmdl_t));
+
+			if (num_mesh_nodes > 0)
+			{
+				for (i = 0; i < num_mesh_nodes; i++)
+				{
+					MTL_DrawAliasShadow(order + mesh_nodes[i * 2],
+					    order + Q_min(paliashdr->num_glcmds, mesh_nodes[i * 2] + mesh_nodes[i * 2 + 1]),
+					    paliashdr->num_xyz, shadow_model, currententity);
+				}
+			}
+			else
+			{
+				MTL_DrawAliasShadow(order, order + paliashdr->num_glcmds,
+				    paliashdr->num_xyz, shadow_model, currententity);
+			}
 		}
 	}
 }

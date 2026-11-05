@@ -306,6 +306,46 @@ alias_fragment(alias_out in [[stage_in]],
 }
 
 //==================================================================
+// r_shadows planar alias shadows (O4, ref_vk shadows.vert +
+// basic_color_quad.frag, vk_common.c:1526). The CPU flattens the
+// lerped model vertices onto the ground plane (Vk_DrawAliasShadow:
+// x -= shadevector.x * (z + lheight), same for y, z = height) and
+// fan/strip-expands the glcmds into a triangle list of 12-byte
+// float3 records in the alias ring. The UBO is the standard
+// alias_ubo_t: the entity model matrix (identity + R_RotateForEntity,
+// exactly the matrix vk pushes for the shadow) and the global view-
+// projection. The fragment outputs ref_vk's constant shadow colour
+// vec4(0, 0, 0, 0.5) with no texture read and no gamma pow (basic_-
+// color_quad outputs the vertex colour raw); the pipeline does the
+// SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend.
+//==================================================================
+
+struct shadow_in
+{
+    float3 position [[attribute(0)]];
+};
+
+struct shadow_out
+{
+    float4 position [[position]];
+};
+
+vertex shadow_out
+shadow_vertex(shadow_in in [[stage_in]],
+              const device AliasUbo *ubo [[buffer(1)]])
+{
+    shadow_out out;
+    out.position = ubo->viewproj * (ubo->model * float4(in.position, 1.0));
+    return out;
+}
+
+fragment float4
+shadow_fragment(const device AliasUbo *ubo [[buffer(1)]])
+{
+    return float4(0.0, 0.0, 0.0, 0.5);
+}
+
+//==================================================================
 // Sprites (mod_sprite): camera-facing billboards. The CPU writes six
 // world-space 36-byte vertices (pos3 + uv2 + color4, color = white *
 // alpha) per sprite, so no model matrix is needed - just viewproj.

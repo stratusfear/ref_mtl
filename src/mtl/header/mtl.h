@@ -174,6 +174,14 @@ typedef struct
 	float color[4];
 } aliasvert_t;				// 36 bytes
 
+/* O4: r_shadows ring record: the CPU-projected ground-plane shadow
+   vertex, a bare float3 (12 bytes). Matches shadow_in in
+   shaders/world.msl. */
+typedef struct
+{
+	float position[3];
+} shadowvert_t;				// 12 bytes
+
 // Per-draw uniform block. Must match the MSL WorldUbo layout exactly
 // (float4x4 members are 64-byte aligned in both C and MSL).
 typedef struct
@@ -302,10 +310,21 @@ extern cvar_t	*r_farsee;
 extern cvar_t	*mtl_overbrightbits;
 extern cvar_t	*r_validation;
 extern cvar_t	*r_cull;
+extern cvar_t	*r_norefresh;		/* O4: name/default parity with ref_vk
+					   (vk_main.c:1124); skips the world
+					   view in RE_RenderFrame */
+extern cvar_t	*r_speeds;		/* O4: parity with ref_vk
+					   (vk_main.c:1131); wpoly / epoly /
+					   tex / lmaps print per frame */
+extern cvar_t	*r_shadows;		/* O4: planar alias shadows, name /
+					   default / ARCHIVE parity with ref_vk
+					   (vk_main.c:1150 vk_shadows) */
 extern cvar_t	*mtl_picmip;
 extern cvar_t	*r_palettedtexture;
 extern cvar_t	*mtl_flashblend;
-extern cvar_t	*mtl_polyblend;
+extern cvar_t	*r_polyblend;		/* O4: renamed from mtl_polyblend,
+					   the shared name ref_vk and config
+					   files use (vk_main.c:1148) */
 extern cvar_t	*mtl_dynamic;
 extern cvar_t	*mtl_showtris;
 extern cvar_t	*mtl_custom_particles;
@@ -606,6 +625,13 @@ typedef struct mtlstate_s
 	// encoder state differs.
 	id<MTLRenderPipelineState>	pipeline_alias;		// alias_vertex + alias_fragment
 	id<MTLRenderPipelineState>	pipeline_alias_translucent;
+
+	// O4: r_shadows planar alias shadows (ref_vk's shadows.vert +
+	// basic_color_quad.frag pipeline, vk_common.c:1526). 12-byte float3
+	// records in the alias vertex ring, alias_ubo_t UBOs on the world
+	// ring; constant black 0.5 fragment, SRC_ALPHA/ONE_MINUS_SRC_ALPHA
+	// blend, depth test + write on, back-face cull.
+	id<MTLRenderPipelineState>	pipeline_shadow;	// shadow_vertex + shadow_fragment
 
 	// W5b: sprites (mod_sprite). Reuses the alias vertex ring (same 36B
 	// pos3+uv2+color4 layout) and rides its UBO on the world UBO ring.

@@ -97,10 +97,13 @@ cvar_t		*r_farsee;
 cvar_t		*mtl_overbrightbits;
 cvar_t		*r_validation;
 cvar_t		*r_cull;
+cvar_t		*r_norefresh;		/* O4: see RE_RenderFrame */
+cvar_t		*r_speeds;		/* O4: see RE_RenderFrame */
+cvar_t		*r_shadows;		/* O4: see mtl_alias.m */
 cvar_t		*mtl_picmip;
 cvar_t		*r_palettedtexture;
 cvar_t		*mtl_flashblend;
-cvar_t		*mtl_polyblend;
+cvar_t		*r_polyblend;		/* O4: renamed from mtl_polyblend */
 cvar_t		*mtl_dynamic;
 cvar_t		*mtl_showtris;
 cvar_t		*mtl_custom_particles;
@@ -141,6 +144,11 @@ R_Register(void)
 	r_drawentities = ri.Cvar_Get("r_drawentities", "1", 0);
 	r_novis = ri.Cvar_Get("r_novis", "0", 0);
 	r_cull = ri.Cvar_Get("r_cull", "1", 0);
+	/* O4: name/default/flags parity with ref_vk (vk_main.c:1124,
+	   1131); r_norefresh skips the world view (RE_RenderFrame),
+	   r_speeds prints the frame's poly/texture counters. */
+	r_norefresh = ri.Cvar_Get("r_norefresh", "0", 0);
+	r_speeds = ri.Cvar_Get("r_speeds", "0", 0);
 	r_lerpmodels = ri.Cvar_Get("r_lerpmodels", "1", 0);
 	r_lightlevel = ri.Cvar_Get("r_lightlevel", "0", 0);
 	r_mode = ri.Cvar_Get("r_mode", "11", CVAR_ARCHIVE);
@@ -155,7 +163,7 @@ R_Register(void)
 	mtl_picmip = ri.Cvar_Get("mtl_picmip", "0", 0);
 	r_palettedtexture = ri.Cvar_Get("r_palettedtexture", "0", 0);
 	mtl_flashblend = ri.Cvar_Get("mtl_flashblend", "0", 0);
-	mtl_polyblend = ri.Cvar_Get("mtl_polyblend", "1", 0);
+	r_polyblend = ri.Cvar_Get("r_polyblend", "1", 0);	/* O4: renamed from mtl_polyblend, ref_vk's name (vk_main.c:1148) */
 	r_clear = ri.Cvar_Get("r_clear", "0", CVAR_ARCHIVE);
 	r_lockpvs = ri.Cvar_Get("r_lockpvs", "0", 0);
 	r_modulate = ri.Cvar_Get("r_modulate", "1", CVAR_ARCHIVE);
@@ -185,6 +193,9 @@ R_Register(void)
 	/* don't bilerp videos */
 	r_videos_unfiltered = ri.Cvar_Get("r_videos_unfiltered", "0", CVAR_ARCHIVE);
 	r_fixsurfsky = ri.Cvar_Get("r_fixsurfsky", "0", CVAR_ARCHIVE);
+	/* O4: planar alias shadows, name/default/ARCHIVE parity with ref_vk
+	   (vk_shadows, vk_main.c:1150); drawn in R_DrawAliasModel. */
+	r_shadows = ri.Cvar_Get("r_shadows", "0", CVAR_ARCHIVE);
 
 	vid_fullscreen = ri.Cvar_Get("vid_fullscreen", "0", CVAR_ARCHIVE);
 	vid_gamma = ri.Cvar_Get("vid_gamma", "1.0", CVAR_ARCHIVE);
@@ -1128,6 +1139,11 @@ R_ReleaseShaders(mtlstate_t *st)
 		[st->pipeline_alias_translucent release];
 		st->pipeline_alias_translucent = nil;
 	}
+	if (st->pipeline_shadow != nil)
+	{
+		[st->pipeline_shadow release];
+		st->pipeline_shadow = nil;
+	}
 	if (st->pipeline_alias != nil)
 	{
 		[st->pipeline_alias release];
@@ -1532,6 +1548,50 @@ MTL_InitWorldPipelines(mtlstate_t *st, NSUInteger sampleCount)
 
 	}
 
+	/* O4: r_shadows planar alias shadows (ref_vk's shadows.vert +
+	   basic_color_quad.frag pipeline, vk_common.c:1526-1530). 12-byte
+	   float3 records in the alias vertex ring; SRC_ALPHA /
+	   ONE_MINUS_SRC_ALPHA blend (vk's blend factors; the fragment
+	   outputs a constant black 0.5), default depth state (test + write
+	   on, like QVKPIPELINE_INIT), back-face cull set at draw time. */
+	{
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+
+		pd.vertexFunction = [st->library newFunctionWithName:@"shadow_vertex"];
+
+		pd.fragmentFunction = [st->library newFunctionWithName:@"shadow_fragment"];
+
+		MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+		vd.attributes[0].format = MTLVertexFormatFloat3;
+		vd.attributes[0].offset = 0;
+		vd.attributes[0].bufferIndex = 0;
+		vd.layouts[0].stride = sizeof(shadowvert_t);
+		pd.vertexDescriptor = vd;
+
+		pd.rasterSampleCount = sampleCount;
+		pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		pd.colorAttachments[0].blendingEnabled = YES;
+		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+		pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorSourceAlpha;
+		pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+		pd.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+
+		st->pipeline_shadow = [st->device newRenderPipelineStateWithDescriptor:pd error:&err];
+		[pd.vertexFunction release];
+		[pd.fragmentFunction release];
+		[pd release];
+		[vd release];	/* G1: manual RC, none kept by the pipeline state */
+		if (st->pipeline_shadow == nil)
+		{
+			Com_Printf("ref_mtl: shadow pipeline creation failed: %s\n", err.localizedDescription.UTF8String);
+			R_ReleaseShaders(st);
+			return false;
+		}
+	}
+
 	/* W5b: sprites (mod_sprite). Same 36-byte vertex layout as the alias
 	   models (the CPU writes color = white * alpha per vertex); the UBO is
 	   the smaller sprite_ubo_t (viewproj + gamma). Blending is always on,
@@ -1702,6 +1762,7 @@ MTL_ReleaseWorldPipelines(mtlstate_t *st)
 		&st->pipeline_showtris,
 		&st->pipeline_alias,
 		&st->pipeline_alias_translucent,
+		&st->pipeline_shadow,
 		&st->pipeline_sprite,
 		&st->pipeline_particle,
 		&st->pipeline_point_particle,
@@ -2656,6 +2717,7 @@ R_CountPipelines(void)
 		&st->pipeline_showtris,
 		&st->pipeline_alias,
 		&st->pipeline_alias_translucent,
+		&st->pipeline_shadow,
 		&st->pipeline_sprite,
 		&st->pipeline_particle,
 		&st->pipeline_point_particle,
@@ -3588,8 +3650,10 @@ R_RenderFlash
 
 View flash (the vk R_PolyBlend equivalent): a full-screen quad tinted with
 v_blend (pain / damage feedback from the core), drawn last in the world
-pass. Gated by mtl_polyblend and skipped when v_blend's alpha is zero. The
-color rides on the slot's world UBO ring (16 bytes), like the dlight UBOs.
+pass. Gated by r_polyblend (O4: renamed from mtl_polyblend; r_polyblend
+is the name ref_vk and the shared config files use) and skipped when
+v_blend's alpha is zero. The color rides on the slot's world UBO ring
+(16 bytes), like the dlight UBOs.
 =============
 */
 static void
@@ -3599,7 +3663,7 @@ R_RenderFlash(void)
 	size_t slot, ubo_off;
 	float *ubo;
 
-	if (!mtl_polyblend->value || !v_blend[3])
+	if (!r_polyblend->value || !v_blend[3])
 	{
 		return;
 	}
@@ -4027,6 +4091,16 @@ RE_RenderFrame(refdef_t *fd)
 {
 	mtlstate_t *st = &mtl_state;
 
+	/* O4: r_norefresh parity with ref_vk (RE_RenderView, vk_main.c:903):
+	   the cvar freezes the world view - the render frame still runs (UI,
+	   warp, present) but the refdef is not copied and the world is not
+	   redrawn. Same position relative to the rest of the view code as
+	   vk's guard at the top of RE_RenderView. */
+	if (r_norefresh->value)
+	{
+		return;
+	}
+
 	if (!st->frame_active || st->command_buffer == nil ||
 	    st->scene_texture == nil || st->pipeline_plain == nil)
 	{
@@ -4297,6 +4371,23 @@ RE_RenderFrame(refdef_t *fd)
 	   from the frame. */
 	R_DrawAlphaSurfaces();
 	R_RenderFlash();
+
+	/* O4: r_speeds parity with ref_vk (RE_RenderView tail,
+	   vk_main.c:965-971): one stats line per rendered frame after the
+	   world draws finish. The counters are reset unconditionally in
+	   R_SetupFrame (mtl_main.m:433-434) where vk resets them only when
+	   r_speeds is set; same printed values, no branch needed. c_visib-
+	   le_lightmaps is never incremented in either renderer (vk_main.c
+	   prints the same always-zero counter), so it is kept for format
+	   parity. */
+	if (r_speeds->value)
+	{
+		Com_Printf("%4i wpoly %4i epoly %i tex %i lmaps\n",
+			c_brush_polys,
+			c_alias_polys,
+			c_visible_textures,
+			c_visible_lightmaps);
+	}
 
 	/* O2: publish r_lightlevel for the client's usercmd after the view is
 	   drawn, same place and order as ref_vk (vk_main.c:1111). */
