@@ -1140,7 +1140,26 @@ RE_BeginRegistration(char *model)
 	Mod_Reallocate();
 
 	registration_sequence++;
-	r_oldviewcluster = -1; /* force markleafs */
+	/* T2: invalidate both halves of the viewcluster state, current
+	   and previous. R_SetupFrame copies r_oldviewcluster2 =
+	   r_viewcluster2 back from the current pair at the start of every
+	   world frame (mtl_main.m:398-399), so on this map's first frame
+	   it is whatever r_viewcluster/r_viewcluster2 hold right here
+	   that the R_MarkLeaves cluster-match early-out compares against.
+	   Stale values from the previous map are not benign: when they
+	   happen to equal the new map's spawn cluster (which happens by
+	   luck of map pairing, and was forced deterministically with the
+	   round-15 evidence hook), all four match, R_MarkLeaves returns
+	   without marking, every node of the new map keeps visframe 0
+	   while r_visframecount is already past 0, and the world draws as
+	   nothing until the player walks into another cluster. Before O1
+	   this could not bite because R_MarkLeaves never ran. ref_vk
+	   keeps the trap: vk_model.c:1126 resets only r_oldviewcluster,
+	   and the current pair survives only through the ordering accident
+	   of the lone `r_viewcluster = -1` at the very end of the
+	   function (vk_model.c:1144); not copied. */
+	r_oldviewcluster = r_oldviewcluster2 = -1; /* force markleafs */
+	r_viewcluster = r_viewcluster2 = -1;
 
 	Com_sprintf(fullname, sizeof(fullname), "maps/%s.bsp", model);
 
@@ -1157,8 +1176,6 @@ RE_BeginRegistration(char *model)
 	r_worldmodel = Mod_ForName(fullname, NULL, true);
 	if (r_worldmodel != models_known)
 		ri.Sys_Error(ERR_DROP, "%s: Loaded a brush model after the world", __func__);
-
-	r_viewcluster = -1;
 }
 
 struct model_s *
