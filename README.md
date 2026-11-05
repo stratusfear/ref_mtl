@@ -567,8 +567,10 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     drawn over it, and no warp/postprocess chain, with the MSAA
     resolve and `ui_target` bookkeeping following suit. O4 renamed
     `mtl_polyblend` to the shared `r_polyblend`, registered
-    `r_norefresh` (freezes the refdef and the world draw while UI,
-    warp and present keep running), `r_speeds` (same counters as ref_vk)
+    `r_norefresh` (skips the refdef publish and the world draw while UI,
+    warp and present keep running; since T5 each such frame clears the
+    scene to ref_vk's debug pink like vk's render-pass clear, instead of
+    leaving the last 3D frame frozen), `r_speeds` (same counters as ref_vk)
     and ported the deferred `r_shadows` planar ground shadow (own
     pipeline, `MTL_BuildShadowViewproj`, per-entity stencil-free draw;
     `base1`/`jail1` captures match ref_vk's shadow silhouettes). O5

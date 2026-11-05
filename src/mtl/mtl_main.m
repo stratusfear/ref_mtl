@@ -4316,9 +4316,40 @@ RE_RenderFrame(refdef_t *fd)
 	   the cvar freezes the world view - the render frame still runs (UI,
 	   warp, present) but the refdef is not copied and the world is not
 	   redrawn. Same position relative to the rest of the view code as
-	   vk's guard at the top of RE_RenderView. */
+	   vk's guard at the top of RE_RenderView.
+
+	   T5: the guard alone was not vk-exact. vk's scene attachment is
+	   cleared to debug pink by its world render pass' clear value
+	   (vk_common.c:2429-2433, {1.0, 0.0, 0.5, 1.0}) every frame, and
+	   when r_norefresh skips that pass the postprocess/UI passes still
+	   clear to the same pink (uiClearColors[0]), so vk shows a flat
+	   pink backdrop under the 2D layer - not the frozen last world
+	   frame. Returning here without any clear left mtl compositing the
+	   UI onto the previous frame, so translucent console backgrounds
+	   darkened toward opaque and changing HUD text smeared (the O4
+	   evidence - changed pixels confined to the HUD strip - was this
+	   accumulation, not a clean freeze). Clear the scene texture to
+	   vk's pink on every r_norefresh frame instead, through the same
+	   trivial-pass form as the G6 resize clear below; everything else
+	   about the guard (no refdef publish, no world pass) stays vk's. */
 	if (r_norefresh->value)
 	{
+		if (st->frame_active && st->command_buffer != nil &&
+		    st->scene_texture != nil)
+		{
+			MTLRenderPassDescriptor *cd = [MTLRenderPassDescriptor renderPassDescriptor];
+			id<MTLRenderCommandEncoder> cenc;
+
+			cd.colorAttachments[0].texture = st->scene_texture;
+			cd.colorAttachments[0].loadAction = MTLLoadActionClear;
+			cd.colorAttachments[0].storeAction = MTLStoreActionStore;
+			cd.colorAttachments[0].clearColor = MTLClearColorMake(1.0, 0.0, 0.5, 1.0);
+			cenc = [st->command_buffer renderCommandEncoderWithDescriptor:cd];
+			if (cenc != nil)
+			{
+				[cenc endEncoding];
+			}
+		}
 		return;
 	}
 
