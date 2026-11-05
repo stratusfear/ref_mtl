@@ -2403,6 +2403,15 @@ RE_InitContext(void *sdl_window)
 	   target poison the displayed image with a constant magenta. */
 	layer.framebufferOnly = YES;
 	layer.maximumDrawableCount = 3;
+	/* M1: r_vsync was only reflected in RE_IsVSyncActive's return
+	   value; the layer kept its default displaySyncEnabled = YES, so
+	   every frame was display-synced regardless of the cvar (and the
+	   host double-paced, see RE_IsVSyncActive below). vk applies the
+	   cvar through the present mode (vk_swapchain.c:174); the CAMetal
+	   equivalent is displaySyncEnabled. maximumDrawableCount stays 3:
+	   with sync off the RE_BeginFrame slot gate is what bounds
+	   latency. */
+	layer.displaySyncEnabled = (r_vsync->value != 0);
 
 	/* Retina: CAMetalLayer's default contentsScale on macOS is 1.0,
 	   so derive it from the window's pixel size. The drawable size is
@@ -2466,17 +2475,24 @@ RE_GetDrawableSize(int *width, int *height)
 /*
 ==============
 RE_IsVSyncActive
+
+M1: report what the layer is actually doing (displaySyncEnabled),
+not what r_vsync says: before the fix the layer ignored the cvar
+and kept its default YES, so the host's own frame pacing
+(common/frame.c, skips its wait when this returns true) ran on top
+of the display sync and frame times jittered. No context -> not
+vsynced (no present happens anyway).
 ==============
 */
 static qboolean
 RE_IsVSyncActive(void)
 {
-	if (r_vsync != NULL && r_vsync->value)
+	if (mtl_state.layer == NULL)
 	{
-		return true;
+		return false;
 	}
 
-	return false;
+	return ((CAMetalLayer *)mtl_state.layer).displaySyncEnabled ? true : false;
 }
 
 /*
@@ -2760,6 +2776,17 @@ RE_BeginFrame(float camera_separation)
 	   frame counter advance below so frame_slot still identifies the
 	   abandoned frame. */
 	MTL_AbandonOpenFrame();
+
+	/* M1: r_vsync changed at runtime (video menu / console). The CAMetal
+	   layer property applies live, no mode change needed, so handle the
+	   flag here and clear it; R_SetMode also clears it as a belt for
+	   the RE_InitContext apply, harmless if already false. */
+	if (r_vsync->modified)
+	{
+		((CAMetalLayer *)st->layer).displaySyncEnabled =
+		    (r_vsync->value != 0);
+		r_vsync->modified = false;
+	}
 
 	st->frame_number++;
 	st->frame_slot = (int)(st->frame_number % 3);
