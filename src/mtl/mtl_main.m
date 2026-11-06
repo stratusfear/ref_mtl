@@ -216,8 +216,9 @@ R_Register(void)
 	   (vk_main.c:1168); drives the per-sample-shading function-constant
 	   specialization of the world fragment functions (see
 	   MTL_WorldFragmentFunction). Read when the world pipelines are
-	   built - like ref_vk, whose sampleShadingEnable only moves when
-	   pipelines are recreated (device reinit on vk_msaa change). */
+	   built; X1 catches the cvar's modified flag in RE_BeginFrame and
+	   forces that rebuild, so the cvar applies mid-session (ref_vk
+	   waits for a device reinit). */
 	mtl_sampleshading = ri.Cvar_Get("mtl_sampleshading", "1", CVAR_ARCHIVE);
 }
 
@@ -1269,9 +1270,12 @@ cannot be used to build a pipeline state. Use
 newFunctionWithName:constantValues:..."). So every world fragment
 goes through here.
 
-Like ref_vk - whose pipelines only see a vk_sampleshading change on a
-full device reinit - a mid-session cvar change lands with the next
-world pipeline rebuild (r_msaa_samples change or restart). The
+X1 made the mid-session path direct: an mtl_sampleshading change is
+caught in RE_BeginFrame and forces a world-pipeline rebuild at the
+current sample count, so the cvar applies on the spot (one-frame
+hitch, R4(e)). ref_vk's pipelines only see a vk_sampleshading change
+at a full device reinit; landing sooner here is a deliberate
+improvement, not a parity gap. The
 returned function is +1 exactly like newFunctionWithName, so the
 callers' [pd.fragmentFunction release] sequence keeps balancing.
 Failure (bad constant index etc.) returns nil: the caller's existing
@@ -2042,22 +2046,35 @@ which prints "...MSAAx%d is used" from GetSampleCount(). Checked every
 frame here instead: the pipeline/texture swap is cheap, and the host's
 video menu may set the cvar without a mode change. Called from
 RE_BeginFrame before the frame's command buffer / encoders exist.
+
+X1: `force` reruns the full teardown/rebuild at the unchanged sample
+count. It is the live path for mtl_sampleshading: the cvar is baked
+into the world fragment functions' per_sample_shading function
+constant, so rebuilding the world pipelines at the same sample count
+applies a mid-session change. ref_vk leaves its vk_sampleshading
+equivalent to a full device reinit; this is a deliberate improvement
+there, not a parity difference to defend. Callers pair every forced
+call with clearing the cvar's modified flag, so a forced retry
+against a still-failing configuration runs once, not every frame.
 ============
 */
 static void
-MTL_UpdateMSAA(mtlstate_t *st)
+MTL_UpdateMSAA(mtlstate_t *st, qboolean force)
 {
 	NSUInteger want = MTL_DesiredSampleCount();
 
 	/* F2b: a request that already failed stays degraded at 1 sample
 	   until the cvar changes; this stops the per-frame teardown,
-	   rebuild and error print. */
-	if (want == st->msaa_failed_want)
+	   rebuild and error print. X1: a forced rebuild (mtl_sampleshading
+	   change) steps past the guard once - the caller has already
+	   cleared the flag that triggered it. */
+	if (!force && want == st->msaa_failed_want)
 	{
 		return;
 	}
 
-	if (want == st->msaa_sample_count && st->pipeline_sample_count == want)
+	if (!force && want == st->msaa_sample_count &&
+	    st->pipeline_sample_count == want)
 	{
 		st->msaa_failed_want = 0;
 		return;
@@ -3393,8 +3410,22 @@ RE_BeginFrame(float camera_separation)
 	/* W7: r_msaa_samples changes rebuild the world pipelines and the
 	   multisampled attachments. Runs after the resize block above so
 	   the scene/depth dimensions are valid, and before this frame's
-	   command buffer is created. */
-	MTL_UpdateMSAA(st);
+	   command buffer is created. X1: an mtl_sampleshading change
+	   rides the same path forced - the cvar is baked into the world
+	   fragment specialization, so a rebuild at the unchanged sample
+	   count applies it mid-session (the accepted one-frame hitch,
+	   R4(e)). At 1 sample the constant is NO whatever the cvar says,
+	   so there the change only clears the flag. ref_vk needs a device
+	   reinit for its vk_sampleshading; landing here is deliberate. */
+	if (mtl_sampleshading->modified)
+	{
+		mtl_sampleshading->modified = false;
+		MTL_UpdateMSAA(st, MTL_DesiredSampleCount() > 1);
+	}
+	else
+	{
+		MTL_UpdateMSAA(st, false);
+	}
 
 	/* One classic command buffer per frame, retained until EndFrame
 	   commits and releases it. Mark the slot in flight; the completion
