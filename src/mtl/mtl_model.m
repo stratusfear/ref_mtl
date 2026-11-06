@@ -528,7 +528,8 @@ Mod_LoadFaces
 =================
 */
 static void
-Mod_LoadFaces(model_t *loadmodel, const byte *mod_base, const lump_t *l, const bspx_header_t *bspx_header)
+Mod_LoadFaces(model_t *loadmodel, const byte *mod_base, const lump_t *l, const bspx_header_t *bspx_header,
+	int lightinglen)
 {
 	int i, count, surfnum, lminfosize, lightofs;
 	const dlminfo_t *lminfos;
@@ -625,6 +626,40 @@ Mod_LoadFaces(model_t *loadmodel, const byte *mod_base, const lump_t *l, const b
 		}
 
 		SetSurfaceLighting(loadmodel, out, in->styles, lightofs);
+
+		/* Z5g: R_BuildLightMap blends smax*tmax*3 bytes per active
+		   lightstyle (out->styles up to the first 255) out of the
+		   lighting lump starting at the face's lightofs, which the
+		   file supplies unchecked and which DECOUPLED_LM can also
+		   source from the BSPX table.  b_lightofs_big pointed ~2 GB
+		   away and painted the atlas from foreign memory, b_lightofs
+		   read before the lump.  Bound the sample window against the
+		   lighting lump for every face that got a samples pointer. */
+		if (out->samples != NULL)
+		{
+			long long off = out->samples - loadmodel->lightdata;
+			int maps, smax, tmax;
+
+			for (maps = 0;
+				 maps < MAXLIGHTMAPS && out->styles[maps] != 255;
+				 maps++)
+			{
+				/* count the lightstyle maps R_BuildLightMap blends */
+			}
+
+			smax = (out->extents[0] >> out->lmshift) + 1;
+			tmax = (out->extents[1] >> out->lmshift) + 1;
+
+			if ((off < 0) ||
+				(off + (long long)maps * smax * tmax * 3 > lightinglen))
+			{
+				Com_Error(ERR_DROP, "%s: %s face %i light data at %lld for "
+						"%dx%d luxels x %i maps runs past the %i byte "
+						"lighting lump",
+						__func__, loadmodel->name, surfnum, off,
+						smax, tmax, maps, lightinglen);
+			}
+		}
 
 		/* set the drawing flags */
 		if (out->texinfo->flags & SURF_WARP)
@@ -1095,7 +1130,8 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 	Mod_LoadTexinfo(mod->name, &mod->texinfo, &mod->numtexinfo,
 		mod_base, &header->lumps[LUMP_TEXINFO], (findimage_t)MTL_FindImage,
 		r_notexture, 0);
-	Mod_LoadFaces(mod, mod_base, &header->lumps[LUMP_FACES], bspx_header);
+	Mod_LoadFaces(mod, mod_base, &header->lumps[LUMP_FACES], bspx_header,
+		header->lumps[LUMP_LIGHTING].filelen);
 	Mod_LoadMarksurfaces(mod, mod_base, &header->lumps[LUMP_LEAFFACES]);
 	Mod_LoadVisibility(&mod->vis, mod_base, &header->lumps[LUMP_VISIBILITY]);
 	Mod_LoadLeafs(mod, mod_base, &header->lumps[LUMP_LEAFS]);
