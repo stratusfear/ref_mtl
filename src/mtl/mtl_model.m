@@ -840,12 +840,15 @@ static int calcLumpHunkSize(const lump_t *l, int inSize, int outSize)
 /* Need to clean */
 struct rctx_s {
 	const byte *data;
-	int ofs, size;
+	/* Z5h: ofs is 64-bit so the node/leaf skip arithmetic below can
+	   never wrap back into the lump; ReadByte also refuses negatives. */
+	long long ofs;
+	int size;
 };
 
 static byte ReadByte(struct rctx_s *ctx)
 {
-	if (ctx->ofs >= ctx->size)
+	if ((ctx->ofs < 0) || (ctx->ofs >= ctx->size))
 	{
 		ctx->ofs++;
 		return 0;
@@ -870,13 +873,15 @@ static float ReadFloat(struct rctx_s *ctx)
 }
 
 static bspxlightgrid_t*
-Mod_LoadBSPXLightGrid(const bspx_header_t *bspx_header, const byte *mod_base)
+Mod_LoadBSPXLightGrid(const bspx_header_t *bspx_header, const byte *mod_base,
+	const char *name)
 {
 	vec3_t step, mins;
 	int size[3];
 	bspxlightgrid_t *grid;
 	unsigned int numstyles, numnodes, numleafs, rootnode;
-	unsigned int nodestart, leafsamps = 0, i, j, k, s;
+	unsigned int i, j, k, s;
+	long long nodestart, leafsamps = 0;
 	struct bspxlgsamp_s *samp;
 	struct rctx_s ctx = {0};
 
@@ -897,17 +902,67 @@ Mod_LoadBSPXLightGrid(const bspx_header_t *bspx_header, const byte *mod_base)
 	rootnode = ReadInt(&ctx);
 	numnodes = ReadInt(&ctx);
 	nodestart = ctx.ofs;
-	ctx.ofs += (3+8)*4*numnodes;
+
+	/* Z5h: every count below is raw file data.  A node is 11 ints
+	   (44 bytes) in the lump and a leaf header 6 ints (24 bytes), so
+	   counts that the lump cannot hold would turn the skip arithmetic
+	   into a wrapped ofs (ReadByte then fed data[negative] for the
+	   b_lgrid_neg input) and the Hunk_Alloc sizes below come straight
+	   from those counts (audit F9).  Reject the grid (soft: no light
+	   grid, the map still loads) instead. */
+	if ((numnodes > (unsigned int)ctx.size / 44u) ||
+		((long long)nodestart + (long long)numnodes * 44 + 4 > ctx.size))
+	{
+		Com_Printf("%s: %s LIGHTGRID_OCTREE lightgrid claims %u nodes in a "
+				"%i byte lump\n", __func__, name, numnodes, ctx.size);
+		return NULL;
+	}
+
+	ctx.ofs += (long long)numnodes * 44;
 	numleafs = ReadInt(&ctx);
+
+	if (numleafs > (unsigned int)ctx.size / 24u)
+	{
+		Com_Printf("%s: %s LIGHTGRID_OCTREE lightgrid claims %u leaves in a "
+				"%i byte lump\n", __func__, name, numleafs, ctx.size);
+		return NULL;
+	}
+
 	for (i = 0; i < numleafs; i++)
 	{
 		unsigned int lsz[3];
+		long long j_ll;
+
 		ctx.ofs += 3*4;
 		for (j = 0; j < 3; j++)
-			lsz[j] = ReadInt(&ctx);
-		j = lsz[0]*lsz[1]*lsz[2];
-		leafsamps += j;
-		while (j --> 0)
+			lsz[j] = (unsigned int)ReadInt(&ctx);
+		/* Z5h: the sample count is a 3-factor product of file ints;
+		   each factor even near 2^31 overflows a 64-bit multiply, so
+		   compare factor-by-factor against the remaining lump budget
+		   instead (every sample costs at least one byte; b_lgrid_hang
+		   used an oversized product to spin this walk for billions
+		   of iterations). */
+		{
+			long long budget = (long long)ctx.size - leafsamps;
+			long long ab = 0;
+			int over = 0;
+
+			if (lsz[1] && ((long long)lsz[0] > budget / lsz[1]))
+				over = 1;
+			else
+				ab = (long long)lsz[0] * lsz[1];
+			if (!over && ab && lsz[2] && ((long long)lsz[2] > budget / ab))
+				over = 1;
+			if (over)
+			{
+				Com_Printf("%s: %s LIGHTGRID_OCTREE sample count runs past "
+						"the %i byte lump\n", __func__, name, ctx.size);
+				return NULL;
+			}
+			j_ll = ab * (long long)lsz[2];
+		}
+		leafsamps += j_ll;
+		while (j_ll-- > 0)
 		{	//this loop is annonying, memcpy dreams...
 			s = ReadByte(&ctx);
 			if (s == 255)
@@ -916,8 +971,25 @@ Mod_LoadBSPXLightGrid(const bspx_header_t *bspx_header, const byte *mod_base)
 		}
 	}
 
-	grid = Hunk_Alloc(sizeof(*grid) + sizeof(*grid->leafs)*numleafs + sizeof(*grid->nodes)*numnodes + sizeof(struct bspxlgsamp_s)*leafsamps);
-	memset(grid, 0xcc, sizeof(*grid) + sizeof(*grid->leafs)*numleafs + sizeof(*grid->nodes)*numnodes + sizeof(struct bspxlgsamp_s)*leafsamps);
+	/* Z5h: with every count lump-bounded above, recompute the total
+	   allocation in 64-bit and cap it at what Hunk_Alloc (int size)
+	   and the hunk itself can take. */
+	{
+		long long total = (long long)sizeof(*grid) +
+			(long long)sizeof(*grid->leafs) * numleafs +
+			(long long)sizeof(*grid->nodes) * numnodes +
+			(long long)sizeof(struct bspxlgsamp_s) * leafsamps;
+
+		if (total > 0x7FFFFFF0LL)
+		{
+			Com_Printf("%s: %s LIGHTGRID_OCTREE lightgrid needs %lld bytes, "
+					"too large\n", __func__, name, total);
+			return NULL;
+		}
+
+		grid = Hunk_Alloc((int)total);
+		memset(grid, 0xcc, (size_t)total);
+	}
 	grid->leafs = (void*)(grid+1);
 	grid->nodes = (void*)(grid->leafs + numleafs);
 	samp = (void*)(grid->nodes+numnodes);
@@ -928,6 +1000,18 @@ Mod_LoadBSPXLightGrid(const bspx_header_t *bspx_header, const byte *mod_base)
 	VectorCopy(size, grid->count);
 	grid->numnodes = numnodes;
 	grid->numleafs = numleafs;
+
+	/* Z5h: rootnode and the child links below are file data used as
+	   array indices at every R_LightPoint call.  Child ids encode
+	   LEAF/MISSING flag bits; anything pointing outside the allocated
+	   node/leaf arrays is replaced with the MISSING failure marker,
+	   which the traversal already handles. */
+	if (((rootnode & LGNODE_LEAF) ?
+			((rootnode & ~LGNODE_LEAF) >= numleafs) :
+			(!(rootnode & LGNODE_MISSING) && rootnode >= numnodes)))
+	{
+		rootnode = LGNODE_MISSING;
+	}
 	grid->rootnode = rootnode;
 	(void)numstyles;
 
@@ -938,7 +1022,21 @@ Mod_LoadBSPXLightGrid(const bspx_header_t *bspx_header, const byte *mod_base)
 		for (j = 0; j < 3; j++)
 			grid->nodes[i].mid[j] = ReadInt(&ctx);
 		for (j = 0; j < 8; j++)
-			grid->nodes[i].child[j] = ReadInt(&ctx);
+		{
+			unsigned int id = (unsigned int)ReadInt(&ctx);
+
+			/* Z5h: bound every child link (see rootnode above) */
+			if (id & LGNODE_LEAF)
+			{
+				if ((id & ~LGNODE_LEAF) >= numleafs)
+					id = LGNODE_MISSING;
+			}
+			else if (!(id & LGNODE_MISSING) && (id >= numnodes))
+			{
+				id = LGNODE_MISSING;
+			}
+			grid->nodes[i].child[j] = (int)id;
+		}
 	}
 	ctx.ofs += 4;
 	for (i = 0; i < numleafs; i++)
@@ -1079,7 +1177,7 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 
 	if (bspx_header)
 	{
-		mod->grid = Mod_LoadBSPXLightGrid(bspx_header, mod_base);
+		mod->grid = Mod_LoadBSPXLightGrid(bspx_header, mod_base, mod->name);
 	}
 	else
 	{

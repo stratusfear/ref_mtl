@@ -372,11 +372,18 @@ static int
 BSPX_LightGridSingleValue(const bspxlightgrid_t *grid, const lightstyle_t *lightstyles, int x, int y, int z, vec3_t res_diffuse)
 {
 	unsigned int node;
+	int depth = 0;
 
 	node = grid->rootnode;
 	while (!(node & LGNODE_LEAF))
 	{
 		struct bspxlgnode_s *n;
+		/* Z5h: load-side bounds leave every child link pointing at a
+		   real node or leaf, but a crafted octree can still link
+		   valid nodes into a cycle; a descent that takes more steps
+		   than there are nodes has done exactly that. */
+		if (++depth > (int)grid->numnodes)
+			return 0;
 		if (node & LGNODE_MISSING)
 			return 0;	//failure
 		n = grid->nodes + node;
