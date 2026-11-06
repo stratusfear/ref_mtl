@@ -574,8 +574,11 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     `mtl_polyblend` to the shared `r_polyblend`, registered
     `r_norefresh` (skips the refdef publish and the world draw while UI,
     warp and present keep running; since T5 each such frame clears the
-    scene to ref_vk's debug pink like vk's render-pass clear, instead of
-    leaving the last 3D frame frozen), `r_speeds` (same counters as ref_vk)
+    scene to ref_vk's debug pink — vk's world-RP clear constant, though
+    a round-15b V6 capture showed that clear is inert in vk's normal
+    render passes, so vk itself keeps showing the frozen last frame;
+    mtl's clear is a deliberate, recorded divergence that removes the
+    2D accumulation vk still has), `r_speeds` (same counters as ref_vk)
     and ported the deferred `r_shadows` planar ground shadow (own
     pipeline, matrix rebuilt inside `MTL_DrawAliasShadow` from the
     entity's pitch-restored angles like ref_vk does, per-entity
@@ -751,7 +754,13 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     T5 replaced the `r_norefresh` frozen-last-frame behaviour with
     ref_vk's exact flat debug-pink scene clear ({1.0, 0.0, 0.5, 1.0},
     vk's world-RP clear value), removing the 2D-layer accumulation on
-    the backdrop.
+    the backdrop. The round-15b V6 paired vk capture corrected the
+    stated basis: vk does *not* display that pink - its RP_WORLD color
+    attachment loads (LOAD / DONT_CARE), so the clear value never
+    reaches the screen, and vk shows the frozen frame like pre-fix
+    mtl. mtl's pink clear is kept as a deliberate divergence: it
+    kills the accumulation vk still exhibits, using vk's own
+    constant.
     T6 was the doc sweep: stale README statements (`r_fullbright`
     listing, `mtl_polyblend` history, the nonexistent
     `MTL_BuildShadowViewproj`), the `world.msl` "useStageInResources"
@@ -806,6 +815,26 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     CPU" wording was corrected accordingly. U5 swept the docs for
     stale figures and wording (this bullet, the T7 entry above, the
     M8B1 note) and synced `REVIEW_EXTERNAL.md`.
+ - Round-15b findings V1-V6 (brief `REVIEW_FINDINGS_15B.md`; an
+    audit of round 15's own close claims, run after round 16; no
+    renderer behaviour change): V1 caught a false positive in the
+    T2 rationale - the pre-`b8afabb` `RE_BeginRegistration` already
+    ended with `r_viewcluster = -1`, so the "invisible world" was
+    reproducible only through a registration hook that overrode the
+    reset; the commit itself stands as hardening (order-independent
+    four-variable reset, stale `*2` pair covered). V2 recorded the
+    evidence drivers as untracked local scripts and downgraded every
+    doc claim that implied a fresh checkout could run them. V3
+    matched the selftest descriptions to the failure modes the
+    script actually injects. V5 documented the T4 rule's repeated
+    shader warning as expected (`check-shaders` stays the
+    enforcement point). V6 captured the vk side of `r_norefresh`
+    for the first time: vk's world-pass color attachment LOADs, so
+    vk's pink clear constant never reaches its display - vk keeps
+    the frozen last frame like pre-fix mtl - and mtl's pink clear
+    is recorded as a deliberate divergence that removes the
+    accumulation vk still has; the console strip measured at
+    parity on both sides.
 
 ### Intentionally not implemented (parity scope cuts)
 
