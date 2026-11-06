@@ -396,7 +396,9 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
    `QVk_WaitAndShutdownAll`, and the `s_blocklights`/`s_lerped`/
    `s_cmdverts` scratch is freed; `leaks --atExit` across 2 restarts
    dropped 1,415,936 B (incl. 4 x 320K `calloc in Mod_Reallocate`)
-   to a 27,648 B host/runtime baseline. L3 gave `RE_Draw_StretchRaw`
+   to a 27,648 B host/runtime baseline (round-18 Z1 later showed
+   this class of check missed the per-frame autorelease leak - the
+   no-leak verdicts here covered manual retain/release only). L3 gave `RE_Draw_StretchRaw`
    one raw texture per frame slot (G4 pattern; the single shared
    texture was rewritten by `replaceRegion` while older in-flight
    frames sampled it). L4 made `r_videos_unfiltered` actually pick
@@ -807,7 +809,9 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     scratch arrays, the texture-conversion and scaled-image buffers,
     the colormap) all belong to the frees-at-teardown or frees-
     per-call classes; the debug-layer run's six reload cycles kept
-    the leak checkers silent. U3 re-audited the O5 UI-sampler repeat
+    the leak checkers silent (round-18 note: they were silent for
+    the same reason L2's `leaks` run was - the pool-path leak Z1
+    found sits outside what these checkers watch). U3 re-audited the O5 UI-sampler repeat
     rule against ref_vk's sampler wiring (vk marks only `it_sky`
     clamp-to-edge, REPEAT elsewhere) and moved the pixel proof to
     jail1 `viewsize 85`: the three backtile letterbox borders
@@ -867,7 +871,11 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     bounds-safe and mirrors vk's GPU-blit mip generation; the only
     `LoadPic` divergences revalidated the M5 two-pass slot scan and
     the M6 OOM rollback - mtl fixes of defects ref_vk still has.
-    Closed clean, no commit. X3 pruned the tracked
+    Closed clean, no commit. Round-18 correction: that byte-identity
+    was misread as reassurance - identical loaders share identical
+    bugs, and the shared decoders were themselves hostile-input-
+    unsafe (Z3, Z6); parity with ref_vk is not a correctness
+    argument. X3 pruned the tracked
     `tools/bugc_repro/` kit: the compiled `repro` binary untracked
     (NOTES.md carries the build line), the four per-round
     `runrest*.sh` generations deleted (their flags live in repro.m's
@@ -891,6 +899,50 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     divergence it is. `git grep` for the old phrases silent; live
     re-check showed the pink backdrop unchanged (100.0% in the
     centre rect).
+ - Round-18 findings Z1-Z11 (brief `REVIEW_FINDINGS_18.md`; fresh
+    hostile-input audit of the load paths and the frame loop, then a
+    fix per finding, source markers `Z#:`): Z1 found the renderer
+    never established an Objective-C autorelease pool, so every
+    per-frame autoreleased Metal temporary (nextDrawable, render-pass
+    descriptors, AGX/CAMetalLayer internals - ~17 objects per frame,
+    53 574 MISSING POOLS reports in a 14 s base1 window) leaked
+    through the runtime's no-pool path; fixed with a per-frame
+    `NSAutoreleasePool` across `RE_BeginFrame`..`RE_EndFrame`
+    (`369c0d3`). This disproves the "no leak" verdicts of round-7 L2,
+    U1 and U2: those sweeps covered manual retain/release and
+    debug-layer leak messages, which stayed clean - the leak lived in
+    the unmanaged pool path. Z2 rejects images beyond the Metal
+    texture dimension limit before upload (`3a4c882`); Z3 validates
+    PCX and WAL/M32 header arithmetic before it drives allocations
+    (`85d9fa1`); Z4 makes an ERR_DROP inside a model load leave no
+    half-loaded model to corrupt the next map (`8d80565`); Z5a-Z5h
+    bound every BSP lump-table entry and the face/edge/surfedge
+    indices, visibility tables, inline-model ranges, texinfo
+    animation chain, lightmap footprints, lightstyle sample windows
+    and lightgrid counts that index them (`be42a72`..`3b8989d`,
+    lump lengths past EOF clamp per the shipped ztnmap precedent);
+    Z6 bounds-checks the MD2/DKM/flex/SP2 model loaders
+    (`18d56a0`); Z7 makes hostile maps drop to the console instead
+    of ending the process (`e2ee83c`); Z8 terminates `RE_SetSky`'s
+    local sky-name copy (`b446242`); Z9 keeps the audit's hostile
+    inputs reproducible in-tree (`e104313`, see the Verified bullet
+    above); Z11 registers the present through the command buffer,
+    the form Apple's drawables guidance prescribes (`aa378d8`).
+    Every loader change was regression-gated: all shipped SP maps in
+    baseq2, rogue, xatrix and zaero load with no new rejection and
+    identical `r_speeds` at spawn, plus screenshot pixel comparison
+    on the 7 guard maps - no shipped map newly rejects. Two audit
+    claims are reclassified: X2's byte-identity with ref_vk is
+    shared-upstream-bug identity (the shared decoders were themselves
+    unsafe, Z3/Z6), so ref_vk parity is not a correctness argument,
+    and `src/files/pcx.c`, `wal.c`, `models.c` and `ref_shared.h`
+    now diverge from upstream by design - the same defects remain in
+    ref_vk's and Yamagi's copies, untouched here. Coverage stays
+    bounded honestly: untested were window minimise/resize during a
+    map load, frame-time stability and the vsync-60 leak rate; found
+    sound were the frame state machine, the drawable/command rings,
+    struct layouts, Metal validation cleanliness and TSan-silent
+    frame paths.
 
 ### Intentionally not implemented (parity scope cuts)
 
@@ -902,8 +954,11 @@ dynamic libraries are out of scope — matching what `ref_vk` skips.
 
 ```
 src/mtl/        Metal 4 renderer (Objective-C; the MTL4 SDK is ObjC)
-src/files/      model/texture/pvs file loading (shared with ref_vk)
-src/common/     shared helpers + the host ABI headers (ref_api.h, ...)
+src/files/      model/texture/pvs file loading (upstream code shared
+                with ref_vk; pcx.c, wal.c and models.c now diverge
+                from upstream - Z3/Z6 loader hardening lives here)
+src/common/     shared helpers + the host ABI headers (ref_api.h,
+                ...; ref_shared.h carries the Z3 validation helper)
 src/backends/   platform allocator backend
 src/constants/  lookup tables (anorms, warp sin)
 shaders/        MSL 3.2 sources (ported from ref_vk's GLSL; W2+)
