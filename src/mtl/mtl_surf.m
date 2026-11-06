@@ -1314,7 +1314,14 @@ void MTL_CreateSurfaceLightmap (msurface_t *surf)
 		LM_InitBlock();
 		if ( !LM_AllocBlock( smax, tmax, &surf->light_s, &surf->light_t ) )
 		{
-			ri.Sys_Error( ERR_FATAL, "%s: Consecutive calls to LM_AllocBlock(%d,%d) failed\n", __func__, smax, tmax );
+			/* Z7: Mod_LoadFaces() already rejects faces whose
+			   lightmap does not fit a 128x128 block before this is
+			   ever reached, so getting here means an internal sizing
+			   mistake, not just a bad file.  Either way a model load
+			   must drop to the console with a map error, not take
+			   the process down with ERR_FATAL (audit F17, input
+			   b_extents). */
+			ri.Sys_Error( ERR_DROP, "%s: Consecutive calls to LM_AllocBlock(%d,%d) failed\n", __func__, smax, tmax );
 		}
 	}
 

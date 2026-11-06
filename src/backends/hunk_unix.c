@@ -35,6 +35,9 @@
 #include <unistd.h>
 
 #include "../common/header/common.h"
+/* Z7: Hunk_Alloc() now raises ERR_DROP through the renderer import
+   table; ref_api.h declares ri. */
+#include "../common/header/ref_api.h"
 
 #if defined(__FreeBSD__) || defined(__OpenBSD__)
  #include <machine/param.h>
@@ -107,9 +110,25 @@ Hunk_Alloc(int size)
 	/* round to cacheline */
 	size = (size + 31) & ~31;
 
+	/* Z7: every Hunk_Alloc() size in this build comes from the lump
+	   and polygon counts of the map file currently being loaded, so
+	   a bogus (negative or overflowing) size is bad file data, not
+	   a broken process.  Letting a negative size through would also
+	   move the cursor backwards and hand out already-used memory. */
+	if (size < 0)
+	{
+		ri.Sys_Error(ERR_DROP, "%s: invalid allocation size",
+				__func__);
+	}
+
 	if (curhunksize + size > maxhunksize)
 	{
-		Sys_Error("%s: overflow %d > %d",
+		/* Z7: the reservation comes from the (untrusted) lump sizes,
+		   an undersized hunk is a bad file: drop the level with a
+		   console error instead of ERR_FATAL.  Hunk_Begin() has
+		   already recorded the full mapping, so the ERR_DROP unwind
+		   can Hunk_Free() at any point of the load (see Z4). */
+		ri.Sys_Error(ERR_DROP, "%s: overflow %zu > %zu",
 			__func__, curhunksize + size, maxhunksize);
 	}
 

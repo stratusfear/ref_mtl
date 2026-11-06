@@ -310,35 +310,58 @@ CalcSurfaceExtents(model_t *loadmodel, msurface_t *s)
 	}
 }
 
+/*
+Z7: this must fail closed.  The returned size is all the later
+Hunk_Alloc() calls get for the texinfo, face and polygon data, and a
+Hunk_Alloc() overflow used to be an ERR_FATAL that ended the process
+(b_warp1000).  Returning 0 instead removed the whole texinfo+faces
+section from the reservation, so the overflow fired long before the
+"will error out when loading" code was reached: Mod_LoadTexinfo()
+allocates from that missing section even when only the faces lump is
+malformed.  Every mismatch a file can produce is therefore dropped
+here as a map error.  None of these conditions can occur in loaded
+shipped content: face and texinfo lumps have fixed record sizes, face
+texinfo indices must reference the texinfo lump, every face needs at
+least 3 edges, and warped faces are cut up by MTL_SubdivideSurface()
+through SubdividePolygon() (mtl_warp.m), which keeps each split half
+in float front[64]/back[64] arrays and itself rejects polygons with
+more than 60 edges - so a warped face with more than 60 edges never
+loaded in the first place.
+*/
 static int
-calcTexinfoAndFacesSize(const lump_t *fl, const byte *mod_base, const lump_t *tl)
+calcTexinfoAndFacesSize(const char *name, const lump_t *fl, const byte *mod_base, const lump_t *tl)
 {
 	dface_t* face_in = (void *)(mod_base + fl->fileofs);
 	texinfo_t* texinfo_in = (void *)(mod_base + tl->fileofs);
 
 	if (fl->filelen % sizeof(*face_in) || tl->filelen % sizeof(*texinfo_in))
 	{
-		// will error out when actually loading it
+		ri.Sys_Error(ERR_DROP, "%s: %s faces lump length %i is not a "
+				"multiple of %i or texinfo lump length %i is not a "
+				"multiple of %i",
+				__func__, name, fl->filelen, (int)sizeof(*face_in),
+				tl->filelen, (int)sizeof(*texinfo_in));
 		return 0;
 	}
 
-	int ret = 0;
+	long long ret = 0;
 
 	int face_count = fl->filelen / sizeof(*face_in);
 	int texinfo_count = tl->filelen / sizeof(*texinfo_in);
 
 	{
 		// out = Hunk_Alloc(count * sizeof(*out));
-		int baseSize = face_count * sizeof(msurface_t);
-		baseSize = (baseSize + 31) & ~31;
+		long long baseSize = (long long)face_count * sizeof(msurface_t);
+		baseSize = (baseSize + 31) & ~31LL;
 		ret += baseSize;
 
-		int ti_size = texinfo_count * sizeof(mtexinfo_t);
-		ti_size = (ti_size + 31) & ~31;
+		long long ti_size = (long long)texinfo_count * sizeof(mtexinfo_t);
+		ti_size = (ti_size + 31) & ~31LL;
 		ret += ti_size;
 	}
 
 	int numWarpFaces = 0;
+	long long warpSize = 0;
 
 	for (int surfnum = 0; surfnum < face_count; surfnum++, face_in++)
 	{
@@ -346,7 +369,20 @@ calcTexinfoAndFacesSize(const lump_t *fl, const byte *mod_base, const lump_t *tl
 		int ti = LittleShort(face_in->texinfo);
 		if ((ti < 0) || (ti >= texinfo_count))
 		{
-			return 0; // will error out
+			ri.Sys_Error(ERR_DROP, "%s: %s face %i references texinfo %i "
+					"outside the %i texinfos of the model",
+					__func__, name, surfnum, ti, texinfo_count);
+			continue;
+		}
+		/* Z7: the loader below rejects faces with fewer than 3 edges,
+		   but a negative numedges here would shrink the polygon sizes
+		   computed below and undersize the hunk first, so apply the
+		   same bound while sizing. */
+		if (numverts < 3)
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s face %i has %i edges",
+					__func__, name, surfnum, numverts);
+			continue;
 		}
 		int texFlags = LittleLong(texinfo_in[ti].flags);
 
@@ -354,7 +390,13 @@ calcTexinfoAndFacesSize(const lump_t *fl, const byte *mod_base, const lump_t *tl
 		if (texFlags & SURF_WARP)
 		{
 			if (numverts > 60)
-				return 0; // will error out in R_SubdividePolygon()
+			{
+				ri.Sys_Error(ERR_DROP, "%s: %s face %i has a warped "
+						"texture and %i edges, more than the 60 the "
+						"SubdividePolygon() warp split can handle",
+						__func__, name, surfnum, numverts);
+				continue;
+			}
 
 			// MTL_SubdivideSurface(out, loadmodel); /* cut up polygon for warps */
 			// for each (pot. recursive) call to R_SubdividePolygon():
@@ -371,8 +413,8 @@ calcTexinfoAndFacesSize(const lump_t *fl, const byte *mod_base, const lump_t *tl
 		{
 			// MTL_BuildPolygonFromSurface(out);
 			// => poly = Hunk_Alloc(sizeof(mtlpoly_t) + (numverts - 4) * VERTEXSIZE*sizeof(float));
-			int polySize = sizeof(mtlpoly_t) + (numverts - 4) * VERTEXSIZE*sizeof(float);
-			polySize = (polySize + 31) & ~31;
+			long long polySize = sizeof(mtlpoly_t) + (long long)(numverts - 4) * VERTEXSIZE*sizeof(float);
+			polySize = (polySize + 31) & ~31LL;
 			ret += polySize;
 		}
 	}
@@ -380,10 +422,18 @@ calcTexinfoAndFacesSize(const lump_t *fl, const byte *mod_base, const lump_t *tl
 	// yeah, this is a bit hacky, but it looks like for each warped face
 	// 256-55000 bytes are allocated (usually on the lower end),
 	// so just assume 48k per face to be safe
-	ret += numWarpFaces * 49152;
-	ret += 5000000; // and 5MB extra just in case
+	warpSize += (long long)numWarpFaces * 49152;
+	warpSize += 5000000; // and 5MB extra just in case
+	ret += warpSize;
 
-	return ret;
+	/* Z7: a hostile file can push the total over INT_MAX through the
+	   per-face polygon sums or the warp estimate alone; clamp instead
+	   of overflowing int, the caller bounds the grand total and drops
+	   anything this large as a file error. */
+	if (ret > 0x7FFFFFF0LL)
+		return 0x7FFFFFF0;
+
+	return (int)ret;
 }
 
 // Extension to support lightmaps that aren't tied to texture scale.
@@ -830,11 +880,19 @@ static int calcLumpHunkSize(const lump_t *l, int inSize, int outSize)
 	}
 
 	int count = l->filelen / inSize;
-	int size = count * outSize;
+	/* Z7: a file can declare a small input record and a huge lump so
+	   that count * outSize overflows int; clamp instead of running
+	   into signed overflow, Mod_LoadBrushModel() bounds the total. */
+	long long size = (long long)count * outSize;
+
+	if (size > 0x7FFFFFF0LL)
+	{
+		return 0x7FFFFFF0;
+	}
 
 	// round to cacheline, like Hunk_Alloc() does
-	size = (size + 31) & ~31;
-	return size;
+	size = (size + 31) & ~31LL;
+	return (int)size;
 }
 
 /* Need to clean */
@@ -1150,7 +1208,7 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 	bspx_header = Mod_LoadBSPX(modfilelen, (byte*)header);
 
 	// calculate the needed hunksize from the lumps
-	int hunkSize = 0;
+	long long hunkSize = 0;
 	hunkSize += calcLumpHunkSize(&header->lumps[LUMP_VERTEXES], sizeof(dvertex_t), sizeof(mvertex_t));
 	hunkSize += calcLumpHunkSize(&header->lumps[LUMP_EDGES], sizeof(dedge_t), sizeof(medge_t));
 	hunkSize += sizeof(medge_t) + 31; // for count+1 in Mod_LoadEdges()
@@ -1159,7 +1217,7 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 		hunkSize += calcLumpHunkSize(&header->lumps[LUMP_SURFEDGES], sizeof(int), sizeof(int));
 	hunkSize += calcLumpHunkSize(&header->lumps[LUMP_LIGHTING], 1, 1);
 	hunkSize += calcLumpHunkSize(&header->lumps[LUMP_PLANES], sizeof(dplane_t), sizeof(cplane_t)*2);
-	hunkSize += calcTexinfoAndFacesSize(&header->lumps[LUMP_FACES], mod_base, &header->lumps[LUMP_TEXINFO]);
+	hunkSize += calcTexinfoAndFacesSize(mod->name, &header->lumps[LUMP_FACES], mod_base, &header->lumps[LUMP_TEXINFO]);
 	hunkSize += calcLumpHunkSize(&header->lumps[LUMP_LEAFFACES], sizeof(short), sizeof(msurface_t *)); // yes, out is indeed a pointer!
 	hunkSize += calcLumpHunkSize(&header->lumps[LUMP_VISIBILITY], 1, 1);
 	hunkSize += calcLumpHunkSize(&header->lumps[LUMP_LEAFS], sizeof(dleaf_t), sizeof(mleaf_t));
@@ -1172,7 +1230,20 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 		hunkSize += lightgridsize * 4;
 	}
 
-	mod->extradata = Hunk_Begin(hunkSize);
+	/* Z7: all sizes above come from a file that can claim huge
+	   lumps; the individual sizes are computed in 64 bit now, so
+	   bound the total before it reaches Hunk_Begin() and the int it
+	   takes.  A map needing multiple gigabytes of hunk is a hostile
+	   file, and a hostile file must drop with a console error, not
+	   make mmap() fail with a fatal one. */
+	if (hunkSize > 0x7FFFFFF0LL)
+	{
+		ri.Sys_Error(ERR_DROP, "%s: %s lumps would need %lld bytes of "
+				"hunk memory, more than this build can map",
+				__func__, mod->name, hunkSize);
+	}
+
+	mod->extradata = Hunk_Begin((int)hunkSize);
 	mod->type = mod_brush;
 
 	if (bspx_header)
