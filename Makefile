@@ -278,7 +278,10 @@ check-shaders:
 # file is the supported input - so this branch warns and succeeds.
 # The gate is still protected: fix_verify.sh runs check-shaders
 # first, and check-shaders has no such fallback, so a stale file
-# fails there.
+# fails there. V15B5: the warning-on-success branch deliberately
+# does not touch the target, so make re-runs the rule and repeats
+# the warning on every subsequent build - expected, not a bug to
+# chase.
 SRC_MSL := $(wildcard shaders/*.msl)
 
 src/files/mtl_shaders.c: $(SRC_MSL) shaders/gen_msl.sh
