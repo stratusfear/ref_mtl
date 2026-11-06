@@ -1,6 +1,8 @@
 #!/bin/zsh
 # fix_verify_selftest.sh - T3: prove the S1 detection logic in
-# fix_verify.sh actually fires.
+# fix_verify.sh actually fires. Round-19 (AB2) extends the same idea to
+# the two content legs: six injected faults (hang / died-early /
+# crashed-after-banner for each leg) plus the absent-data skip path.
 #
 # S1 rewrote fix_verify.sh to catch five failure modes that the old
 # version passed silently: a fallback renderer standing in for
@@ -18,10 +20,16 @@
 # smoke on the real host must still print fix_verify OK, so the
 # negative runs cannot be passing on a broken script.
 #
-# Cost: five injected runs at the smoke window length plus one real
-# run, ~3 min total including the incremental rebuilds fix_verify.sh
-# does per run. Not part of the per-finding gate; run it when
-# fix_verify.sh itself changes.
+# The content-leg stand-in (legs.sh) branches on the leg's argv: a run
+# with FIX_VERIFY_FAULT=<fault>-<leg> faults only that leg and keeps
+# every other leg healthy, so each injected fault exercises exactly one
+# new check. Timing knobs (FIX_VERIFY_X_WAIT, FIX_VERIFY_CIN_WAIT) keep
+# the injected waits short; the real gate uses the defaults (25/90).
+# FIX_VERIFY_DATADIR pointing at an empty dir drives the skip path.
+#
+# Cost: 5 + 6 injected runs plus one skip run at shortened windows,
+# ~4 min, plus the ~1 min real-host control. Not part of the
+# per-finding gate; run it when fix_verify.sh itself changes.
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERIFY="$ROOT/ref_mtl/tools/fix_verify.sh"
@@ -81,6 +89,68 @@ echo "Assertion failure in R_ResolveLights"
 sleep 25
 EOF
 
+# Content-leg stand-in (round-19): one script, three leg behaviours
+# selected by argv, fault selection by FIX_VERIFY_FAULT. Healthy legs
+# must satisfy every check so an injected fault elsewhere stays the
+# only reason to fail.
+cat > "$SELF/legs.sh" <<'EOF'
+cfgdir=""
+prev=""
+for a in "$@"; do
+	[ "$prev" = "-cfgdir" ] && cfgdir="$a"
+	prev="$a"
+done
+banner="Successfully initialized Metal 4 refresher!"
+case "$*" in
+	*idlog.cin*)
+		case "$FIX_VERIFY_FAULT" in
+			hang-cin)
+				echo "$banner"; sleep 120 ;;
+			early-cin)
+				echo "$banner"; sleep 4 ;;
+			crash-cin)
+				echo "$banner"
+				mkdir -p "$HOME/$cfgdir/baseq2"
+				sleep 3
+				echo "Map: mintro" >> "$HOME/$cfgdir/baseq2/qconsole.log"
+				trap '' TERM
+				sleep 8
+				kill -SEGV $$ ;;
+			*)
+				echo "$banner"
+				mkdir -p "$HOME/$cfgdir/baseq2"
+				sleep 3
+				echo "Map: mintro" >> "$HOME/$cfgdir/baseq2/qconsole.log"
+				sleep 120 ;;
+		esac ;;
+	*xatrix*)
+		case "$FIX_VERIFY_FAULT" in
+			hang-xatrix)
+				echo "$banner"; sleep 120 ;;
+			early-xatrix)
+				echo "$banner"; sleep 2 ;;
+			crash-xatrix)
+				echo "$banner"
+				mkdir -p "$HOME/$cfgdir/xatrix"
+				echo "Map: industry" >> "$HOME/$cfgdir/xatrix/qconsole.log"
+				trap '' TERM
+				sleep 9
+				kill -SEGV $$ ;;
+			*)
+				echo "$banner"
+				mkdir -p "$HOME/$cfgdir/xatrix"
+				echo "Map: industry" >> "$HOME/$cfgdir/xatrix/qconsole.log"
+				sleep 120 ;;
+		esac ;;
+	*)
+		# main smoke leg: healthy by default; the five S1 faults keep
+		# their own dedicated stand-ins and never reach this script.
+		echo "$banner"
+		echo "Map: jail1"
+		sleep 30 ;;
+esac
+EOF
+
 chmod +x "$SELF"/*.sh
 
 fails=0
@@ -107,14 +177,67 @@ expect_fail() {
 	echo "SELFTEST ok[$name]: caught by \"$want\""
 }
 
+# Content-fault runs: shortened fault-detection windows; the stand-in's
+# healthy legs write their chain banners early by design, which the
+# floor-free cinematic checks accept.
+cfault() {
+	local name="$1" fault="$2" want="$3"
+	local out rc
+	rc=0
+	out=$(FIX_VERIFY_GAME="$SELF/legs.sh" FIX_VERIFY_FAULT="$fault" \
+	      FIX_VERIFY_X_WAIT=8 FIX_VERIFY_CIN_WAIT=15 \
+	      sh "$VERIFY" 2>&1) || rc=$?
+	if [ $rc -eq 0 ]; then
+		echo "SELFTEST FAIL[$name]: fix_verify.sh passed a run with the fault injected"
+		fails=$((fails + 1))
+		return
+	fi
+	if ! echo "$out" | grep -qF "$want"; then
+		echo "SELFTEST FAIL[$name]: exited $rc but not with '$want':"
+		echo "$out" | grep -F FAIL | head -3
+		fails=$((fails + 1))
+		return
+	fi
+	echo "SELFTEST ok[$name]: caught by \"$want\""
+}
+
 expect_fail fallback  "$SELF/fallback.sh" "FAIL: ref_mtl never initialized (fallback renderer?)" n
 expect_fail nomap     "$SELF/nomap.sh"    "FAIL: jail1 never loaded (no map banner)"              n
 expect_fail died      "$SELF/died.sh"     "FAIL: game process died within the smoke window"       n
 expect_fail crash     "$SELF/crash.sh"    "FAIL: game exited under its own power (status 139)"    n
 expect_fail diag      "$SELF/diag.sh"     "FAIL: errors in game log"                              y
 
+cfault hang-xatrix  hang-xatrix  "FAIL: expansion leg never printed 'Map: industry' within 8s"
+cfault early-xatrix early-xatrix "FAIL: expansion leg process died before industry loaded"
+cfault crash-xatrix crash-xatrix "FAIL: expansion leg exited under its own power (status 139)"
+cfault hang-cin     hang-cin     "FAIL: cinematic leg: nextdemo chain never completed within 15s"
+cfault early-cin    early-cin    "FAIL: cinematic leg process died before the demo chain finished"
+cfault crash-cin    crash-cin    "FAIL: cinematic leg exited under its own power (status 139)"
+
+# Absent-data skip: with no expansion or cinematic files at the
+# DATADIR, both legs must NOTICE-skip and the gate must stay green -
+# the healthy stand-in carries the main leg.
+mkdir -p "$SELF/nodata/baseq2"
+skip_out="$SELF/skip.log"
+if FIX_VERIFY_GAME="$SELF/legs.sh" FIX_VERIFY_DATADIR="$SELF/nodata" \
+   sh "$VERIFY" >"$skip_out" 2>&1; then
+	if grep -q "skipping expansion leg" "$skip_out" && \
+	   grep -q "skipping cinematic leg" "$skip_out"; then
+		echo "SELFTEST ok[skip]: both content legs NOTICE-skipped, gate green"
+	else
+		echo "SELFTEST FAIL[skip]: green run but the NOTICE skip lines are missing:"
+		grep -E "NOTICE|FAIL" "$skip_out" | head -5
+		fails=$((fails + 1))
+	fi
+else
+	echo "SELFTEST FAIL[skip]: absent-data run should be green, got:"
+	grep -F FAIL "$skip_out" | head -3
+	fails=$((fails + 1))
+fi
+
 # Positive control: with no injection the same script must still go
-# green, otherwise the five passes above prove nothing.
+# green on the real host (all three legs for real), otherwise the
+# negative runs prove nothing.
 if sh "$VERIFY" >"$SELF/positive.log" 2>&1; then
 	echo "SELFTEST ok[control]: real smoke still prints \"$(grep 'fix_verify OK' "$SELF/positive.log")\""
 else

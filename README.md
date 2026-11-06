@@ -148,7 +148,17 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   `tools/bugc_repro/NOTES.md` for the full bisect matrix.
 - Verified: paired fresh captures of `ref_mtl` and `ref_vk`/`ref_gl1`
   on base1 and jail1; `WERR=1 make` builds clean with `-Werror`;
-  `tools/fix_verify.sh` runs build + deploy + smoke as one gate.
+  `tools/fix_verify.sh` runs build + deploy + smoke as one gate;
+  since round 19 AB2 it has three asserting legs - the baseq2 jail1
+  smoke, an expansion leg (`+set game xatrix +map industry`) and a
+  cinematic leg (live `idlog.cin` play-attempt through
+  `SCR_PlayCinematic`/`RE_Cinematic` with `gamemap` chaining
+  asserted) - the two content legs auto-skip with a NOTICE when the
+  data dir lacks them. One content gap is left open on purpose:
+  every `.cin` on this machine is a Mac App Store "PACK"-container
+  conversion (a structural frame walk breaks in all of them), so
+  the leg asserts the engine's cinematic path but no video
+  decode-fidelity; see the round-19 note in `REVIEW_EXTERNAL.md`.
 - Verified: hostile-input tooling under `tools/hostile/` (not part
   of the `fix_verify.sh` gate): `mkbsp.py` and `mkimg.py` rebuild
   the external audit's crafted BSP/skin/texture/model inputs from
@@ -801,9 +811,13 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     re-ran the runtime torture under the debug layer: jail1, five
     `vid_restart`s 5 s apart, quit 2.5 s into the last reload - six
     clean RE_Shutdown/RE_Init cycles, zero "released while command
-    buffer" / "still in flight" / leak lines (no cinematic content
-    is installed on this machine, so the cinematic variant stays
-    audit-coverage only). U2 re-swept host memory for everything the
+    buffer" / "still in flight" / leak lines (round-19 AB2
+    correction: "no cinematic content is installed on this machine"
+    was a gate-layout fact, not an install fact - the bundle datadir
+    does carry `baseq2/video/*.cin`; the gate now drives one live
+    through the engine cinematic path.
+    At round 16 the cinematic teardown variant stayed audit-coverage
+    only). U2 re-swept host memory for everything the
     round-7 L2 teardown never heard of: the eleven dynamic heap
     objects added since (`mod_known` growth, the lerp/cmd/lightmap
     scratch arrays, the texture-conversion and scaled-image buffers,
@@ -943,6 +957,49 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     sound were the frame state machine, the drawable/command rings,
     struct layouts, Metal validation cleanliness and TSan-silent
     frame paths.
+  - Round-19 findings AB1-AB3 (brief `REVIEW_FINDINGS_19.md`; a
+    verification round of round 18 - one missed loader plus report
+    bookkeeping plus one skipped measurement; source markers `AB#:`):
+    AB1 hardened `Mod_LoadMDL`, the one alias loader Z6 never
+    touched - six defects (input walk unbounded by the file,
+    zero/negative skin dimensions, uncapped `num_skins`/`num_tris`/
+    `num_frames`, wrapping `int` layout arithmetic, unchecked
+    triangle vertex indices, and the missing `Mod_CheckAliasHeader`
+    call) fixed in one coherent commit (`9118d1c`); the reviewer's
+    484-byte IDPO-over-MD2 file is an input- and heap-layout-
+    dependent out-of-bounds read, not a deterministic crash, and is
+    now rejected with a reason line. The AB1b side question (do the
+    MD2/DKM/flex loaders bound triangle index *values*, not just
+    section extents?) resolved as cite-and-drop: the values are
+    bounded where the Z6 patches read them. AB2 expanded
+    `tools/fix_verify.sh` from one baseq2 smoke to three asserting
+    legs - baseq2 jail1, `game xatrix`/`industry`, and a live
+    cinematic play-attempt with `gamemap` chaining - each content
+    leg NOTICE-skipping when its data is absent, with six injected
+    fault cases in `fix_verify_selftest.sh`; the cinematic decode-
+    fidelity half stays open on purpose because every `.cin` on
+    this machine is a Mac App Store "PACK"-container conversion no
+    Q2 decoder can play (structural frame walk breaks in all of
+    them). AB3 closed round 18's coverage caveats: six minimize/
+    resize-during-map-load rounds verified by banner counts, and
+    the audit's 20-minute lifetime run repeated on the fixed
+    build: 958 s, 335 MB start to 379 MB end, device-side
+    allocations flat at 250 MB; slopes +2.4 MB/min idle, +116 MB
+    one-time across map-change stress (the first `waste1`/`lab`
+    loads raise the working set by ~55 MB each, later loads are
+    flat), +0.1 MB/min over the 10-minute motion phase, 0.00 over
+    menu idle; the per-`vid_restart` residual is +5/+5/-1/+7/+3
+    MB and levels off rather than accumulating. The remaining
+    MISSING-POOLS reports were attributed at the autorelease site
+    with an `objc_autoreleaseNoPool` breakpoint: the hot pool
+    pointers map to five GCD-managed threads created inside Apple
+    frameworks (`com.Metal.CompletionQueueDispatch`, the
+    `CA::Context` and CAMachPort-reply queues, the SDL audio
+    AQServer thread) whose stacks at the autorelease pass only
+    through Metal/QuartzCore/FramePacing internals - the only
+    renderer frame anywhere below them is the ordinary
+    `RE_InitContext` command-queue creation at boot; no renderer
+    thread appears at any site.
 
 ### Intentionally not implemented (parity scope cuts)
 
