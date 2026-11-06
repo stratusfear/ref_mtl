@@ -152,18 +152,18 @@ def main():
         return h
 
     def mdl(num_skins=1, sw=16, sh=16, xyz=3, tris=1, frames=1,
-            verts=None, pad=0):
+            verts=None, pad=0, skin_type=0, frame_type=0):
         if verts is None:
             verts = [(0, 1, 2)] * tris
         body = b""
         for i in range(max(num_skins, 0)):
-            body += struct.pack("<i", 0) + bytes(max(sw * sh, 0))
+            body += struct.pack("<i", skin_type) + bytes(max(sw * sh, 0))
         for i in range(xyz):
             body += struct.pack("<3i", 2 * i, 2 * i + 1, 0)  # onseam, s, t
         for i in range(max(tris, 0)):
             body += struct.pack("<4i", 1, *verts[i])         # facesfront + 3 vert
         for f in range(max(frames, 0)):
-            body += (struct.pack("<i", 0) + b"\0" * 4 + b"\0" * 4 +
+            body += (struct.pack("<i", frame_type) + b"\0" * 4 + b"\0" * 4 +
                      b"frame".ljust(16, b"\0") + b"\0" * (4 * xyz))
         return mdl_hdr(num_skins, sw, sh, xyz, tris, frames) + body + b"\0" * pad
 
@@ -182,6 +182,11 @@ def main():
     # a triangle vertex index beyond num_xyz (old code reads texcoords[9]
     # and stores the index through a short for the renderer to replay)
     out["staging/mdl_vindex.md2"] = mdl(1, 16, 16, 3, 1, 1, verts=[(0, 1, 9)])
+    # AC1 leak probe only: the same vertex-index rejection, but with a
+    # 480x480 skin so the leaked post-Hunk_Begin mapping is ~230 kB and
+    # visible to vmmap region accounting
+    out["staging/mdl_leakmd.md2"] = mdl(1, 480, 480, 3, 1, 1,
+                                        verts=[(0, 1, 9)])
     # 20 skins of 480x480 claimed but only 1.4 kB of pixels present:
     # ofs_end fits the file (the old check passes) but the skin walk
     # leaves the buffer on the second skin
@@ -189,6 +194,30 @@ def main():
         struct.pack("<i", 0) + b"\0" * 1432
     # control: a well-formed 1-skin MDL that must load
     out["staging/c_mdl.md2"] = mdl(1, 16, 16, 3, 1, 1)
+    # AC1: the two older post-Hunk_Begin rejections, one input each:
+    # a group skin (type != 0) and a group frame (type != 0)
+    out["staging/mdl_skintype.md2"] = mdl(1, 16, 16, 3, 1, 1, skin_type=1)
+    out["staging/mdl_frametype.md2"] = mdl(1, 16, 16, 3, 1, 1, frame_type=1)
+
+    # AC1: flex post-header block rejections, rebuilt from the same
+    # v_blast sections as the control, one block header broken each:
+    # the skin block version and the st coord block size
+    def fm_with(name, version=None, size_delta=0):
+        d = bytearray(fmb)
+        i = 0
+        while i < len(d):
+            blen = struct.unpack_from("<i", d, i + 36)[0]
+            if d[i:i + 32].split(b"\0")[0].decode("latin1") == name:
+                if version is not None:
+                    struct.pack_into("<i", d, i + 32, version)
+                if size_delta:
+                    struct.pack_into("<i", d, i + 36, blen + size_delta)
+                break
+            i += 40 + blen
+        return bytes(d)
+
+    out["staging/fm_badskn.fm"] = fm_with("skin", version=7)
+    out["staging/fm_badst.fm"] = fm_with("st coord", size_delta=4)
 
     # DKM: valid header geometry with a frame-section product wrapping to 0 (Z6)
     dkm = struct.pack("<2i3f15i", 0x444D4B44, 1, 0.0, 0.0, 0.0,

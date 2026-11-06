@@ -119,6 +119,12 @@ CASES = [
     ("m_mdlframes600",    ["+map", "base1"], "too many frames", None),
     ("m_mdlvindex",       ["+map", "base1"], "vertex index 9", None),
     ("m_mdlextent",       ["+map", "base1"], "is truncated", None),
+    # AC1: the rejections that run after Hunk_Begin (the leak exits):
+    # MDL group skin / group frame, flex post-header block checks
+    ("m_mdlskintype",     ["+map", "base1"], "unsupported skin type 1", None),
+    ("m_mdlframetype",    ["+map", "base1"], "unsupported frame type 1", None),
+    ("f_badskn",          ["+map", "base1"], "Invalid skin version 7", None),
+    ("f_badst",           ["+map", "base1"], "Invalid st coord size", None),
     # Z6 controls: well-formed replacements must load
     ("c_md2",            ["+map", "base1"], None, "Failed to load"),
     ("c_flex",           ["+map", "base1"], None, "Failed to load"),
@@ -146,6 +152,10 @@ STAGE = {
     "m_mdlframes600":  (MD2, "staging/mdl_frames.md2"),
     "m_mdlvindex":     (MD2, "staging/mdl_vindex.md2"),
     "m_mdlextent":     (MD2, "staging/mdl_extent.md2"),
+    "m_mdlskintype":   (MD2, "staging/mdl_skintype.md2"),
+    "m_mdlframetype":  (MD2, "staging/mdl_frametype.md2"),
+    "f_badskn":        (MD2, "staging/fm_badskn.fm"),
+    "f_badst":         (MD2, "staging/fm_badst.fm"),
     "c_md2":      (MD2, "staging/c_md2.md2"),
     "c_flex":     (MD2, "staging/c_flex.fm"),
     "c_sp2":      (SP2, "staging/c_sp2.sp2"),

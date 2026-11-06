@@ -540,7 +540,7 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 			{
 				Com_Printf("%s: model %s has unsupported skin type %d",
 						__func__, mod_name, skin_type);
-				return NULL;
+				goto fail; /* AC1 */
 			}
 
 			/* skip 8bit image */
@@ -595,7 +595,7 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 						Com_Printf("%s: model %s has triangle "
 								"vertex index %d",
 								__func__, mod_name, vertex);
-						return NULL;
+						goto fail; /* AC1 */
 					}
 
 					pouttri[i].index_xyz[j] = vertex;
@@ -680,7 +680,7 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 			{
 				Com_Printf("%s: model %s has unsupported frame type %d",
 						__func__, mod_name, frame_type);
-				return NULL;
+				goto fail; /* AC1 */
 			}
 			/* skip bboxmin, bouding box min */
 			curr_pos += sizeof(dtrivertx_t);
@@ -704,8 +704,18 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 	maxs[0] = 32;
 	maxs[1] = 32;
 	maxs[2] = 32;
-
 	return extradata;
+
+	/* AC1: the three exits above that jump here all run after
+	   Hunk_Begin(); the half-built hunk mapping has to go back or
+	   every rejected load orphans one: Mod_ForName stores the NULL,
+	   and on the retry its Z4 sentinel path frees the slot through
+	   Mod_Free's !extradata branch, which never sees the pointer.
+	   The mapping header records the full reservation (Z4), so
+	   Hunk_Free() is correct at any point of the load. */
+fail:
+	Hunk_Free(extradata);
+	return NULL;
 }
 
 /*
@@ -932,6 +942,9 @@ Mod_LoadMD2 (const char *mod_name, const void *buffer, int modfilelen,
 		}
 	}
 
+	/* AC1: audit: this loader has no return-NULL exit between
+	   Hunk_Begin() and its success return, so there is no
+	   post-allocation path to free here. */
 	extradata = Hunk_Begin(modfilelen);
 	pheader = Hunk_Alloc(ofs_end);
 
@@ -1138,7 +1151,7 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 			{
 				Com_Printf("%s: %s has broken header.",
 					__func__, mod_name);
-				return NULL;
+				goto fail; /* AC1 */
 			}
 			else if (Q_strncasecmp(blockname, "skin", sizeof(blockname)) == 0)
 			{
@@ -1146,13 +1159,13 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 				{
 					Com_Printf("%s: Invalid %s version %d",
 						__func__, blockname, version);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 				if (size != (pheader->num_skins * MAX_SKINNAME))
 				{
 					Com_Printf("%s: Invalid %s size",
 						__func__, blockname);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 				memcpy((char*) pheader + pheader->ofs_skins, src, size);
 			}
@@ -1162,13 +1175,13 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 				{
 					Com_Printf("%s: Invalid %s version %d",
 						__func__, blockname, version);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 				if (size != (pheader->num_st * sizeof(dstvert_t)))
 				{
 					Com_Printf("%s: Invalid %s size",
 						__func__, blockname);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 
 				Mod_LoadSTvertList (pheader, (dstvert_t *)src);
@@ -1179,13 +1192,13 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 				{
 					Com_Printf("%s: Invalid %s version %d",
 						__func__, blockname, version);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 				if (size != (pheader->num_tris * sizeof(dtriangle_t)))
 				{
 					Com_Printf("%s: Invalid %s size",
 						__func__, blockname);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 
 				Mod_LoadDTriangleList (pheader, (dtriangle_t *) src);
@@ -1198,13 +1211,13 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 				{
 					Com_Printf("%s: Invalid %s version %d",
 						__func__, blockname, version);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 				if (size != (pheader->num_frames * pheader->framesize))
 				{
 					Com_Printf("%s: Invalid %s size",
 						__func__, blockname);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 
 				Mod_LoadFrames (pheader, (byte *)src, translate);
@@ -1215,13 +1228,13 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 				{
 					Com_Printf("%s: Invalid %s version %d",
 						__func__, blockname, version);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 				if (size != (pheader->num_glcmds * sizeof(int)))
 				{
 					Com_Printf("%s: Invalid %s size",
 						__func__, blockname);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 
 				Mod_LoadCmdList (mod_name, pheader, (int *)src);
@@ -1236,14 +1249,14 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 				{
 					Com_Printf("%s: Invalid %s version %d",
 						__func__, blockname, version);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 				/* 516 mesh node size */
 				if ((long long)size != ((long long)num_mesh_nodes * 516))
 				{
 					Com_Printf("%s: Invalid %s size",
 						__func__, blockname);
-					return NULL;
+					goto fail; /* AC1 */
 				}
 
 				if (num_mesh_nodes > 0)
@@ -1279,7 +1292,7 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 			{
 				Com_Printf("%s: %s Unknown block %s\n",
 					__func__, mod_name, blockname);
-				return NULL;
+				goto fail; /* AC1 */
 			}
 		}
 		modfilelen -= size;
@@ -1309,8 +1322,17 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 	maxs[0] = 32;
 	maxs[1] = 32;
 	maxs[2] = 32;
-
 	return extradata;
+
+	/* AC1: every rejection in the block loop above runs after
+	   Hunk_Begin(); the half-built model hunk has to go back or
+	   each rejected .fm orphans its mapping (the Z4 retry path
+	   takes Mod_Free's !extradata branch, which never sees the
+	   pointer).  The header records the full reservation (Z4), so
+	   Hunk_Free() is correct at any point of the load. */
+fail:
+	Hunk_Free(extradata);
+	return NULL;
 }
 
 static void *
@@ -1447,6 +1469,9 @@ Mod_LoadDKMModel(const char *mod_name, const void *buffer, int modfilelen,
 		}
 	}
 
+	/* AC1: audit: this loader has no return-NULL exit between
+	   Hunk_Begin() and its success return, so there is no
+	   post-allocation path to free here. */
 	extradata = Hunk_Begin(dmdlheader.ofs_end);
 	pheader = Hunk_Alloc(dmdlheader.ofs_end);
 	memcpy(pheader, &dmdlheader, sizeof(dmdl_t));
@@ -1599,6 +1624,9 @@ Mod_LoadSP2 (const char *mod_name, const void *buffer, int modfilelen,
 		return NULL;
 	}
 
+	/* AC1: audit: this loader has no return-NULL exit between
+	   Hunk_Begin() and its success return, so there is no
+	   post-allocation path to free here. */
 	extradata = Hunk_Begin(modfilelen);
 	sprout = Hunk_Alloc(modfilelen);
 
