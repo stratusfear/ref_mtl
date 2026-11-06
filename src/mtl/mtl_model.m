@@ -918,6 +918,35 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 		((int *)header)[i] = LittleLong(((int *)header)[i]);
 	}
 
+	/* Z5a: every lump table entry must describe bytes that actually
+	   exist in the file.  A negative offset or length, a non-empty lump
+	   starting inside the 160-byte header itself, or a lump starting at
+	   or past the end of the file is rejected outright.  A lump that
+	   starts inside the file but claims bytes past its end (some shipped
+	   maps carry off-by-a-few-bytes lengths) has its length truncated to
+	   the remaining file: everything loaded below then reads only real
+	   file bytes, and any face referencing the missing bytes is caught
+	   by the per-field checks. */
+	for (i = 0; i < HEADER_LUMPS; i++)
+	{
+		lump_t *l = &header->lumps[i];
+
+		if (l->fileofs < 0 || l->filelen < 0 ||
+			(l->filelen > 0 && l->fileofs < (int)sizeof(dheader_t)) ||
+			l->fileofs > modfilelen)
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s lump %i (offset %i, length %i) "
+					"is not inside the %i byte file",
+					__func__, mod->name, i, l->fileofs, l->filelen,
+					modfilelen);
+		}
+
+		if ((long long)l->fileofs + l->filelen > modfilelen)
+		{
+			l->filelen = modfilelen - l->fileofs;
+		}
+	}
+
 	/* check for BSPX extensions */
 	bspx_header = Mod_LoadBSPX(modfilelen, (byte*)header);
 
