@@ -1143,21 +1143,26 @@ RE_BeginRegistration(char *model)
 	/* T2: invalidate both halves of the viewcluster state, current
 	   and previous. R_SetupFrame copies r_oldviewcluster2 =
 	   r_viewcluster2 back from the current pair at the start of every
-	   world frame (mtl_main.m:398-399), so on this map's first frame
-	   it is whatever r_viewcluster/r_viewcluster2 hold right here
-	   that the R_MarkLeaves cluster-match early-out compares against.
-	   Stale values from the previous map are not benign: when they
-	   happen to equal the new map's spawn cluster (which happens by
-	   luck of map pairing, and was forced deterministically with the
-	   round-15 evidence hook), all four match, R_MarkLeaves returns
-	   without marking, every node of the new map keeps visframe 0
-	   while r_visframecount is already past 0, and the world draws as
-	   nothing until the player walks into another cluster. Before O1
-	   this could not bite because R_MarkLeaves never ran. ref_vk
-	   keeps the trap: vk_model.c:1126 resets only r_oldviewcluster,
-	   and the current pair survives only through the ordering accident
-	   of the lone `r_viewcluster = -1` at the very end of the
-	   function (vk_model.c:1144); not copied. */
+	   world frame, so on this map's first frame the early-out in
+	   R_MarkLeaves compares the copied old pair against the new map's
+	   spawn cluster: with both halves reset here, the copy carries the
+	   -1 sentinel and the early-out always misses, forcing a full
+	   markleafs pass for the new map.
+
+	   Y1 (round 15c): correct the history this comment used to carry.
+	   T2 is hardening, not a bug fix. The pre-T2 form also reached the
+	   end state, through the lone trailing `r_viewcluster = -1` after
+	   Mod_ForName, so in the real tree the first frame's old-cluster
+	   copy always saw -1 and the early-out could not fire against a
+	   real spawn cluster; ref_vk ends registration the same way
+	   (vk_model.c:1144) and is not exposed. The failing configuration
+	   was only ever produced by the round-15 reproduction, which
+	   injected a stale value over that trailing reset. What this form
+	   changes is where the invariant lives: stated once next to the
+	   force-markleafs line, independent of statement order, and
+	   covering the r_viewcluster2/r_oldviewcluster2 pair, which the
+	   old form left stale from the previous map. (Before O1 added the
+	   R_MarkLeaves call this path did not exist.) */
 	r_oldviewcluster = r_oldviewcluster2 = -1; /* force markleafs */
 	r_viewcluster = r_viewcluster2 = -1;
 
