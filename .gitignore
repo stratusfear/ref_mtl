@@ -7,3 +7,5 @@
 *.orig
 *.rej
 .DS_Store
+# X3: bugc_repro's compiled reproducer (build line in tools/bugc_repro/NOTES.md)
+tools/bugc_repro/repro

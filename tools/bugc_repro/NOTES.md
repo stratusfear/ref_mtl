@@ -9,6 +9,9 @@ repro below; ~70%/capture in quake2 with `framebufferOnly=NO` offscreen config.
 
 ## Repro
 
+Build first (X3: the compiled binary is not tracked; sweep.sh and
+runall.sh expect `./repro` next to them):
+
     clang -fobjc-arc -framework Cocoa -framework Metal -framework QuartzCore repro.m -o repro
     ./sweep.sh 6 default            # 6 runs x 30s, 3 window captures each
 
@@ -66,7 +69,10 @@ Conclusions:
 Methodology guard: a display sleep during a sweep invalidates captures
 (screencapture fails and WindowServer stops compositing, which can change
 the failure mode). Keep a `caffeinate -i` assertion for the whole sweep;
-runrest.sh does this.
+runall.sh does this. (X3: the per-round `runrest*.sh` scripts of the
+bisect were pruned; the flags they passed are documented in repro.m's
+option list and the results in the matrices below, so re-run any
+experiment with `sweep.sh N TAG <flag>`.)
 
 - default — revalidated on rebuilt binary: 18/18 poisoned, 28k-300k px, live
   display (animated_diff 48k-76k sampled px). Matches the old binary.
