@@ -721,12 +721,19 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     `r_novis 1` the player-setup menu at a fresh start SIGSEGVed in the
     mark-everything branch dereferencing a NULL `r_worldmodel` (ref_vk
     shares the latent flaw; fixed in mtl only).
-    T2 fixed a map-registration ordering accident:
-    `RE_BeginRegistration` now invalidates *both* halves of the
-    viewcluster state (current pair and previous pair), so a new map's
-    first frame always marks leaves — previously a previous-map cluster
-    colliding with the new spawn cluster early-out the marking and the
-    world drew as nothing until the player changed clusters.
+    T2 hardened the map-registration reset — reclassified by the
+    round-15b V1 re-audit: no live bug existed. The pre-fix function
+    already ended with `r_viewcluster = -1`, so `R_SetupFrame`'s
+    first-frame copy yielded -1 and the `R_MarkLeaves` early-out
+    could not fire against a real spawn cluster; the "invisible
+    world" reproduced only under a temporary hook that *overrode*
+    that reset (ref_vk ends registration the same way,
+    `vk_model.c:1144`, and was never exposed either). What the fix
+    really addresses: the old reset was a single sentinel plus a
+    statement-order dependency, and it left the `*2` pair stale.
+    `RE_BeginRegistration` now resets all four viewcluster variables
+    next to the force-markleafs line, making the invariant
+    structural.
     T3 added `tools/fix_verify_selftest.sh`: scripted stand-ins inject
     each failure mode the S1 checks guard (fallback renderer, missing
     map, died early, crashed after the kill, injected Metal-diagnostic
