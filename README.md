@@ -690,8 +690,10 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     three, vestigial argument-table blocks and wording left over from the
     classic-encoder port removed, and the MTL4Archive startup cost plus the
     one-frame MSAA-rebuild hitch recorded as accepted notes. Capture note
-    for future rounds: Q2 screenshots are RLE 32bpp TGAs - use
-    `tools/drivers/tgadiff.py`, naive decoders silently compare garbage.
+    for future rounds: Q2 screenshots are RLE 32bpp TGAs - naive raw-byte
+    decoders silently compare garbage, so compare with a real RLE TGA
+    decoder (the local evidence script `tools/drivers/tgadiff.py` is not
+    in the repo).
  - Round-14 findings S1-S5 (brief `REVIEW_FINDINGS_14.md`; dlights,
     screenshot, palette, registration reviewed clean; build and tooling
     fixes): the reviewed render-code areas (dlights, `RE_SetPalette`,
