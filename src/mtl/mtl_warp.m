@@ -635,7 +635,10 @@ RE_SetSky(const char *name, float rotate, vec3_t axis)
 	char	skyname[MAX_QPATH];
 	int		i;
 
-	strncpy(skyname, name, sizeof(skyname) - 1);
+	/* Z8: the CS_SKY configstring can be as long as MAX_QPATH-1, and
+	   strncpy() then leaves skyname unterminated - GetSkyImage's %s
+	   would read past the array.  Q_strlcpy always terminates. */
+	Q_strlcpy(skyname, name, sizeof(skyname));
 	skyrotate = rotate;
 	VectorCopy(axis, skyaxis);
 
