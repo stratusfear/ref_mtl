@@ -3894,11 +3894,18 @@ RE_EndFrame(void)
 		}];
 	}
 
-	/* Classic present-then-commit: the drawable goes to the compositor
-	   when this command buffer's work for it completes. */
+	/* Z11: register the present through the command buffer before the
+	   commit.  Apple's drawables guidance is that a command buffer's
+	   own present form (not [drawable present], which this used to be)
+	   is what defers the presentation to the point where the queue has
+	   scheduled this buffer - calling the drawable's present directly
+	   risks presenting before any work is scheduled and holds the
+	   drawable longer than necessary.  Same frame, same store: the
+	   present is still bound to this command buffer's work on the
+	   drawable. */
 	if (st->drawable != nil)
 	{
-		[st->drawable present];
+		[st->command_buffer presentDrawable:st->drawable];
 		st->drawable = nil;
 	}
 
