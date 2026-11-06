@@ -650,6 +650,27 @@ Mod_LoadFaces(model_t *loadmodel, const byte *mod_base, const lump_t *l, const b
 		/* create lightmaps and polygons */
 		if (!(out->texinfo->flags & (SURF_SKY | SURF_TRANS33 | SURF_TRANS66 | SURF_WARP)))
 		{
+			/* Z5f: CalcSurfaceExtents computes extents in float but
+			   msurface_t stores them as short, so a face spanning more
+			   than 32768 texels wraps extents negative; lmshift 0
+			   (DECOUPLED_LM) additionally makes the luxel count the
+			   texel count.  MTL_CreateSurfaceLightmap derives
+			   (extents >> lmshift) + 1 luxels per axis; LM_AllocBlock
+			   can never place a block wider or taller than the 128x128
+			   atlas, fails twice and bails ERR_FATAL (b_extents), and
+			   smax/tmax <= 0 from the wrap corrupts the allocator's
+			   height row instead.  Reject with a clear map-error
+			   message before either happens. */
+			int smax = (out->extents[0] >> out->lmshift) + 1;
+			int tmax = (out->extents[1] >> out->lmshift) + 1;
+
+			if ((smax < 1) || (tmax < 1) || (smax > 128) || (tmax > 128))
+			{
+				Com_Error(ERR_DROP, "%s: %s face %i lightmap %dx%d luxels "
+						"does not fit the 128x128 lightmap block",
+						__func__, loadmodel->name, surfnum, smax, tmax);
+			}
+
 			MTL_CreateSurfaceLightmap(out);
 		}
 
