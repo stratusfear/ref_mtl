@@ -1913,6 +1913,18 @@ Mod_LoadTexinfo(const char *name, mtexinfo_t **texinfo, int *numtexinfo,
 		out->flags = LittleLong (in->flags);
 
 		next = LittleLong (in->nexttexinfo);
+
+		/* Z5e: next indexes this texinfo array; at or past the end it
+		   turns into an out-of-array pointer the walk below follows
+		   (b_texnext).  Only 0/-1 mean "end of chain"; other negatives
+		   are garbage. */
+		if ((next >= count) || (next < -1))
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s texinfo %i animates to frame %i "
+					"outside the %i loaded frames",
+					__func__, name, i, next, count);
+		}
+
 		if (next > 0)
 		{
 			out->next = *texinfo + next;
@@ -1940,11 +1952,25 @@ Mod_LoadTexinfo(const char *name, mtexinfo_t **texinfo, int *numtexinfo,
 	// count animation frames
 	for (i=0 ; i<count ; i++)
 	{
+		int steps = 0;
+
 		out = (*texinfo) + i;
 		out->numframes = 1;
 		for (step = out->next ; step && step != out ; step=step->next)
 		{
 			out->numframes++;
+
+			/* Z5e: with next bounded to the array above, a chain that
+			   neither ends (next <= 0) nor returns to its start loops
+			   through other entries forever (b_texcycle).  A closed
+			   chain visits at most count entries, so more steps than
+			   that is an unterminated loop: reject instead of spinning. */
+			if (++steps > count)
+			{
+				ri.Sys_Error(ERR_DROP, "%s: %s texinfo %i animation chain "
+						"does not close within %i frames",
+						__func__, name, i, count);
+			}
 		}
 	}
 }
