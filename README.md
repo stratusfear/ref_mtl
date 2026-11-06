@@ -736,11 +736,14 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     `RE_BeginRegistration` now resets all four viewcluster variables
     next to the force-markleafs line, making the invariant
     structural.
-    T3 added `tools/fix_verify_selftest.sh`: scripted stand-ins inject
-    each failure mode the S1 checks guard (fallback renderer, missing
-    map, died early, crashed after the kill, injected Metal-diagnostic
-    lines) and must produce the matching FAIL line, closing with a
-    green positive control.
+    T3 added `tools/fix_verify_selftest.sh`: scripted shell stand-ins
+    inject, through a `FIX_VERIFY_GAME` hook, each failure mode the S1
+    checks guard (a `refresher: gl3` fallback line, a map that never
+    loads, a process that prints banner + `Map:` then exits clean at
+    second 5, a self-SIGSEGV after the smoke kill, injected
+    Metal-diagnostic lines run under `DEBUG_LAYER=1`) and each must
+    produce the matching FAIL line, closing with a green live-smoke
+    positive control.
     T4 made the shader-regen rule's no-python3 branch warn and succeed
     — a fresh checkout on a python3-less machine builds from the
     checked-in array — while `make check-shaders` keeps the gate closed
