@@ -83,6 +83,18 @@ typedef struct image_s
 
 #define MAX_MTLTEXTURES	1024
 
+/* Z2: the largest square texture every Apple silicon Metal 4 GPU supports:
+   the MTLGPUFamilyApple7-and-later limit is 16384 px per side (MTLDevice's
+   maxTextureDimension2D reports the per-device value; 16384 is the family
+   floor). Images past this are rejected at load, never downscaled: a
+   texture can be a power-of-two or half-edge multiple of an animation
+   frame or a lightmap sheet, and silently resampling it would change
+   visible pixels; a single side over the limit is usually a malformed
+   header, not real art. The same cap governs the mip-chain scratch math
+   (16384x16384x4 = 0x40000000 exactly, and every scratch multiply is
+   done in size_t). */
+#define MTL_MAX_TEXTURE_DIM	16384
+
 #include "model.h"
 
 #define BACKFACE_EPSILON	0.01

@@ -313,6 +313,17 @@ MTL_Upload32Native(byte *data, int width, int height, imagetype_t type,
 
 	*texBuffer = NULL;
 
+	/* Z2: upload buffers are sized in pixels as a 32-bit int, and this
+	   is the first path that multiplies the raw file dimensions by 4.
+	   Reject absurd sizes before any allocation can overflow; the hard
+	   device-limit decision (with its own log line) is made once in
+	   MTL_LoadPic. */
+	if (width <= 0 || height <= 0 ||
+		(long long)width * height > (long long)MTL_MAX_TEXTURE_DIM * MTL_MAX_TEXTURE_DIM)
+	{
+		return 0;
+	}
+
 	if (type != it_pic)
 	{
 		// let people sample down the world textures for speed
@@ -378,6 +389,17 @@ MTL_Upload8(const byte *data, int width, int height, imagetype_t type,
 	unsigned	*trans;
 	int			i, s;
 	int 		miplevel;
+
+	/* Z2: see MTL_Upload32Native: this path sizes its palette-conversion
+	   buffer with width * height as a 32-bit int, and the caller's 8-bit
+	   scaler multiplies the raw dims by scale^2 before reaching here.
+	   Reject the impossible before any of it allocates. */
+	if (width <= 0 || height <= 0 ||
+		(long long)width * height > (long long)MTL_MAX_TEXTURE_DIM * MTL_MAX_TEXTURE_DIM)
+	{
+		*texBuffer = NULL;
+		return 0;
+	}
 
 	s = width * height;
 
@@ -574,6 +596,15 @@ MTL_UploadTexture(image_t *image, byte *texBuffer, int width, int height,
 	if (mipcount < 1)
 		mipcount = 1;
 
+	/* Z2: this function only ever sees dimensions that passed the
+	   MTL_LoadPic cap: 0 < dim <= MTL_MAX_TEXTURE_DIM. It must stay
+	   that way - past the device limit newTextureWithDescriptor: aborts
+	   the process in descriptor validation, and the mip math below
+	   assumes nonzero dims. The cap decision (reject, not downscale)
+	   and its reasoning live at the LoadPic check. */
+	assert(width > 0 && height > 0 &&
+		width <= MTL_MAX_TEXTURE_DIM && height <= MTL_MAX_TEXTURE_DIM);
+
 	td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
 	        MTLPixelFormatRGBA8Unorm
 	        width:(NSUInteger)width
@@ -693,6 +724,28 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 		nolerp = Utils_FilenameFiltered(name, nolerplist, ' ');
 	}
 
+	/* Z2: hard cap, checked before any slot naming, sizing, allocation or
+	   GPU call so there is nothing to roll back. A crafted header can
+	   reach here with dimensions the loaders' own checks did not screen,
+	   and past the device limit Metal aborts the process inside
+	   descriptor validation (not just a nil return). Zero dims are
+	   rejected here as well: a 0-sized texture descriptor plus the mip
+	   math (dw = max(1, w >> level) writing 1-pixel rows into a
+	   zero-pixel buffer) is the other shape of the same crash. One
+	   Com_Printf per bad file: r_validation is off by default and the
+	   bad texture is re-requested per entity/frame. Returning NULL is
+	   the established failure path - R_LoadImage frees the decoded pic
+	   and the caller substitutes notexture. */
+	if (width <= 0 || height <= 0 ||
+		width > MTL_MAX_TEXTURE_DIM || height > MTL_MAX_TEXTURE_DIM ||
+		realwidth > MTL_MAX_TEXTURE_DIM || realheight > MTL_MAX_TEXTURE_DIM)
+	{
+		Com_Printf("ref_mtl: bad image dimensions %dx%d (%dx%d real) "
+		           "for %s, using notexture instead\n",
+			width, height, realwidth, realheight, name);
+		return NULL;
+	}
+
 	{
 		int		i;
 
@@ -775,7 +828,7 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 			if (!nolerp && (vid.height >= 240 * 3))
 				scale = 3;
 
-			image_converted = malloc(width * height * scale * scale);
+			image_converted = malloc((size_t)width * height * scale * scale);
 			if (!image_converted)
 			{
 				/* M6: the slot is already named and img_loaded already
@@ -811,6 +864,18 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 
 	image->upload_width = upload_width;		// after power of 2 and scales
 	image->upload_height = upload_height;
+
+	/* Z2: mipcount 0 means an upload-path guard (MTL_Upload8 /
+	   MTL_Upload32Native) declined to size anything. Unreachable while
+	   the MTL_LoadPic cap above holds - defence in depth; take the same
+	   rollback as the scale-path out-of-memory case. */
+	if (!mipcount || !texBuffer)
+	{
+		memset(image, 0, sizeof(*image));
+		img_loaded--;
+		Com_DPrintf("ref_mtl: upload declined for %s\n", name);
+		return NULL;
+	}
 
 	assert(texBuffer != NULL);
 
