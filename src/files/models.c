@@ -574,6 +574,158 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 
 /*
 =================
+Mod_CheckAliasHeader
+
+Z6: sanity check for a dmdl_t-shaped model header, used by the MD2,
+flex and DKM loaders.  The counts and offsets below drive the
+memcpy() sizes and the loop bounds of the section loaders, and each
+section is read from the file buffer and written into the model block
+at the same offset, so every section has to fit inside the model
+(ofs_end, itself bounded by the file length).  The sizes are products
+of file-supplied counts, so they are computed in 64 bit: a hostile
+count must not be able to wrap a section end back into the model.
+Returns false and prints the reason when the header cannot be loaded.
+=================
+*/
+static qboolean
+Mod_CheckAliasHeader (const char *mod_name, const dmdl_t *hdr)
+{
+	if (hdr->ofs_end < (int)sizeof(dmdl_t))
+	{
+		Com_Printf("%s: model %s ends at %d, before its own header\n",
+				__func__, mod_name, hdr->ofs_end);
+		return false;
+	}
+
+	if (hdr->skinheight > MAX_LBM_HEIGHT)
+	{
+		Com_Printf("%s: model %s has a skin taller than %d\n",
+				__func__, mod_name, MAX_LBM_HEIGHT);
+		return false;
+	}
+
+	if (hdr->num_skins < 0)
+	{
+		Com_Printf("%s: model %s has %d skins\n",
+				__func__, mod_name, hdr->num_skins);
+		return false;
+	}
+
+	if (hdr->num_xyz <= 0)
+	{
+		Com_Printf("%s: model %s has no vertices\n",
+				__func__, mod_name);
+		return false;
+	}
+
+	if (hdr->num_xyz > MAX_VERTS)
+	{
+		Com_Printf("%s: model %s has too many vertices\n",
+				__func__, mod_name);
+		return false;
+	}
+
+	/* each frame is read as one framesize stride and its num_xyz
+	   vertices are copied out of it, so the stride has to carry them */
+	if (hdr->framesize <
+		(int)(sizeof(daliasframe_t) +
+			(hdr->num_xyz - 1) * sizeof(dtrivertx_t)))
+	{
+		Com_Printf("%s: model %s has framesize %d for %d vertices\n",
+				__func__, mod_name, hdr->framesize, hdr->num_xyz);
+		return false;
+	}
+
+	if (hdr->num_st <= 0)
+	{
+		Com_Printf("%s: model %s has no st vertices\n",
+				__func__, mod_name);
+		return false;
+	}
+
+	if (hdr->num_tris <= 0)
+	{
+		Com_Printf("%s: model %s has no triangles\n",
+				__func__, mod_name);
+		return false;
+	}
+
+	if (hdr->num_frames <= 0)
+	{
+		Com_Printf("%s: model %s has no frames\n",
+				__func__, mod_name);
+		return false;
+	}
+
+	/* the command list is terminated by a zero entry, and the loader
+	   checks the last one: an empty list would read in front of it */
+	if (hdr->num_glcmds < 1)
+	{
+		Com_Printf("%s: model %s has %d glcmds\n",
+				__func__, mod_name, hdr->num_glcmds);
+		return false;
+	}
+
+	if ((hdr->ofs_skins < 0) ||
+		((long long)hdr->ofs_skins +
+			(long long)hdr->num_skins * MAX_SKINNAME >
+			(long long)hdr->ofs_end))
+	{
+		Com_Printf("%s: model %s has %d skins at %d, model ends at %d\n",
+				__func__, mod_name, hdr->num_skins, hdr->ofs_skins,
+				hdr->ofs_end);
+		return false;
+	}
+
+	if ((hdr->ofs_st < 0) ||
+		((long long)hdr->ofs_st +
+			(long long)hdr->num_st * (long long)sizeof(dstvert_t) >
+			(long long)hdr->ofs_end))
+	{
+		Com_Printf("%s: model %s has %d st vertices at %d, model ends at %d\n",
+				__func__, mod_name, hdr->num_st, hdr->ofs_st,
+				hdr->ofs_end);
+		return false;
+	}
+
+	if ((hdr->ofs_tris < 0) ||
+		((long long)hdr->ofs_tris +
+			(long long)hdr->num_tris * (long long)sizeof(dtriangle_t) >
+			(long long)hdr->ofs_end))
+	{
+		Com_Printf("%s: model %s has %d triangles at %d, model ends at %d\n",
+				__func__, mod_name, hdr->num_tris, hdr->ofs_tris,
+				hdr->ofs_end);
+		return false;
+	}
+
+	if ((hdr->ofs_frames < 0) ||
+		((long long)hdr->ofs_frames +
+			(long long)hdr->num_frames * (long long)hdr->framesize >
+			(long long)hdr->ofs_end))
+	{
+		Com_Printf("%s: model %s has %d frames of %d bytes at %d, model ends at %d\n",
+				__func__, mod_name, hdr->num_frames, hdr->framesize,
+				hdr->ofs_frames, hdr->ofs_end);
+		return false;
+	}
+
+	if ((hdr->ofs_glcmds < 0) ||
+		((long long)hdr->ofs_glcmds +
+			(long long)hdr->num_glcmds * (long long)sizeof(int) >
+			(long long)hdr->ofs_end))
+	{
+		Com_Printf("%s: model %s has %d glcmds at %d, model ends at %d\n",
+				__func__, mod_name, hdr->num_glcmds, hdr->ofs_glcmds,
+				hdr->ofs_end);
+		return false;
+	}
+
+	return true;
+}
+
+/*
+=================
 Mod_LoadMD2
 =================
 */
@@ -602,12 +754,46 @@ Mod_LoadMD2 (const char *mod_name, const void *buffer, int modfilelen,
 		return NULL;
 	}
 
+	/* Z6: the header is read before any of its counts are trusted */
+	if (modfilelen < (int)sizeof(dmdl_t))
+	{
+		Com_Printf("%s: model %s is %d bytes, less than its header",
+				__func__, mod_name, modfilelen);
+		return NULL;
+	}
+
 	ofs_end = LittleLong(pinmodel->ofs_end);
 	if (ofs_end < 0 || ofs_end > modfilelen)
 	{
 		Com_Printf("%s: model %s file size(%d) too small, should be %d",
 				__func__, mod_name, modfilelen, ofs_end);
 		return NULL;
+	}
+
+	/* Z6: check the whole header - every count and offset that the
+	   section loaders below copy or loop over - before the model is
+	   reserved, so a broken file is rejected without leaving a hunk
+	   behind. */
+	{
+		dmdl_t	pinhdr;
+		int		j;
+
+		for (j = 0; j < (int)(sizeof(pinhdr) / sizeof(int)); j++)
+		{
+			((int *)&pinhdr)[j] = LittleLong(((const int *)pinmodel)[j]);
+		}
+
+		/* skins past the model's skin limit are ignored below, so only
+		   the ones that are copied have to fit in the model */
+		if (pinhdr.num_skins > MAX_MD2SKINS)
+		{
+			pinhdr.num_skins = MAX_MD2SKINS;
+		}
+
+		if (!Mod_CheckAliasHeader(mod_name, &pinhdr))
+		{
+			return NULL;
+		}
 	}
 
 	extradata = Hunk_Begin(modfilelen);
@@ -617,48 +803,9 @@ Mod_LoadMD2 (const char *mod_name, const void *buffer, int modfilelen,
 	for (i=0 ; i<sizeof(dmdl_t)/sizeof(int) ; i++)
 		((int *)pheader)[i] = LittleLong (((int *)buffer)[i]);
 
-	if (pheader->skinheight > MAX_LBM_HEIGHT)
-	{
-		Com_Printf("%s: model %s has a skin taller than %d",
-				__func__, mod_name, MAX_LBM_HEIGHT);
-		return NULL;
-	}
-
-	if (pheader->num_xyz <= 0)
-	{
-		Com_Printf("%s: model %s has no vertices",
-				__func__, mod_name);
-		return NULL;
-	}
-
-	if (pheader->num_xyz > MAX_VERTS)
-	{
-		Com_Printf("%s: model %s has too many vertices",
-				__func__, mod_name);
-		return NULL;
-	}
-
-	if (pheader->num_st <= 0)
-	{
-		Com_Printf("%s: model %s has no st vertices",
-				__func__, mod_name);
-		return NULL;
-	}
-
-	if (pheader->num_tris <= 0)
-	{
-		Com_Printf("%s: model %s has no triangles",
-				__func__, mod_name);
-		return NULL;
-	}
-
-	if (pheader->num_frames <= 0)
-	{
-		Com_Printf("%s: model %s has no frames",
-				__func__, mod_name);
-		return NULL;
-	}
-
+	/* a file with more skins than the model has room for keeps the
+	   skins that fit (the section itself was checked against the end
+	   of the model above) */
 	if (pheader->num_skins > MAX_MD2SKINS)
 	{
 		Com_Printf("%s has too many skins (%i > %i), "
@@ -726,12 +873,24 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 {
 	char *src = (char *)buffer;
 	int version, size, i;
+	int fmfilelen = modfilelen;
 	void *extradata = NULL;
 	dmdl_t *pheader = NULL;
 
 	while (modfilelen > 0)
 	{
 		char blockname[32];
+
+		/* Z6: a block header is 32 name bytes plus a version and a
+		   size word; the file has to hold a whole header before any
+		   of it is read */
+		if (modfilelen < (int)(sizeof(blockname) + (2 * sizeof(int))))
+		{
+			Com_Printf("%s: %s is truncated, %d bytes left where a block header needs %d\n",
+				__func__, mod_name, modfilelen,
+				(int)(sizeof(blockname) + (2 * sizeof(int))));
+			return NULL;
+		}
 
 		memcpy(blockname, src, sizeof(blockname));
 
@@ -742,10 +901,21 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 		src += sizeof(size);
 		modfilelen = modfilelen - sizeof(blockname) - sizeof(version) - sizeof(size);
 
+		/* Z6: the block handlers below read size bytes from src and src
+		   then advances by size, so the body has to lie inside the file */
+		if ((size < 0) || (size > modfilelen))
+		{
+			Com_Printf("%s: %s block %s claims %d bytes, only %d left\n",
+				__func__, mod_name, blockname, size, modfilelen);
+			return NULL;
+		}
+
 		if (Q_strncasecmp(blockname, "header", sizeof(blockname)) == 0)
 		{
 			dmdl_t dmdlheader;
 			fmheader_t *header = (fmheader_t *)src;
+			long long o_skins, o_st, o_tris, o_frames, o_glcmds, o_end;
+			int num_mesh_nodes;
 
 			if (sizeof(fmheader_t) > size)
 			{
@@ -775,52 +945,50 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 			dmdlheader.num_frames = LittleLong (header->num_frames);
 
 			// just skip header and meshes
-			dmdlheader.ofs_skins = sizeof(dmdl_t) + sizeof(short) * 2 * LittleLong (header->num_mesh_nodes);
-			dmdlheader.ofs_st = dmdlheader.ofs_skins + dmdlheader.num_skins * MAX_SKINNAME;
-			dmdlheader.ofs_tris = dmdlheader.ofs_st + dmdlheader.num_st * sizeof(dstvert_t);
-			dmdlheader.ofs_frames = dmdlheader.ofs_tris + dmdlheader.num_tris * sizeof(dtriangle_t);
-			dmdlheader.ofs_glcmds = dmdlheader.ofs_frames + dmdlheader.num_frames * dmdlheader.framesize;
-			dmdlheader.ofs_end = dmdlheader.ofs_glcmds + dmdlheader.num_glcmds * sizeof(int);
-
-			if (dmdlheader.skinheight > MAX_LBM_HEIGHT)
+			/* Z6: the layout below sizes the model block, and every
+			   part of it is a block of this file, so the offsets are
+			   built in 64 bit, have to grow monotonically (a negative
+			   count would shrink one) and the whole model has to fit
+			   inside the file that carries its blocks. */
+			num_mesh_nodes = LittleLong (header->num_mesh_nodes);
+			if (num_mesh_nodes < 0)
 			{
-				Com_Printf("%s: model %s has a skin taller than %d",
-						__func__, mod_name, MAX_LBM_HEIGHT);
+				Com_Printf("%s: model %s has %d mesh nodes",
+						__func__, mod_name, num_mesh_nodes);
 				return NULL;
 			}
 
-			if (dmdlheader.num_xyz <= 0)
+			o_skins = (long long)sizeof(dmdl_t) +
+				(2LL * (long long)sizeof(short) * num_mesh_nodes);
+			o_st = o_skins +
+				((long long)dmdlheader.num_skins * MAX_SKINNAME);
+			o_tris = o_st +
+				((long long)dmdlheader.num_st * (long long)sizeof(dstvert_t));
+			o_frames = o_tris +
+				((long long)dmdlheader.num_tris * (long long)sizeof(dtriangle_t));
+			o_glcmds = o_frames +
+				((long long)dmdlheader.num_frames * (long long)dmdlheader.framesize);
+			o_end = o_glcmds +
+				((long long)dmdlheader.num_glcmds * (long long)sizeof(int));
+
+			if ((o_skins > o_st) || (o_st > o_tris) || (o_tris > o_frames) ||
+				(o_frames > o_glcmds) || (o_glcmds > o_end) ||
+				(o_end > (long long)fmfilelen))
 			{
-				Com_Printf("%s: model %s has no vertices",
-						__func__, mod_name);
+				Com_Printf("%s: model %s has sections that don't fit in its %d bytes",
+						__func__, mod_name, fmfilelen);
 				return NULL;
 			}
 
-			if (dmdlheader.num_xyz > MAX_VERTS)
-			{
-				Com_Printf("%s: model %s has too many vertices",
-						__func__, mod_name);
-				return NULL;
-			}
+			dmdlheader.ofs_skins = (int)o_skins;
+			dmdlheader.ofs_st = (int)o_st;
+			dmdlheader.ofs_tris = (int)o_tris;
+			dmdlheader.ofs_frames = (int)o_frames;
+			dmdlheader.ofs_glcmds = (int)o_glcmds;
+			dmdlheader.ofs_end = (int)o_end;
 
-			if (dmdlheader.num_st <= 0)
+			if (!Mod_CheckAliasHeader(mod_name, &dmdlheader))
 			{
-				Com_Printf("%s: model %s has no st vertices",
-						__func__, mod_name);
-				return NULL;
-			}
-
-			if (dmdlheader.num_tris <= 0)
-			{
-				Com_Printf("%s: model %s has no triangles",
-						__func__, mod_name);
-				return NULL;
-			}
-
-			if (dmdlheader.num_frames <= 0)
-			{
-				Com_Printf("%s: model %s has no frames",
-						__func__, mod_name);
 				return NULL;
 			}
 
@@ -935,7 +1103,7 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 					return NULL;
 				}
 				/* 516 mesh node size */
-				if (size != (num_mesh_nodes * 516))
+				if ((long long)size != ((long long)num_mesh_nodes * 516))
 				{
 					Com_Printf("%s: Invalid %s size",
 						__func__, blockname);
@@ -1019,10 +1187,13 @@ Mod_LoadDKMModel(const char *mod_name, const void *buffer, int modfilelen,
 	void *extradata = NULL;
 	int i;
 
+	/* Z6: the header below is read before any of its counts are
+	   trusted, so the file has to carry it */
 	if (sizeof(dkm_header_t) > modfilelen)
 	{
 		Com_Printf("%s: model %s file size(%d) too small",
 				__func__, mod_name, modfilelen);
+		return NULL;
 	}
 
 	// byte swap the header fields and sanity check
@@ -1073,13 +1244,72 @@ Mod_LoadDKMModel(const char *mod_name, const void *buffer, int modfilelen,
 	dmdlheader.num_glcmds = header.num_glcmds;
 	dmdlheader.num_frames = header.num_frames;
 
-	/* just skip header */
-	dmdlheader.ofs_skins = sizeof(dmdl_t);
-	dmdlheader.ofs_st = dmdlheader.ofs_skins + dmdlheader.num_skins * MAX_SKINNAME;
-	dmdlheader.ofs_tris = dmdlheader.ofs_st + dmdlheader.num_st * sizeof(dstvert_t);
-	dmdlheader.ofs_frames = dmdlheader.ofs_tris + dmdlheader.num_tris * sizeof(dtriangle_t);
-	dmdlheader.ofs_glcmds = dmdlheader.ofs_frames + dmdlheader.num_frames * dmdlheader.framesize;
-	dmdlheader.ofs_end = dmdlheader.ofs_glcmds + dmdlheader.num_glcmds * sizeof(int);
+	/* Z6: as in Mod_LoadMD2, the layout below sizes the model block
+	   and every part of it is copied from the same place in the file,
+	   so the offsets are built in 64 bit, have to grow monotonically
+	   (a negative count would shrink one) and every source section
+	   has to lie inside the file.  Note that the skin names are copied
+	   below before the skin count is clamped, so the unclamped count
+	   is what has to fit in both the file and the model here. */
+	{
+		long long o_skins, o_st, o_tris, o_frames, o_glcmds, o_end;
+		long long s_skins, s_st, s_tris, s_frames, s_glcmds;
+
+		o_skins = (long long)sizeof(dmdl_t);
+		o_st = o_skins +
+			((long long)dmdlheader.num_skins * MAX_SKINNAME);
+		o_tris = o_st +
+			((long long)dmdlheader.num_st * (long long)sizeof(dstvert_t));
+		o_frames = o_tris +
+			((long long)dmdlheader.num_tris * (long long)sizeof(dtriangle_t));
+		o_glcmds = o_frames +
+			((long long)dmdlheader.num_frames * (long long)dmdlheader.framesize);
+		o_end = o_glcmds +
+			((long long)dmdlheader.num_glcmds * (long long)sizeof(int));
+
+		if ((o_skins > o_st) || (o_st > o_tris) || (o_tris > o_frames) ||
+			(o_frames > o_glcmds) || (o_glcmds > o_end) ||
+			(o_end > 0x7fffffffLL))
+		{
+			Com_Printf("%s: model %s has sections that don't fit a model block",
+					__func__, mod_name);
+			return NULL;
+		}
+
+		dmdlheader.ofs_skins = (int)o_skins;
+		dmdlheader.ofs_st = (int)o_st;
+		dmdlheader.ofs_tris = (int)o_tris;
+		dmdlheader.ofs_frames = (int)o_frames;
+		dmdlheader.ofs_glcmds = (int)o_glcmds;
+		dmdlheader.ofs_end = (int)o_end;
+
+		if (!Mod_CheckAliasHeader(mod_name, &dmdlheader))
+		{
+			return NULL;
+		}
+
+		s_skins = (long long)header.ofs_skins +
+			((long long)header.num_skins * MAX_SKINNAME);
+		s_st = (long long)header.ofs_st +
+			((long long)header.num_st * (long long)sizeof(dstvert_t));
+		s_tris = (long long)header.ofs_tris +
+			((long long)header.num_tris * (long long)sizeof(dkmtriangle_t));
+		s_frames = (long long)header.ofs_frames +
+			((long long)header.num_frames * (long long)header.framesize);
+		s_glcmds = (long long)header.ofs_glcmds +
+			((long long)header.num_glcmds * (long long)sizeof(int));
+
+		if ((header.ofs_skins < 0) || (s_skins > modfilelen) ||
+			(header.ofs_st < 0) || (s_st > modfilelen) ||
+			(header.ofs_tris < 0) || (s_tris > modfilelen) ||
+			(header.ofs_frames < 0) || (s_frames > modfilelen) ||
+			(header.ofs_glcmds < 0) || (s_glcmds > modfilelen))
+		{
+			Com_Printf("%s: model %s has sections outside its %d bytes",
+					__func__, mod_name, modfilelen);
+			return NULL;
+		}
+	}
 
 	extradata = Hunk_Begin(dmdlheader.ofs_end);
 	pheader = Hunk_Alloc(dmdlheader.ofs_end);
@@ -1186,30 +1416,59 @@ Mod_LoadSP2 (const char *mod_name, const void *buffer, int modfilelen,
 {
 	dsprite_t *sprin, *sprout;
 	void	*extradata;
+	int version, numframes;
 	int i;
 
 	sprin = (dsprite_t *)buffer;
+
+	/* Z6: the header is read before it is trusted, so the file has to
+	   be able to carry it plus one frame */
+	if (modfilelen < (int)sizeof(dsprite_t))
+	{
+		Com_Printf("%s is %d bytes, less than its header\n",
+				mod_name, modfilelen);
+		return NULL;
+	}
+
+	version = LittleLong(sprin->version);
+	numframes = LittleLong(sprin->numframes);
+
+	if (version != SPRITE_VERSION)
+	{
+		Com_Printf("%s has wrong version number (%i should be %i)",
+				mod_name, version, SPRITE_VERSION);
+		return NULL;
+	}
+
+	/* frames past the model's frame limit are ignored below, so only
+	   the ones that are read have to be in the file */
+	if (numframes > MAX_MD2SKINS)
+	{
+		Com_Printf("%s has too many frames (%i > %i), "
+				"extra frames will be ignored\n",
+				mod_name, numframes, MAX_MD2SKINS);
+		numframes = MAX_MD2SKINS;
+	}
+
+	/* Z6: the frame array is indexed numframes times in both the file
+	   and the model copy, and every frame is registered as a skin, so
+	   the file has to hold all of them and the count has to be usable */
+	if ((numframes <= 0) ||
+		((long long)(sizeof(dsprite_t) - sizeof(dsprframe_t)) +
+			((long long)numframes * (long long)sizeof(dsprframe_t)) >
+			(long long)modfilelen))
+	{
+		Com_Printf("%s claims %d frames of %d bytes, file is %d bytes\n",
+				mod_name, numframes, (int)sizeof(dsprframe_t), modfilelen);
+		return NULL;
+	}
+
 	extradata = Hunk_Begin(modfilelen);
 	sprout = Hunk_Alloc(modfilelen);
 
 	sprout->ident = LittleLong(sprin->ident);
-	sprout->version = LittleLong(sprin->version);
-	sprout->numframes = LittleLong(sprin->numframes);
-
-	if (sprout->version != SPRITE_VERSION)
-	{
-		Com_Printf("%s has wrong version number (%i should be %i)",
-				mod_name, sprout->version, SPRITE_VERSION);
-		return NULL;
-	}
-
-	if (sprout->numframes > MAX_MD2SKINS)
-	{
-		Com_Printf("%s has too many frames (%i > %i), "
-				"extra frames will be ignored\n",
-				mod_name, sprout->numframes, MAX_MD2SKINS);
-		sprout->numframes = MAX_MD2SKINS;
-	}
+	sprout->version = version;
+	sprout->numframes = numframes;
 
 	/* byte swap everything */
 	for (i = 0; i < sprout->numframes; i++)
