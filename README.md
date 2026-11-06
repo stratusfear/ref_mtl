@@ -510,8 +510,11 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     `mtl_warp.m` (written, never read, no vk counterpart) is gone.
     N5 (optional draw-chain performance: per-source-vertex warp sine
     reuse, one batched drawPrimitives per chain, UBO record dedup):
-    deferred - no profiling evidence demands it, same disposition
-    as M8.
+    deferred, and formally parked in round 17 - round-16 U4 put the
+    renderer's CPU buckets at ~0.37 ms/frame while the ~210 fps
+    ceiling sits in the `nextDrawable` wait (~2.9 ms, resolution-
+    flat) plus ~1.5 ms of host frame time, so none of the three
+    items lives on the limiter path. Same disposition as M8.
  - Round-9b follow-ups N9B1-N9B2 (brief `REVIEW_FINDINGS_9B.md`;
     re-verification of the round-9 lightmap fixes): N9B1 closed a
     lifetime hole in N1's white substitute - the retry story differs
@@ -835,6 +838,37 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     is recorded as a deliberate divergence that removes the
     accumulation vk still has; the console strip measured at
     parity on both sides.
+ - Round-17 findings X1-X4 (brief `REVIEW_FINDINGS_17.md`; live
+    sample-shading update, image-decode audit, repro-kit cleanup,
+    formal parking of the round-9 N5 perf items): X1 made
+    `mtl_sampleshading` apply mid-session - `MTL_UpdateMSAA` takes a
+    `force` argument that steps past both early-out guards, and
+    `RE_BeginFrame` catches the cvar's modified flag and forces the
+    world-pipeline rebuild at the unchanged sample count (at 1 sample
+    the constant is NO either way, so there the change only clears
+    the flag). ref_vk still needs a full device reinit for its
+    `vk_sampleshading`; landing sooner here is deliberate, with the
+    R4(e) one-frame rebuild hitch as the cost. Live capture: a
+    forced `r_msaa_samples 4` session prints "sample shading off
+    (MSAAx4)" after the map banner on a mid-session toggle, and
+    prints nothing at 1 sample. X2 audited the mtl image path
+    against ref_vk: the shared loader and every helper that exists
+    on both sides (FloodFillSkin, LightScaleTexture, Upload32Native,
+    Upload8, FindImage) are byte-identical across the two trees, and
+    all mtl-only code (CPU mip filters, `MTL_UploadTexture`) is
+    bounds-safe and mirrors vk's GPU-blit mip generation; the only
+    `LoadPic` divergences revalidated the M5 two-pass slot scan and
+    the M6 OOM rollback - mtl fixes of defects ref_vk still has.
+    Closed clean, no commit. X3 pruned the tracked
+    `tools/bugc_repro/` kit: the compiled `repro` binary untracked
+    (NOTES.md carries the build line), the four per-round
+    `runrest*.sh` generations deleted (their flags live in repro.m's
+    option list and their results in NOTES.md's matrices; any
+    experiment reruns as `sweep.sh N TAG <flag>`), `runall.sh` the
+    single entry point with the mandatory caffeinate display-sleep
+    guard; `FEEDBACK_DRAFT.md` stays tracked - the README names it
+    as the (unfiled) Bug C feedback draft. X4 parked N5 with the
+    U4 numbers (see the round-9 note above).
 
 ### Intentionally not implemented (parity scope cuts)
 
