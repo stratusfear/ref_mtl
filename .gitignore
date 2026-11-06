@@ -9,3 +9,8 @@
 .DS_Store
 # X3: bugc_repro's compiled reproducer (build line in tools/bugc_repro/NOTES.md)
 tools/bugc_repro/repro
+# Z9: hostile-input scratch (maps, staging files, logs) whenever a
+# scratch game dir is placed inside the checkout; run_hostile.py's
+# default scratch lives under TMPDIR instead
+/hostile/
+/hostile-home/

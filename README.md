@@ -149,6 +149,14 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 - Verified: paired fresh captures of `ref_mtl` and `ref_vk`/`ref_gl1`
   on base1 and jail1; `WERR=1 make` builds clean with `-Werror`;
   `tools/fix_verify.sh` runs build + deploy + smoke as one gate.
+- Verified: hostile-input tooling under `tools/hostile/` (not part
+  of the `fix_verify.sh` gate): `mkbsp.py` and `mkimg.py` rebuild
+  the external audit's crafted BSP/skin/texture/model inputs from
+  the shipped paks, `run_hostile.py` drives each one through the
+  host and asserts the loader's rejection line (or the clean load
+  for controls), process survival and no sanitizer report.  Needs
+  a built quake2 host, its data dir and python3; see the usage
+  blocks at the top of each script.
 - **W6b (in progress): console commands.** `screenshot [tga|bmp|png|jpg]
   [quality]` registers the ref_vk-equivalent command: blits the offscreen
   scene texture to a shared staging buffer, converts BGRA->RGBA (Metal
