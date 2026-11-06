@@ -1773,10 +1773,34 @@ Mod_LoadVisibility (dvis_t **vis, const byte *mod_base, const lump_t *l)
 
 	out->numclusters = LittleLong(out->numclusters);
 
+	/* Z5c: the cluster table must fit the lump before the swap loop
+	   touches it; past the end of the hunk allocation the loop reads
+	   and writes outside the visibility image. */
+	if ((out->numclusters < 0) ||
+		(4 + (long long)out->numclusters * 8 > l->filelen))
+	{
+		ri.Sys_Error(ERR_DROP, "%s: %i byte visibility lump cannot hold "
+				"%i clusters", __func__, l->filelen, out->numclusters);
+	}
+
 	for (i = 0; i < out->numclusters; i++)
 	{
 		out->bitofs[i][0] = LittleLong(out->bitofs[i][0]);
 		out->bitofs[i][1] = LittleLong(out->bitofs[i][1]);
+
+		/* Z5c: the bit offsets are byte offsets into this same lump;
+		   Mod_ClusterPvs adds them to the lump base, so they must stay
+		   inside it. */
+		if ((out->bitofs[i][0] < 0) || (out->bitofs[i][0] > l->filelen) ||
+			(out->bitofs[i][1] < 0) || (out->bitofs[i][1] > l->filelen))
+		{
+			ri.Sys_Error(ERR_DROP, "%s: cluster %i PVS bit offset %i is "
+					"not inside the %i byte visibility lump",
+					__func__, i,
+					(out->bitofs[i][0] < 0 || out->bitofs[i][0] > l->filelen)
+						? out->bitofs[i][0] : out->bitofs[i][1],
+					l->filelen);
+		}
 	}
 }
 

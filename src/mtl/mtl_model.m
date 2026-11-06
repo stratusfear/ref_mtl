@@ -679,6 +679,21 @@ Mod_LoadLeafs(model_t *loadmodel, const byte *mod_base, const lump_t *l)
 		out->cluster = LittleShort(in->cluster);
 		out->area = LittleShort(in->area);
 
+		/* Z5c: the cluster indexes the visibility data through
+		   Mod_ClusterPvs.  -1 means "no vis"; anything else must be a
+		   cluster the visibility lump actually describes (with a vis
+		   lump present, >= numclusters is out of range even when
+		   numclusters is 0). */
+		if ((out->cluster < -1) ||
+			((loadmodel->vis != NULL) && (out->cluster != -1) &&
+			 (out->cluster >= loadmodel->vis->numclusters)))
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s leaf %i cluster %i is not in "
+					"the visibility data of %i clusters",
+					__func__, loadmodel->name, i, out->cluster,
+					loadmodel->vis ? loadmodel->vis->numclusters : 0);
+		}
+
 		// make unsigned long from signed short
 		firstleafface = LittleShort(in->firstleafface) & 0xFFFF;
 		out->nummarksurfaces = LittleShort(in->numleaffaces) & 0xFFFF;
