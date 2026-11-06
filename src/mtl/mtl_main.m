@@ -4345,24 +4345,32 @@ RE_RenderFrame(refdef_t *fd)
 
 	/* O4: r_norefresh parity with ref_vk (RE_RenderView, vk_main.c:903):
 	   the cvar freezes the world view - the render frame still runs (UI,
-	   warp, present) but the refdef is not copied and the world is not
+	   warp, present) but the refdef is not published and the world is not
 	   redrawn. Same position relative to the rest of the view code as
 	   vk's guard at the top of RE_RenderView.
 
-	   T5: the guard alone was not vk-exact. vk's scene attachment is
-	   cleared to debug pink by its world render pass' clear value
-	   (vk_common.c:2429-2433, {1.0, 0.0, 0.5, 1.0}) every frame, and
-	   when r_norefresh skips that pass the postprocess/UI passes still
-	   clear to the same pink (uiClearColors[0]), so vk shows a flat
-	   pink backdrop under the 2D layer - not the frozen last world
-	   frame. Returning here without any clear left mtl compositing the
-	   UI onto the previous frame, so translucent console backgrounds
-	   darkened toward opaque and changing HUD text smeared (the O4
-	   evidence - changed pixels confined to the HUD strip - was this
-	   accumulation, not a clean freeze). Clear the scene texture to
-	   vk's pink on every r_norefresh frame instead, through the same
-	   trivial-pass form as the G6 resize clear below; everything else
-	   about the guard (no refdef publish, no world pass) stays vk's. */
+	   T5: the guard alone left mtl compositing the UI onto the previous
+	   frame, so translucent console backgrounds darkened toward opaque and
+	   changing HUD text smeared (the O4 evidence - changed pixels confined
+	   to the HUD strip - was this accumulation, not a clean freeze). Clear
+	   the scene texture to pink on every r_norefresh frame instead,
+	   through the same trivial-pass form as the G6 resize clear below.
+
+	   Y2 (round 15c): correct the justification this comment used to
+	   carry. T5 originally leaned on a claim about vk's displayed output -
+	   that vk's world pass clears the scene attachment to debug pink every
+	   frame, so skipping it leaves a flat pink backdrop. Round-15b V6
+	   measured vk instead: the RP_WORLD scene-colour attachment LOADs
+	   (non-MSAA) or DONT_CAREs (MSAA) (vk_common.c:496/520), the
+	   {1.0, 0.0, 0.5, 1.0} entry in the clear colours only drives a CLEAR
+	   load op, and the only CLEAR attachment there is depth - so vk keeps
+	   the frozen last world frame under r_norefresh and its pink constant
+	   never reaches the display. The mtl clear is a deliberate divergence
+	   from ref_vk, not display parity: it removes the accumulation
+	   exposure vk still has, and the colour simply reuses vk's debug pink
+	   constant (vk_common.c:2429-2433). Everything else about the guard
+	   (no refdef publish, no world pass) stays vk's; the README
+	   round-15b bullet carries the V6 captures. */
 	if (r_norefresh->value)
 	{
 		if (st->frame_active && st->command_buffer != nil &&

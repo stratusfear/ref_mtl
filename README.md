@@ -869,6 +869,20 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     guard; `FEEDBACK_DRAFT.md` stays tracked - the README names it
     as the (unfiled) Bug C feedback draft. X4 parked N5 with the
     U4 numbers (see the round-9 note above).
+ - Round-15c findings Y1-Y2 (brief `REVIEW_FINDINGS_15C.md`; comment
+    sweep for stale source rationale after the 15b corrections, no
+    behaviour change): the T2 block in `RE_BeginRegistration` still
+    told the disproved "invisible world" story - Y1 rewrote it as
+    the invariant the reset enforces, labelled hardening not bug
+    fix, and dropped the stale line-number reference in favour of
+    naming `R_SetupFrame`; the T5 block above the `r_norefresh`
+    guard still claimed vk displayed a flat pink backdrop - Y2 rewrote
+    it around the V6 measurement (vk's scene attachment LOADs/
+    DONT_CAREs, its pink clear constant is inert, vk keeps the
+    frozen frame), recording mtl's clear as the deliberate
+    divergence it is. `git grep` for the old phrases silent; live
+    re-check showed the pink backdrop unchanged (100.0% in the
+    centre rect).
 
 ### Intentionally not implemented (parity scope cuts)
 
