@@ -228,6 +228,24 @@ Mod_LoadSubmodels(model_t *loadmodel, const byte *mod_base, const lump_t *l)
 			Com_Error(ERR_DROP, "%s: Inline model %i has bad firstnode",
 					__func__, i);
 		}
+
+		/* Z5d: the renderer draws a submodel by walking surfaces
+		   [firstmodelsurface, + nummodelsurfaces) through the parent's
+		   surface array, so that range must stay inside it.  The sum is
+		   done in 64-bit: numfaces is a raw file int.  firstnode gets no
+		   lower bound here: negative headnodes are legal in shipped maps
+		   (xsewer1 submodel 11 has headnode -5721 and renders fine)
+		   because the renderer never walks submodel bsp trees. */
+		if ((out->firstmodelsurface < 0) || (out->nummodelsurfaces < 0) ||
+			((long long)out->firstmodelsurface + out->nummodelsurfaces
+				> loadmodel->numsurfaces))
+		{
+			Com_Error(ERR_DROP, "%s: Inline model %i at surface %i with "
+					"%i surfaces exceeds the %i surfaces of %s",
+					__func__, i, out->firstmodelsurface,
+					out->nummodelsurfaces, loadmodel->numsurfaces,
+					loadmodel->name);
+		}
 	}
 }
 
