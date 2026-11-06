@@ -173,7 +173,7 @@ PCX_Decode(const char *name, const byte *raw, int len, byte **pic, byte **palett
 	int *width, int *height, int *bitsPerPixel)
 {
 	const pcx_t *pcx;
-	int full_size;
+	size_t full_size;
 	int pcx_width, pcx_height, bytes_per_line;
 	qboolean image_issues = false;
 	byte *out, *pix;
@@ -215,7 +215,58 @@ PCX_Decode(const char *name, const byte *raw, int len, byte **pic, byte **palett
 		return;
 	}
 
-	full_size = (pcx_height + 1) * (pcx_width + 1);
+	/* Z3: the header dims drive every allocation and loop bound
+	   below, so they must fit both the hardware texture limit and
+	   the 8/2/4 bpp line decoders before anything is malloc'ed.
+	   With both dims <= MAX_TEXTURE_DIM the size products below
+	   are at most 16384*16384*4 and cannot wrap. */
+	if ((pcx_width > MAX_TEXTURE_DIM) ||
+		(pcx_height > MAX_TEXTURE_DIM))
+	{
+		Com_Printf("%s: Bad pcx file %s: dimensions %dx%d exceed %d\n",
+			__func__, name, pcx_width + 1, pcx_height + 1,
+			MAX_TEXTURE_DIM);
+		return;
+	}
+
+	if (((pcx->color_planes == 3 || pcx->color_planes == 4) &&
+		pcx->bits_per_pixel == 8) ||
+		(pcx->color_planes == 1 && pcx->bits_per_pixel == 8) ||
+		pcx->bits_per_pixel == 1)
+	{
+		/* the 8 and 1 bpp decoders index line[x] or line[x>>3]
+		   for x up to pcx_width, so one line must cover the
+		   whole row: bytes_per_line (in bytes for 8 bpp, in
+		   bytes holding 8 pixels each for 1 bpp) must be wide
+		   enough */
+		if ((pcx->bits_per_pixel == 1 &&
+			bytes_per_line * 8 <= pcx_width) ||
+			(pcx->bits_per_pixel == 8 &&
+				bytes_per_line <= pcx_width))
+		{
+			Com_Printf("%s: Bad pcx file %s: %d bpp line width %d "
+				"too small for width %d\n", __func__, name,
+				pcx->bits_per_pixel, bytes_per_line, pcx_width + 1);
+			return;
+		}
+	}
+	else if (pcx->color_planes == 1 &&
+		(pcx->bits_per_pixel == 2 || pcx->bits_per_pixel == 4))
+	{
+		/* the 2/4 bpp decoder reads line[x / (8/bpp)] for x up
+		   to pcx_width */
+		if (bytes_per_line * (8 / pcx->bits_per_pixel) <= pcx_width)
+		{
+			Com_Printf("%s: Bad pcx file %s: %d bpp line width %d "
+				"too small for width %d\n", __func__, name,
+				pcx->bits_per_pixel, bytes_per_line, pcx_width + 1);
+			return;
+		}
+	}
+
+	/* size_t: the caps above bound this at 16384*16384, times 4 for
+	   truecolour, but keep the product in a type that cannot wrap */
+	full_size = (size_t)(pcx_height + 1) * (pcx_width + 1);
 	if ((pcx->color_planes == 3 || pcx->color_planes == 4) &&
 		pcx->bits_per_pixel == 8)
 	{
@@ -500,13 +551,16 @@ GetPCXInfo(const char *origname, int *width, int *height)
 {
 	pcx_t *pcx;
 	byte *raw;
+	int len;
 	char filename[256];
 
 	FixFileExt(origname, "pcx", filename, sizeof(filename));
 
-	ri.FS_LoadFile(filename, (void **)&raw);
+	/* Z3: caller wants the header, so a file shorter than the
+	   header must not be dereferenced at all */
+	len = ri.FS_LoadFile(filename, (void **)&raw);
 
-	if (!raw)
+	if (!raw || len < (int)sizeof(pcx_t))
 	{
 		return;
 	}

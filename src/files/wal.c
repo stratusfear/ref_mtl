@@ -54,8 +54,12 @@ LoadWal(const char *origname, imagetype_t type, loadimage_t load_image)
 	height = LittleLong(mt->height);
 	ofs = LittleLong(mt->offsets[0]);
 
+	/* Z3: exact 64-bit product instead of the dividing form (a huge
+	   width in the header could wrap the int products the refresher
+	   later computes from it), plus the shared dimension cap */
 	if ((ofs <= 0) || (width <= 0) || (height <= 0) ||
-	    (((size - ofs) / height) < width))
+		(width > MAX_TEXTURE_DIM) || (height > MAX_TEXTURE_DIM) ||
+		((long long)width * height > (size - ofs)))
 	{
 		Com_Printf("%s: can't load %s, small body\n", __func__, name);
 		ri.FS_FreeFile((void *)mt);
@@ -108,8 +112,10 @@ LoadM8(const char *origname, imagetype_t type, loadimage_t load_image)
 	height = LittleLong(mt->height[0]);
 	ofs = LittleLong(mt->offsets[0]);
 
+	/* Z3: see LoadWal: exact 64-bit product and shared dimension cap */
 	if ((ofs <= 0) || (width <= 0) || (height <= 0) ||
-	    (((size - ofs) / height) < width))
+		(width > MAX_TEXTURE_DIM) || (height > MAX_TEXTURE_DIM) ||
+		((long long)width * height > (size - ofs)))
 	{
 		Com_Printf("%s: can't load %s, small body\n", __func__, name);
 		ri.FS_FreeFile((void *)mt);
@@ -172,8 +178,14 @@ LoadM32(const char *origname, imagetype_t type, loadimage_t load_image)
 	height = LittleLong (mt->height[0]);
 	ofs = LittleLong (mt->offsets[0]);
 
+	/* Z3: the old check divided the body by height and compared it
+	   against width*4 in int: width 0x40000001 wraps that product to
+	   4 and let a 16 byte body through, after which the refresher
+	   walked width*height pixels.  Exact 64-bit product plus the
+	   shared dimension cap instead, and ofs is bounded by the body */
 	if ((ofs <= 0) || (width <= 0) || (height <= 0) ||
-	    (((size - ofs) / height) < (width * 4)))
+		(width > MAX_TEXTURE_DIM) || (height > MAX_TEXTURE_DIM) ||
+		((long long)width * height * 4 > (size - ofs)))
 	{
 		Com_Printf("%s: can't load %s, small body\n", __func__, name);
 		ri.FS_FreeFile((void *)mt);

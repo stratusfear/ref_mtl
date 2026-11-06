@@ -46,6 +46,17 @@
 
 #endif
 
+/* Largest image width or height, in pixels, that the file loaders
+ * accept.  Matches the texture dimension limit of every GPU these
+ * refreshers target (16384 is the hard limit all Apple silicon Metal
+ * devices enforce, mirrored by MTL_MAX_TEXTURE_DIM in the ref_mtl
+ * tree).  A loader that rejects an over-limit file keeps a malformed
+ * or malicious header from reaching the refresher's texture upload,
+ * which would abort or overflow there; it also bounds every header
+ * size product below to at most 16384*16384*4, so those products
+ * cannot wrap. */
+#define MAX_TEXTURE_DIM 16384
+
 /*
  * skins will be outline flood filled and mip mapped
  * pics and sprites with alpha will be outline flood filled
