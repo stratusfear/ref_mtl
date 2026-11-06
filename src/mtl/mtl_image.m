@@ -881,8 +881,18 @@ MTL_FindImage(const char *name, imagetype_t type)
 	/*
 	 * load the pic from disk
 	 */
-	image = (image_t *)R_LoadImage(name, namewe, ext, type,
-		r_retexturing->value, (loadimage_t)MTL_LoadPic);
+	@autoreleasepool {
+		/* Z1: the decode / upload path (MTL_LoadPic -> MTL_UploadTexture)
+		   autoreleases its MTLTextureDescriptor and error-string
+		   temporaries. This is the single choke point for every image in
+		   the game (world textures, model skins via the findimage
+		   callback, UI pics), and registration calls it between frames
+		   where no frame pool exists. The image's own texture object is
+		   created with newTextureWithDescriptor: and stored in the
+		   mtltextures table, so it is not drained here. */
+		image = (image_t *)R_LoadImage(name, namewe, ext, type,
+			r_retexturing->value, (loadimage_t)MTL_LoadPic);
+	}
 
 	if (!image && r_validation->value > 0)
 	{

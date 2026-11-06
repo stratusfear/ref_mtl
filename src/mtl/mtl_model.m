@@ -1178,7 +1178,16 @@ RE_BeginRegistration(char *model)
 		Mod_Free(&models_known[0]);
 	}
 
-	r_worldmodel = Mod_ForName(fullname, NULL, true);
+	@autoreleasepool {
+		/* Z1: world loading builds the GPU lightmap textures
+		   (MTL_BeginBuildingLightmaps -> MTL_CreateLightmapTexture
+		   in mtl_surf.m); those MTLTextureDescriptor objects come
+		   from a class factory and are autoreleased. Registration
+		   runs between frames, outside the frame pool, so drain
+		   them here. The textures themselves are +1 and live in the
+		   lightmap table. */
+		r_worldmodel = Mod_ForName(fullname, NULL, true);
+	}
 	if (r_worldmodel != models_known)
 		ri.Sys_Error(ERR_DROP, "%s: Loaded a brush model after the world", __func__);
 }
@@ -1188,7 +1197,14 @@ RE_RegisterModel(char *name)
 {
 	model_t *mod;
 
-	mod = Mod_ForName(name, r_worldmodel, false);
+	@autoreleasepool {
+		/* Z1: same as RE_BeginRegistration: brush models with
+		   lightmaps create their textures here, and their
+		   autoreleased MTLTextureDescriptor temporaries need a
+		   pool between frames. Skins reload through the
+		   MTL_FindImage callback, which carries its own pool. */
+		mod = Mod_ForName(name, r_worldmodel, false);
+	}
 
 	if (mod)
 	{

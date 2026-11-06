@@ -595,7 +595,14 @@ RE_Init(void)
 	   device exist (R_SetMode -> GLimp_InitGraphics -> RE_InitContext). */
 	MTL_InitImages();
 	Mod_Init();
-	RE_InitParticleTexture();
+	@autoreleasepool {
+		/* Z1: the particle / square / white textures are built with
+		   MTL_LoadPic directly, outside the MTL_FindImage pool and
+		   outside any frame; drain their autoreleased descriptor
+		   temporaries here. The textures themselves are +1 and
+		   stored in the image table. */
+		RE_InitParticleTexture();
+	}
 	Draw_InitLocal();
 
 	ri.Vid_MenuInit();
@@ -623,7 +630,10 @@ RE_Init(void)
  Discard a frame left open by a mid-frame error: end any open
  encoder first (releasing a command buffer with an encoder still
  open is a debug-layer assertion), drop the uncommitted command
- buffer, free the abandoned frame's own slot, clear frame_active.
+ buffer, free the abandoned frame's own slot, clear frame_active,
+ drop the abandoned frame's drawable reference and drain that
+ frame's autorelease pool (Z1; the drain must run after
+ endEncoding, freeing a live encoder is a debug-layer failure).
  Callers must invoke it while frame_slot / frame_number still
  refer to the abandoned frame - in RE_BeginFrame that means before
  the frame counter is advanced.
@@ -657,6 +667,21 @@ MTL_AbandonOpenFrame(void)
 	atomic_store_explicit(&st->slot_busy[st->frame_slot], false,
 	                      memory_order_release);
 	st->frame_active = false;
+
+	/* Z1: the frame's drawable is owned by the frame's autorelease
+	   pool; nil the stored reference before the drain below frees it
+	   so RE_EndFrame's present path can never message a stale pointer.
+	   A drawable that was never presented is returned to the layer by
+	   that release, which is exactly what an abandoned frame wants. */
+	st->drawable = nil;
+	/* Z1: drain the abandoned frame's pool; it also frees the encoders
+	   ended above and the command buffer released above (their explicit
+	   retains are gone, the factory autoreleases live in this pool). */
+	if (st->frame_pool != nil)
+	{
+		[st->frame_pool release];
+		st->frame_pool = nil;
+	}
 
 	Com_DPrintf("ref_mtl: discarding frame %llu left open by a "
 	            "mid-frame error\n", (unsigned long long)st->frame_number);
@@ -839,9 +864,22 @@ RE_ShutdownContext(void)
 	// L1: no frame may outlive the context or the dylib
 	MTL_DrainInFlightFrames();
 
+	/* Z1: same no-dangling-token rule as RE_Shutdown: a pool left by a
+	   skipped RE_BeginFrame return (frame_active already false, so
+	   DrainInFlightFrames does not reach it) must die with the context;
+	   the next RE_InitContext + RE_BeginFrame starts a fresh one. */
+	if (st->frame_pool != nil)
+	{
+		[st->frame_pool release];
+		st->frame_pool = nil;
+	}
+
 	if (st->metal_view != NULL)
 	{
-		SDL_Metal_DestroyView((SDL_MetalView)st->metal_view);
+		@autoreleasepool {
+			// Z1: SDL's Cocoa teardown autoreleases temporaries here
+			SDL_Metal_DestroyView((SDL_MetalView)st->metal_view);
+		}
 	}
 
 	st->window = NULL;
@@ -860,6 +898,17 @@ RE_Shutdown(void)
 	   idempotent): RE_Shutdown also releases the queue/device and
 	   zeroes mtl_state, and nothing in flight may touch any of it. */
 	MTL_DrainInFlightFrames();
+
+	/* Z1: never leave the frame-pool token dangling across shutdown:
+	   DrainInFlightFrames only drains it when it abandons an open
+	   frame, and RE_BeginFrame's early-return leftovers must not
+	   survive the zeroed state (a lost pool means a permanently
+	   undrained one). */
+	if (st->frame_pool != nil)
+	{
+		[st->frame_pool release];
+		st->frame_pool = nil;
+	}
 
 	/* L2: remove every command this dylib registered, not just
 	   "screenshot": the host dlcloses the renderer right after
@@ -2682,13 +2731,17 @@ RE_InitContext(void *sdl_window)
 	st->window = window;
 
 	/* Metal 4 has no device side capability flag; the MTL4 APIs are
-	   simply unavailable on older systems, so this is an OS check. */
-	NSOperatingSystemVersion os = [[NSProcessInfo processInfo] operatingSystemVersion];
-	if (os.majorVersion < 26)
-	{
-		Com_Printf("ref_mtl: Metal 4 requires macOS 26 or later, found %d.%d. Not initializing.\n",
-		           (int)os.majorVersion, (int)os.minorVersion);
-		return false;
+	   simply unavailable on older systems, so this is an OS check.
+	   Z1: NSProcessInfo autoreleases - the frame pool does not exist
+	   this early, so scope one here. */
+	@autoreleasepool {
+		NSOperatingSystemVersion os = [[NSProcessInfo processInfo] operatingSystemVersion];
+		if (os.majorVersion < 26)
+		{
+			Com_Printf("ref_mtl: Metal 4 requires macOS 26 or later, found %d.%d. Not initializing.\n",
+			           (int)os.majorVersion, (int)os.minorVersion);
+			return false;
+		}
 	}
 
 	/* The device and friends survive mode changes. */
@@ -2709,9 +2762,12 @@ RE_InitContext(void *sdl_window)
 		   the next renderer. */
 		if (![device supportsFamily:MTLGPUFamilyMetal4])
 		{
-			Com_Printf("ref_mtl: default Metal device '%s' does not support "
-			           "the Metal 4 GPU family. Not initializing.\n",
-			           device.name.UTF8String);
+			@autoreleasepool {
+				// Z1: device.name is an autoreleased temporary
+				Com_Printf("ref_mtl: default Metal device '%s' does not support "
+				           "the Metal 4 GPU family. Not initializing.\n",
+				           device.name.UTF8String);
+			}
 			[device release];	/* Create rule: +1, not stored */
 			return false;
 		}
@@ -2746,10 +2802,21 @@ RE_InitContext(void *sdl_window)
 	}
 
 	/* W3: runtime shader compilation and world rings. Guarded by the
-	   plain pipeline so a failed first attempt is retried on mode changes. */
-	if (st->pipeline_plain == nil && !R_InitShaders())
+	   plain pipeline so a failed first attempt is retried on mode changes.
+	   Z1: pipeline creation autoreleases the label / source-link strings
+	   (mtl_main.m pipeline table, MTLCompileOptions); this entry point
+	   runs outside any frame pool, so scope a pool around it. */
+	if (st->pipeline_plain == nil)
 	{
-		return false;
+		qboolean shaders_ok;
+
+		@autoreleasepool {
+			shaders_ok = R_InitShaders();
+		}
+		if (!shaders_ok)
+		{
+			return false;
+		}
 	}
 
 	/* The SDL Metal view owns the CAMetalLayer we render into. M4: the
@@ -2757,7 +2824,12 @@ RE_InitContext(void *sdl_window)
 	   still comes back NULL destroys the view again - returning with
 	   the view alive leaked it (st->metal_view is only assigned after
 	   both exist). */
-	SDL_MetalView metal_view = SDL_Metal_CreateView(window);
+	SDL_MetalView metal_view;
+
+	@autoreleasepool {
+		// Z1: SDL's Cocoa view creation autoreleased temporaries here
+		metal_view = SDL_Metal_CreateView(window);
+	}
 
 	if (metal_view == NULL)
 	{
@@ -3185,6 +3257,24 @@ RE_BeginFrame(float camera_separation)
 	   frame counter advance below so frame_slot still identifies the
 	   abandoned frame. */
 	MTL_AbandonOpenFrame();
+
+	/* Z1: give the frame its own autorelease pool. Every factory call
+	   between here and the end of RE_EndFrame autoreleases into it:
+	   nextDrawable, commandBuffer (our stored reference is a separate
+	   explicit retain), renderCommandEncoderWithDescriptor:, the local
+	   MTLRenderPassDescriptors, property-getter temporaries. It is
+	   drained at the end of RE_EndFrame; the two drains before this
+	   point (MTL_AbandonOpenFrame above and the leftover check here)
+	   cover frames that ended early - a skipped RE_BeginFrame return
+	   leaves frame_active false, so only this one catches those.
+	   Push happens after the abandon so the discarded frame's objects
+	   are gone before the new pool exists. */
+	if (st->frame_pool != nil)
+	{
+		[st->frame_pool release];
+		st->frame_pool = nil;
+	}
+	st->frame_pool = [[NSAutoreleasePool alloc] init];
 
 	/* M1: r_vsync changed at runtime (video menu / console). The CAMetal
 	   layer property applies live, no mode change needed, so handle the
@@ -3781,7 +3871,10 @@ RE_EndFrame(void)
 	   buffer; the CPU gate in RE_BeginFrame polls the flag before
 	   reusing the slot three frames later. W9: report GPU-side command
 	   buffer errors through Com_Printf so they reach the console and
-	   the terminal log, like ref_vk's error paths. */
+	   the terminal log, like ref_vk's error paths. Z1: the block's
+	   @autoreleasepool stays - the handler runs on a Metal worker
+	   thread, and the pool stack is per-thread, so the render thread's
+	   frame pool cannot cover the autoreleased error strings here. */
 	{
 		int slot = st->frame_slot;
 		unsigned long long frame = (unsigned long long)st->frame_number;
@@ -3839,6 +3932,19 @@ RE_EndFrame(void)
 	[st->command_buffer commit];
 	[st->command_buffer release];
 	st->command_buffer = nil;
+
+	/* Z1: end the frame's autorelease pool: the presented drawable
+	   (the layer keeps its own reference until scanout completes,
+	   releasing ours here is what lets it recycle), the ended render
+	   command encoders, the local pass descriptors and getter
+	   temporaries. The command buffer is not pool-owned - it carried
+	   an explicit retain, released above. This runs on the render
+	   thread, the same one that pushed the pool in RE_BeginFrame. */
+	if (st->frame_pool != nil)
+	{
+		[st->frame_pool release];
+		st->frame_pool = nil;
+	}
 }
 
 /*

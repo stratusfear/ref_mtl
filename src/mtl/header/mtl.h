@@ -891,6 +891,23 @@ typedef struct mtlstate_s
 	   qboolean here is a data race. */
 	_Atomic bool			slot_busy[3];	// slot has a frame in flight (completion handler clears it)
 	qboolean			frame_active;	// frame in flight (Begin..End)
+	/* Z1: per-frame autorelease pool. RE_BeginFrame creates it,
+	   RE_EndFrame drains it at the very end of the frame; a frame that
+	   ends without reaching that drain (an early RE_BeginFrame return,
+	   a mid-frame ERR_DROP longjmp, shutdown) has its leftover drained
+	   at the top of the next RE_BeginFrame / in MTL_AbandonOpenFrame /
+	   in RE_Shutdown, so a token never dangles across a context. The
+	   drain frees everything the frame autoreleased: the nextDrawable
+	   result, commandBuffer's factory autorelease (our own reference is
+	   an explicit retain), the render command encoders, pass-descriptor
+	   and getter temporaries. Anything in mtlstate_t or a static that
+	   must outlive the frame has to hold an explicit retain/new;
+	   st->drawable is owned by this pool, which is why
+	   MTL_AbandonOpenFrame nils it before draining. Pools are
+	   per-thread: only the render thread (the one calling
+	   RE_BeginFrame/RE_EndFrame) pushes or pops this one; Metal's
+	   completion-handler thread keeps its own pool. */
+	NSAutoreleasePool			*frame_pool;	// current frame's pool (nil = none)
 	/* W9: ring consumption of the last completed frame, plus lifetime
 	   maxima, snapshotted in RE_EndFrame before RE_BeginFrame resets
 	   the per-slot offsets; reported by the "mtl_mem" command. P2: the
