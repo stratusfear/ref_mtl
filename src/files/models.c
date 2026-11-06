@@ -25,6 +25,7 @@
  */
 
 #include "../common/header/ref_shared.h"
+#include <limits.h> /* AB1: INT_MAX for the model block bounds */
 
 /*
 =================
@@ -273,6 +274,11 @@ Mod_LoadDkmFrames (dmdl_t *pheader, const byte *src, size_t infamesize, vec3_t t
 Mod_LoadMDL
 =================
 */
+/* AB1: Mod_CheckAliasHeader is defined below; the MDL loader runs the
+   header it generates through that shared check. */
+static qboolean
+Mod_CheckAliasHeader (const char *mod_name, const dmdl_t *hdr);
+
 static void *
 Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 	vec3_t mins, vec3_t maxs, struct image_s **skins, findimage_t find_image,
@@ -287,6 +293,12 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 	int skinwidth, skinheight, framesize;
 	int num_skins, num_xyz, num_st, num_tris, num_glcmds, num_frames;
 	int ofs_skins, ofs_st, ofs_tris, ofs_frames, ofs_glcmds, ofs_end;
+	/* AB1: the same quantities before they are narrowed: every one of
+	   them is fed by products of file supplied counts, so the bound
+	   checks run in 64 bit and only checked values become int. */
+	long long inputextent, framesize64, num_glcmds64;
+	long long ofs_skins64, ofs_st64, ofs_tris64, ofs_glcmds64,
+		ofs_frames64, ofs_end64;
 
 	pinmodel = (mdl_header_t *)buffer;
 
@@ -298,40 +310,38 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 		return NULL;
 	}
 
-	/* generate all offsets and sizes */
+	/* count and dimension fields, all file supplied */
 	num_skins = LittleLong (pinmodel->num_skins);
 	skinwidth = LittleLong (pinmodel->skinwidth);
 	skinheight = LittleLong (pinmodel->skinheight);
 	num_xyz = LittleLong (pinmodel->num_xyz);
 	num_st = num_xyz;
 	num_tris = LittleLong (pinmodel->num_tris);
-	num_glcmds = (
-		(3 * num_tris) * sizeof(int) * 3 + /* 3 vert */
-		(num_tris * sizeof(int)) + /* triangles count */
-		sizeof(int) /* final zero */) / sizeof(int);
 	num_frames = LittleLong (pinmodel->num_frames);
-	framesize = sizeof(daliasframe_t) + sizeof (dtrivertx_t) * (num_xyz - 1);
 
-	ofs_skins = sizeof(dmdl_t); // just skip header and go
-	ofs_st = ofs_skins + num_skins * MAX_SKINNAME;
-	ofs_tris = ofs_st + num_st * sizeof(dstvert_t);
-	ofs_glcmds = ofs_tris + num_tris * sizeof(dtriangle_t);
-	ofs_frames = ofs_glcmds + num_glcmds * sizeof(int);
-	/* one less as single vertx in frame by default */
-	ofs_end = ofs_frames + framesize * num_frames;
-
-	/* validate */
-	if (skinheight > MAX_LBM_HEIGHT)
+	/* AB1: these counts drive the input walk and the generated model
+	   block, so bound them before any of them is used in a product or
+	   as a divisor.  The MD2 limits are the natural ones: the loader
+	   emits a dmdl_t with the same layout the MD2 loader validates, and
+	   the texcoord scaling below divides by the skin dimensions. */
+	if ((skinwidth < 1) || (skinwidth > MAX_LBM_HEIGHT))
 	{
-		Com_Printf("%s: model %s has a skin taller than %d",
-				__func__, mod_name, MAX_LBM_HEIGHT);
+		Com_Printf("%s: model %s has skin width %d\n",
+				__func__, mod_name, skinwidth);
 		return NULL;
 	}
 
-	if (skinwidth > MAX_LBM_HEIGHT)
+	if ((skinheight < 1) || (skinheight > MAX_LBM_HEIGHT))
 	{
-		Com_Printf("%s: model %s has a skin wider than %d",
-				__func__, mod_name, MAX_LBM_HEIGHT);
+		Com_Printf("%s: model %s has skin height %d\n",
+				__func__, mod_name, skinheight);
+		return NULL;
+	}
+
+	if ((num_skins < 0) || (num_skins > MAX_MD2SKINS))
+	{
+		Com_Printf("%s: model %s has %d skins",
+				__func__, mod_name, num_skins);
 		return NULL;
 	}
 
@@ -356,6 +366,15 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 		return NULL;
 	}
 
+	/* AB1: num_tris was unbounded above; MAX_TRIANGLES also caps the
+	   renderer's command list. */
+	if (num_tris > MAX_TRIANGLES)
+	{
+		Com_Printf("%s: model %s has too many triangles",
+				__func__, mod_name);
+		return NULL;
+	}
+
 	if (num_frames <= 0)
 	{
 		Com_Printf("%s: model %s has no frames",
@@ -363,12 +382,111 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 		return NULL;
 	}
 
-	if (modfilelen < ofs_end)
+	/* AB1: num_frames was unbounded above */
+	if (num_frames > MAX_FRAMES)
+	{
+		Com_Printf("%s: model %s has too many frames",
+				__func__, mod_name);
+		return NULL;
+	}
+
+	/* AB1: the old code bounded only the generated model block (the
+	   ofs_end check below), never the input: the walk over the skins
+	   (a 4 byte type plus skinwidth*skinheight pixels each), the
+	   num_st texcoords, the num_tris triangles and the frames (a 4
+	   byte type, two bounding box records, a 16 byte name and num_xyz
+	   vertices each) could leave the buffer.  Sum the whole input
+	   extent in 64 bit and reject against the file length first. */
+	inputextent = (long long)sizeof(mdl_header_t)
+		+ (long long)num_skins * (sizeof(int) +
+			(long long)skinwidth * skinheight)
+		+ (long long)num_st * sizeof(mdl_texcoord_t)
+		+ (long long)num_tris * sizeof(mdl_triangle_t)
+		+ (long long)num_frames * (sizeof(int) +
+			2 * sizeof(dtrivertx_t) + 16 +
+			(long long)num_xyz * sizeof(dtrivertx_t));
+	if (inputextent > (long long)modfilelen)
+	{
+		Com_Printf("%s: model %s is truncated: needs %lld bytes, "
+				"file has %d\n",
+				__func__, mod_name, inputextent, modfilelen);
+		return NULL;
+	}
+
+	/* generate all offsets and sizes in 64 bit (AB1: the old int
+	   arithmetic wrapped for hostile counts, and num_glcmds was
+	   truncated from a size_t expression) */
+	num_glcmds64 = (long long)num_tris * 10 + 1;
+	/* three ints per vertex (s, t, index), a triangle count and a
+	   final zero */
+	framesize64 = (long long)sizeof(daliasframe_t) +
+		(long long)sizeof(dtrivertx_t) * (num_xyz - 1);
+
+	ofs_skins64 = sizeof(dmdl_t); // just skip header and go
+	ofs_st64 = ofs_skins64 + (long long)num_skins * MAX_SKINNAME;
+	ofs_tris64 = ofs_st64 + (long long)num_st * sizeof(dstvert_t);
+	ofs_glcmds64 = ofs_tris64 + (long long)num_tris * sizeof(dtriangle_t);
+	ofs_frames64 = ofs_glcmds64 + num_glcmds64 * sizeof(int);
+	/* one less as single vertx in frame by default */
+	ofs_end64 = ofs_frames64 + framesize64 * num_frames;
+
+	if (ofs_end64 > INT_MAX)
 	{
 		Com_Printf("%s: model %s is too big.",
 				__func__, mod_name);
 		return NULL;
 	}
+
+	/* AB1: the check the Z6 helper applies to the MD2, flex and DKM
+	   headers, run here on the values the loader is about to store;
+	   it re-checks the section extents and the frame stride against
+	   the finished layout. */
+	{
+		dmdl_t chkheader;
+
+		chkheader.ident = IDALIASHEADER;
+		chkheader.version = ALIAS_VERSION;
+		chkheader.skinwidth = (int)skinwidth;
+		chkheader.skinheight = (int)skinheight;
+		chkheader.framesize = (int)framesize64;
+		chkheader.num_skins = num_skins;
+		chkheader.num_xyz = num_xyz;
+		chkheader.num_st = num_st;
+		chkheader.num_tris = num_tris;
+		chkheader.num_glcmds = (int)num_glcmds64;
+		chkheader.num_frames = num_frames;
+		chkheader.ofs_skins = (int)ofs_skins64;
+		chkheader.ofs_st = (int)ofs_st64;
+		chkheader.ofs_tris = (int)ofs_tris64;
+		chkheader.ofs_frames = (int)ofs_frames64;
+		chkheader.ofs_glcmds = (int)ofs_glcmds64;
+		chkheader.ofs_end = (int)ofs_end64;
+
+		if (!Mod_CheckAliasHeader(mod_name, &chkheader))
+		{
+			return NULL;
+		}
+	}
+
+	/* the model block may not exceed the file either, so the hunk
+	   allocation stays bounded by input the caller has already shown
+	   to exist (kept from the old code, now 64 bit) */
+	if ((long long)modfilelen < ofs_end64)
+	{
+		Com_Printf("%s: model %s is too big.",
+				__func__, mod_name);
+		return NULL;
+	}
+
+	/* narrow: every value is now within range */
+	framesize = (int)framesize64;
+	num_glcmds = (int)num_glcmds64;
+	ofs_skins = (int)ofs_skins64;
+	ofs_st = (int)ofs_st64;
+	ofs_tris = (int)ofs_tris64;
+	ofs_glcmds = (int)ofs_glcmds64;
+	ofs_frames = (int)ofs_frames64;
+	ofs_end = (int)ofs_end64;
 
 	extradata = Hunk_Begin(ofs_end);
 	pheader = Hunk_Alloc(ofs_end);
@@ -400,6 +518,7 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 
 		mdl_triangle_t *triangles;
 		mdl_texcoord_t *texcoords;
+		dtriangle_t *pouttri; /* AB1: also used by the glcmds below */
 
 		curr_pos = (byte*)buffer + sizeof (mdl_header_t);
 
@@ -454,7 +573,7 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 
 		/* triangles */
 		{
-			dtriangle_t *pouttri = (dtriangle_t *) ((byte *)pheader + ofs_tris);
+			pouttri = (dtriangle_t *) ((byte *)pheader + ofs_tris);
 
 			triangles = (mdl_triangle_t *) curr_pos;
 			curr_pos += sizeof (mdl_triangle_t) * num_tris;
@@ -465,8 +584,22 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 
 				for (j=0 ; j<3 ; j++)
 				{
-					pouttri[i].index_xyz[j] = LittleLong (triangles[i].vertex[j]);
-					pouttri[i].index_st[j] = pouttri[i].index_xyz[j];
+					int vertex = LittleLong (triangles[i].vertex[j]);
+
+					/* AB1: these indices are stored (through shorts)
+					   for the renderer and replayed as offsets into the
+					   vertex and st arrays; a value outside them must
+					   not be stored. */
+					if ((vertex < 0) || (vertex >= num_xyz))
+					{
+						Com_Printf("%s: model %s has triangle "
+								"vertex index %d",
+								__func__, mod_name, vertex);
+						return NULL;
+					}
+
+					pouttri[i].index_xyz[j] = vertex;
+					pouttri[i].index_st[j] = vertex;
 				}
 			}
 		}
@@ -489,7 +622,10 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 					float s,t;
 					int index;
 
-					index = triangles[i].vertex[j];
+					/* AB1: use the index the triangle loop above
+					   already range-checked; reading the raw file
+					   value again here would bypass that check */
+					index = pouttri[i].index_xyz[j];
 
 					/* Compute texture coordinates */
 					s = LittleLong (texcoords[index].s);

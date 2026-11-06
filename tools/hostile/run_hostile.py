@@ -110,10 +110,20 @@ CASES = [
     ("f_tiny",           ["+map", "base1"], "Failed to load", None),
     ("d_wrap",           ["+map", "base1"], "Failed to load", None),
     ("s_short",          ["+map", "base1"], "Failed to load", None),
+    # AB1: IDPO (Quake 1 .mdl) files on the same view-model path
+    ("m_mdl484",          ["+map", "base1"], "is truncated", None),
+    ("m_mdlskin0",        ["+map", "base1"], "skin width 0", None),
+    ("m_mdlskinneg",      ["+map", "base1"], "skin width -4", None),
+    ("m_mdlskinsneg",     ["+map", "base1"], "has -1 skins", None),
+    ("m_mdltrisbig",      ["+map", "base1"], "too many triangles", None),
+    ("m_mdlframes600",    ["+map", "base1"], "too many frames", None),
+    ("m_mdlvindex",       ["+map", "base1"], "vertex index 9", None),
+    ("m_mdlextent",       ["+map", "base1"], "is truncated", None),
     # Z6 controls: well-formed replacements must load
     ("c_md2",            ["+map", "base1"], None, "Failed to load"),
     ("c_flex",           ["+map", "base1"], None, "Failed to load"),
     ("c_sp2",            ["+map", "base1"], None, "Failed to load"),
+    ("c_mdl",             ["+map", "base1"], None, "Failed to load"),
 ]
 
 # staged file copied onto the overlay path for model cases (None = remove
@@ -128,9 +138,18 @@ STAGE = {
     "f_tiny":     (MD2, "staging/fm_tiny.fm"),
     "d_wrap":     (MD2, "staging/dk_wrap.dkm"),
     "s_short":    (SP2, "staging/sp2_short.sp2"),
+    "m_mdl484":        (MD2, "staging/mdl_484.md2"),
+    "m_mdlskin0":      (MD2, "staging/mdl_skin0.md2"),
+    "m_mdlskinneg":    (MD2, "staging/mdl_skinneg.md2"),
+    "m_mdlskinsneg":   (MD2, "staging/mdl_skinsneg.md2"),
+    "m_mdltrisbig":    (MD2, "staging/mdl_trisbig.md2"),
+    "m_mdlframes600":  (MD2, "staging/mdl_frames.md2"),
+    "m_mdlvindex":     (MD2, "staging/mdl_vindex.md2"),
+    "m_mdlextent":     (MD2, "staging/mdl_extent.md2"),
     "c_md2":      (MD2, "staging/c_md2.md2"),
     "c_flex":     (MD2, "staging/c_flex.fm"),
     "c_sp2":      (SP2, "staging/c_sp2.sp2"),
+    "c_mdl":      (MD2, "staging/c_mdl.md2"),
 }
 
 

@@ -135,6 +135,61 @@ def main():
     fmb += fm_block("glcmds", 1, VB[o_glcmds:o_glcmds + ncmd * 4])
     out["staging/c_flex.fm"] = fmb
 
+    # MDL (Quake 1 alias, magic IDPO): a file starting with IDPO on the
+    # view-model path reaches Mod_LoadMDL (AB1).  mdl() assembles a
+    # well-formed file; the variants below break one input each.
+    def mdl_hdr(num_skins, sw, sh, xyz, tris, frames):
+        h = struct.pack("<4si10f8if", b"IDPO", 6,
+                        1.0, 1.0, 1.0,          # scale
+                        0.0, 0.0, 0.0,          # translate
+                        32.0,                   # boundingradius
+                        0.0, 0.0, 0.0,          # eyeposition
+                        num_skins, sw, sh,      # skins
+                        xyz, tris, frames,      # geometry counts
+                        0, 0,                   # synctype, flags
+                        1.0)                    # size
+        assert len(h) == 84, len(h)
+        return h
+
+    def mdl(num_skins=1, sw=16, sh=16, xyz=3, tris=1, frames=1,
+            verts=None, pad=0):
+        if verts is None:
+            verts = [(0, 1, 2)] * tris
+        body = b""
+        for i in range(max(num_skins, 0)):
+            body += struct.pack("<i", 0) + bytes(max(sw * sh, 0))
+        for i in range(xyz):
+            body += struct.pack("<3i", 2 * i, 2 * i + 1, 0)  # onseam, s, t
+        for i in range(max(tris, 0)):
+            body += struct.pack("<4i", 1, *verts[i])         # facesfront + 3 vert
+        for f in range(max(frames, 0)):
+            body += (struct.pack("<i", 0) + b"\0" * 4 + b"\0" * 4 +
+                     b"frame".ljust(16, b"\0") + b"\0" * (4 * xyz))
+        return mdl_hdr(num_skins, sw, sh, xyz, tris, frames) + body + b"\0" * pad
+
+    # the reviewer's file: 84-byte header plus 400 zero bytes, claiming a
+    # 480x480 skin (defect: the input walk is never bounded by the length)
+    out["staging/mdl_484.md2"] = mdl_hdr(1, 480, 480, 3, 1, 1) + b"\0" * 400
+    # zero and negative skin width: the skin advance and the s division
+    out["staging/mdl_skin0.md2"] = mdl(1, 0, 16, 3, 1, 1, pad=120)
+    out["staging/mdl_skinneg.md2"] = mdl(1, -4, 16, 3, 1, 1, pad=120)
+    # negative num_skins (drives ofs_st backwards into the header)
+    out["staging/mdl_skinsneg.md2"] = mdl(-1, 16, 16, 3, 1, 1)
+    # triangle and frame counts beyond MAX_TRIANGLES/MAX_FRAMES
+    out["staging/mdl_trisbig.md2"] = mdl_hdr(0, 16, 16, 3, 400000, 1) + \
+        b"\0" * (3 * 12 + 40)
+    out["staging/mdl_frames.md2"] = mdl(1, 16, 16, 3, 1, 600, pad=24000)
+    # a triangle vertex index beyond num_xyz (old code reads texcoords[9]
+    # and stores the index through a short for the renderer to replay)
+    out["staging/mdl_vindex.md2"] = mdl(1, 16, 16, 3, 1, 1, verts=[(0, 1, 9)])
+    # 20 skins of 480x480 claimed but only 1.4 kB of pixels present:
+    # ofs_end fits the file (the old check passes) but the skin walk
+    # leaves the buffer on the second skin
+    out["staging/mdl_extent.md2"] = mdl_hdr(20, 480, 480, 3, 1, 1) + \
+        struct.pack("<i", 0) + b"\0" * 1432
+    # control: a well-formed 1-skin MDL that must load
+    out["staging/c_mdl.md2"] = mdl(1, 16, 16, 3, 1, 1)
+
     # DKM: valid header geometry with a frame-section product wrapping to 0 (Z6)
     dkm = struct.pack("<2i3f15i", 0x444D4B44, 1, 0.0, 0.0, 0.0,
                       0x20000000,          # framesize
