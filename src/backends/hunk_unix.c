@@ -87,7 +87,14 @@ Hunk_Begin(int maxsize)
 		Sys_Error("unable to virtual allocate %d bytes", maxsize);
 	}
 
-	*((size_t *)membase) = curhunksize;
+	/* Z4: the header records the size of the mapping, not the used
+	   size: an ERR_DROP longjmp out of a model load can reach
+	   Hunk_Free before Hunk_End ever ran, and unmapping 0 bytes
+	   fails with EINVAL.  Recording the full reserved mapping
+	   makes Hunk_Free correct at any point of the load; Hunk_End
+	   still narrows the header to the used size once the mapping
+	   itself has been shrunk. */
+	*((size_t *)membase) = maxhunksize;
 
 	return membase + sizeof(size_t);
 }

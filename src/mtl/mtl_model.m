@@ -100,8 +100,25 @@ Mod_Free(model_t *mod)
 {
 	if (!mod->extradata)
 	{
-		/* looks as empty model */
+		/* Z4: two very different slots land here.  A fully empty
+		   slot was never counted.  A named slot whose load was
+		   interrupted before Hunk_Begin took the mod_loaded
+		   increment in Mod_ForName and never reversed it (the
+		   ERR_DROP longjmps out), so the count must be released
+		   here; the mod_loaded-- below only covers hunks. */
+		qboolean counted = mod->name[0] != 0;
+
 		memset (mod, 0, sizeof(*mod));
+
+		if (counted)
+		{
+			mod_loaded --;
+
+			if (mod_loaded < 0)
+			{
+				ri.Sys_Error (ERR_DROP, "%s: Broken unload", __func__);
+			}
+		}
 		return;
 	}
 
@@ -1007,6 +1024,22 @@ Mod_ForName(const char *name, model_t *parent_model, qboolean crash)
 
 		if (!strcmp(mod->name, name))
 		{
+			/* Z4: a load interrupted by an ERR_DROP longjmp
+			   never cleared the loading sentinel in
+			   extradatasize.  The slot is half built (its
+			   submodels, leafs etc. are unwritten), reusing it
+			   breaks later maps; release it - Hunk_Free
+			   handles the partial hunk - and fall through to
+			   the fresh load below, which reuses the now free
+			   slot.  mod_loaded was incremented by the
+			   interrupted load; Mod_Free's decrement balances
+			   it. */
+			if (mod->extradatasize < 0)
+			{
+				Mod_Free(mod);
+				break;
+			}
+
 			return mod;
 		}
 	}
@@ -1057,6 +1090,12 @@ Mod_ForName(const char *name, model_t *parent_model, qboolean crash)
 
 	/* update count of loaded models */
 	mod_loaded ++;
+	/* Z4: loading sentinel.  Any ERR_DROP from the loaders below
+	   longjmps out and leaves this slot named-but-incomplete; the
+	   cache search above treats a negative extradatasize as such
+	   and rebuilds the slot.  Cleared implicitly by Hunk_End at
+	   the bottom of this function. */
+	mod->extradatasize = -1;
 	if (r_validation->value > 0)
 	{
 		Com_Printf("%s: Load %s[%d]\n", __func__, mod->name, mod_loaded);
