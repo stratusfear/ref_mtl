@@ -555,6 +555,18 @@ Mod_LoadFaces(model_t *loadmodel, const byte *mod_base, const lump_t *l, const b
 			Com_Error(ERR_DROP, "%s: Surface with %d edges",
 					__func__, out->numedges);
 		}
+
+		/* Z5b: the face's edge list must lie inside the SURFEDGES lump
+		   that CalcSurfaceExtents and the polygon builder walk. */
+		if ((out->firstedge < 0) ||
+			(out->firstedge + out->numedges > loadmodel->numsurfedges))
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s face %i at firstedge %i with %i "
+					"edges exceeds the %i surfedges of the model",
+					__func__, loadmodel->name, surfnum,
+					out->firstedge, out->numedges,
+					loadmodel->numsurfedges);
+		}
 		out->flags = 0;
 		out->polys = NULL;
 
@@ -992,6 +1004,37 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 		mod_base, &header->lumps[LUMP_EDGES], 1);
 	Mod_LoadSurfedges(mod->name, &mod->surfedges, &mod->numsurfedges,
 		mod_base, &header->lumps[LUMP_SURFEDGES], 0);
+
+	/* Z5b: a face walks the SURFEDGES lump and each entry picks a vertex
+	   pair out of the EDGES lump, so both tables must stay inside the
+	   data the loaders above just filled.  The e <= -numedges test also
+	   rejects INT_MIN: a face negates negative entries, and -INT_MIN is
+	   still negative. */
+	for (i = 0; i < mod->numedges; i++)
+	{
+		if (mod->edges[i].v[0] >= (unsigned int)mod->numvertexes ||
+			mod->edges[i].v[1] >= (unsigned int)mod->numvertexes)
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s edge %i references vertex %u/%u "
+					"outside the %i loaded vertexes",
+					__func__, mod->name, i,
+					mod->edges[i].v[0], mod->edges[i].v[1],
+					mod->numvertexes);
+		}
+	}
+
+	for (i = 0; i < mod->numsurfedges; i++)
+	{
+		int e = mod->surfedges[i];
+
+		if (e <= -mod->numedges || e >= mod->numedges)
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s surfedge %i references edge %i "
+					"outside the %i loaded edges",
+					__func__, mod->name, i, e, mod->numedges);
+		}
+	}
+
 	Mod_LoadLighting(&mod->lightdata, mod_base, &header->lumps[LUMP_LIGHTING]);
 	Mod_LoadPlanes(mod->name, &mod->planes, &mod->numplanes,
 		mod_base, &header->lumps[LUMP_PLANES], 0);
