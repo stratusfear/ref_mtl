@@ -42,6 +42,9 @@ def main():
         "runaway_small.bin": runaway(20000),   # under MAX_MAP_LEAFS
         "runaway_big.bin": runaway(100000),    # row past decompressed[]
         "bigrow.bin": literals(100000, 0x2A, 13000),  # row 12500 > 8192
+        # AE11: row == buffer size, 8191 literals then a 00 ff header
+        # that used to write 255 zeros past the row end
+        "overshoot.bin": literals(65536, 0x2A, 8191) + b"\x00\xff",
     }
     for name, blob in seeds.items():
         with open(os.path.join(out, name), "wb") as f:

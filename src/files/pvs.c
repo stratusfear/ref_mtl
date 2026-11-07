@@ -115,7 +115,15 @@ Mod_DecompressVis(const byte *in, int row)
 		c = in[1];
 		in += 2;
 
-		while (c)
+		/* AE11: the header writes c bytes blind, past the row end
+		   this loop is bounded by: a header near the end of the
+		   row writes up to 254 bytes too many (fuzz_pvs seed:
+		   numclusters 65536 so row == sizeof(decompressed), 8191
+		   literals, then 00 ff -> write at decompressed + 8192,
+		   pvs.c:120).  Well-formed streams never straddle the row
+		   end, so stopping the run at the boundary only cuts
+		   hostile data. */
+		while (c && ((out - decompressed) < row))
 		{
 			*out++ = 0;
 			c--;
