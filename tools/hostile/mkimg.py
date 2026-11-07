@@ -160,14 +160,17 @@ def main():
         return h
 
     def mdl(num_skins=1, sw=16, sh=16, xyz=3, tris=1, frames=1,
-            verts=None, pad=0, skin_type=0, frame_type=0):
+            verts=None, pad=0, skin_type=0, frame_type=0, st=None):
         if verts is None:
             verts = [(0, 1, 2)] * tris
         body = b""
         for i in range(max(num_skins, 0)):
             body += struct.pack("<i", skin_type) + bytes(max(sw * sh, 0))
         for i in range(xyz):
-            body += struct.pack("<3i", 2 * i, 2 * i + 1, 0)  # onseam, s, t
+            if st and i == 0:
+                body += struct.pack("<3i", 0, *st)   # onseam, s, t
+            else:
+                body += struct.pack("<3i", 2 * i, 2 * i + 1, 0)
         for i in range(max(tris, 0)):
             body += struct.pack("<4i", 1, *verts[i])         # facesfront + 3 vert
         for f in range(max(frames, 0)):
@@ -312,6 +315,78 @@ def main():
     out["staging/af1_dkm_frames.md2"] = dkmf(2, num_xyz=32, num_st=32,
                                             glcmds=DCTRL, fs=168,
                                             frames_last=True)
+
+    # AF2.5: the defects the long fuzz_models legs found, one minimal
+    # repro each.  MD2: the Z6 bounds keep every section inside
+    # ofs_end but not out of each other's or the header's way; both
+    # files are the well-formed v_blast header with ONE offset field
+    # patched, so only the new pairwise-disjoint block in
+    # Mod_CheckAliasHeader rejects them.
+    d = bytearray(VB)
+    struct.pack_into("<i", d, 48, 44)	    # ofs_st into the dmdl_t header
+    out["staging/af2_md2_stinhdr.md2"] = bytes(d)
+    d = bytearray(VB)
+    struct.pack_into("<i", d, 60, o_tris)   # glcmds over triangles
+    out["staging/af2_md2_ovl.md2"] = bytes(d)
+    # The fuzzer's own MD2 repro, rebuilt here so the fixture is
+    # generator-only (tools/fuzz/crashers/ is not committed): the
+    # libFuzzer-minimised unit (13496 B) has the dmdl_t below and
+    # 13428 bytes of body.  num_skins 513 is clamped to MAX_MD2SKINS
+    # before Z6's checks, so nothing bounds the RAW 513; ofs_st = 1
+    # makes the st list write into the model's own header, and the
+    # header's num_skins is re-stamped with 513 by that write after
+    # the loader's own clamp, so the LAST copy - the skins memcpy at
+    # models.c:1151 (1048 at the pre-fix baseline),
+    # pheader->num_skins * MAX_SKINNAME = 32832 bytes - runs off the
+    # end of the 13496-byte file buffer.  Rebuilt from v_blast's body
+    # with the crasher's header, this file reproduces that signature
+    # exactly (ASan heap-buffer-overflow READ of size 32832, "0 bytes
+    # after 13496-byte region") on the pre-fix fuzz build, and the
+    # fixed loader rejects it with the reason line the case asserts.
+    STOMP_HDR = struct.pack("<4s16i", b"IDP2",
+                            8, 260, 195, 448,          # ver sw sh framesize
+                            513, 102, 113, 192, 843, 16,  # nskins xyz st tris
+                                                       #  ncmd nframes
+                            68, 1, 584, 2888, 10056, 13428)  # ofs_*    assert len(STOMP_HDR) == 68, len(STOMP_HDR)
+    out["staging/af2_md2_stomp.md2"] = (STOMP_HDR +
+                                        VB[68:68 + 13428])[:13496]
+    # flex: a second header block (would re-run Hunk_Begin), a
+    # truncated trailing block header (loop-top reject after
+    # Hunk_Begin), and a block name that fills all 32 bytes with no
+    # terminator (the %s print used to run over the stack copy)
+    hdrbody = struct.pack("<10i", sw, sh, fs, nskin, nxyz, nst, ntri,
+                          ncmd, nfr, 0)
+    out["staging/af2_flex_2hdr.fm"] = fmb + fm_block("header", 2, hdrbody)
+    out["staging/af2_flex_trun.fm"] = fmb + b"head" + b"\0" * 16
+    # NOTE the AAAA block goes LAST: the format's magic is the first
+    # four bytes of the first block name ("head" = RAVENFMHEADER), so
+    # a file that starts with a 32-byte name never reaches the block
+    # loop at all - Mod_LoadAliasModel's ident switch drops it with
+    # "unknown fileid" (measured: that is what a leading-AAAA file
+    # does on the host).
+    out["staging/af2_flex_blk33.fm"] = (fmb + b"A" * 32 +
+                                        struct.pack("<2i", 2, 0))
+    # MDL: texcoord at skinwidth (the short-narrowing / float-cast
+    # overflow input); 16x16 skin, s=16 is one past the format range
+    out["staging/af2_mdl_texrange.md2"] = mdl(1, 16, 16, 3, 1, 1,
+                                              st=(16, 0))
+    # SP2: frame name fills the whole 64-byte field with no NUL; the
+    # snprintf("sprites/%s") fallback used to read past the file
+    # buffer.  No console line of its own (the sprite simply is not
+    # found): the assertion is survive + clean, over-read or not is
+    # the ASan host leg's business (af2 rows run under both hosts).
+    out["staging/af2_sp2_name.sp2"] = (struct.pack("<4sii", b"IDS2", 2, 1) +
+                                       struct.pack("<4i", 4, 4, 0, 0) +
+                                       b"af2sp2nametest" * 4 + b"deadbeef")
+    # controls for the same loaders with one valid extra each: a flex
+    # file whose blocks are all intact must still load (c_flex above),
+    # an MDL whose texcoords sit at the LAST legal coordinate, and an
+    # SP2 whose name is 63 chars plus NUL
+    out["staging/c_af2_mdl_edge.md2"] = mdl(1, 16, 16, 3, 1, 1,
+                                            st=(15, 15))
+    out["staging/c_af2_sp2_name.sp2"] = (struct.pack("<4sii", b"IDS2", 2, 1) +
+                                         struct.pack("<4i", 4, 4, 0, 0) +
+                                         b"af2edge".ljust(64, b"\0"))
 
 
     for k, v in out.items():

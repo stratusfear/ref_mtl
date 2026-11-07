@@ -91,7 +91,15 @@ Sys_Error(const char *error, ...)
 
 /* Com_Printf: keep the text, discard the output; the last line is
    printed with any sanitizer report through fuzz_last_error's
-   companion below. */
+   companion below.
+
+   AF2.5: FUZZ_PRINT_ERRORS=1 also echoes every rejection line as it
+   is produced.  Triaging a rejection needs the reason, and the
+   crash-only echo above never runs for an input the loader turns
+   down cleanly - until now the reason was only visible on a game
+   host leg.  Off by default: a fuzzing session prints nothing new. */
+static int fuzz_print_errors = -1;
+
 void
 Com_Printf(const char *fmt, ...)
 {
@@ -100,6 +108,15 @@ Com_Printf(const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(fuzz_last_error, sizeof(fuzz_last_error), fmt, ap);
 	va_end(ap);
+
+	if (fuzz_print_errors < 0)
+	{
+		fuzz_print_errors = getenv("FUZZ_PRINT_ERRORS") != NULL;
+	}
+	if (fuzz_print_errors)
+	{
+		fprintf(stderr, "loader: %s\n", fuzz_last_error);
+	}
 }
 
 void

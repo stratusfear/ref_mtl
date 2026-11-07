@@ -151,6 +151,24 @@ CASES = [
     ("m_af1_frames",      ["+map", "base1"], "v2 framesize 168 for 32 vertices", None),
     ("c_af1_dkm_v2",      ["+map", "base1"], None, "Failed to load"),
     ("c_af1_dkm_v1",      ["+map", "base1"], None, "Failed to load"),
+    # AF2.5: the fuzz_models finds on the same overlay paths.  The two
+    # MD2 files patch ONE offset each of a well-formed v_blast header,
+    # so only the new pairwise-disjoint section block rejects them.
+    # The flex rows are the second-header, truncated-trailing-header
+    # and unterminated-block-name defects; sp2name's frame name runs
+    # the full 64 bytes with no NUL (no console line of its own, the
+    # assertion is survive + clean; the over-read is caught by the
+    # ASan-host leg).  Controls: legal edge coordinates must load.
+    ("m_af2_stinhdr",     ["+map", "base1"], "inside its own header", None),
+    ("m_af2_ovl",         ["+map", "base1"], "overlapping triangles and glcmds", None),
+    ("m_af2_stomp",       ["+map", "base1"], "st section at 1, inside its own header", None),
+    ("m_af2_2hdr",        ["+map", "base1"], "has a second header block", None),
+    ("m_af2_trun",        ["+map", "base1"], "where a block header needs", None),
+    ("m_af2_blk33",       ["+map", "base1"], "Unknown block AAAA", None),
+    ("m_af2_texrange",    ["+map", "base1"], "has texcoord 16,0 out of range", None),
+    ("m_af2_sp2name",     ["+map", "base1"], None, None),
+    ("c_af2_mdledge",     ["+map", "base1"], None, "Failed to load"),
+    ("c_af2_sp2name",     ["+map", "base1"], None, "Failed to load"),
     # Z6 controls: well-formed replacements must load
     ("c_md2",            ["+map", "base1"], None, "Failed to load"),
     ("c_flex",           ["+map", "base1"], None, "Failed to load"),
@@ -192,6 +210,16 @@ STAGE = {
     "m_af1_frames":    (MD2, "staging/af1_dkm_frames.md2"),
     "c_af1_dkm_v2":    (MD2, "staging/af1_dkm_okv2.md2"),
     "c_af1_dkm_v1":    (MD2, "staging/af1_dkm_okv1.md2"),
+    "m_af2_stinhdr":   (MD2, "staging/af2_md2_stinhdr.md2"),
+    "m_af2_ovl":       (MD2, "staging/af2_md2_ovl.md2"),
+    "m_af2_stomp":     (MD2, "staging/af2_md2_stomp.md2"),
+    "m_af2_2hdr":      (MD2, "staging/af2_flex_2hdr.fm"),
+    "m_af2_trun":      (MD2, "staging/af2_flex_trun.fm"),
+    "m_af2_blk33":     (MD2, "staging/af2_flex_blk33.fm"),
+    "m_af2_texrange":  (MD2, "staging/af2_mdl_texrange.md2"),
+    "m_af2_sp2name":   (SP2, "staging/af2_sp2_name.sp2"),
+    "c_af2_mdledge":   (MD2, "staging/c_af2_mdl_edge.md2"),
+    "c_af2_sp2name":   (SP2, "staging/c_af2_sp2_name.sp2"),
     "c_md2":      (MD2, "staging/c_md2.md2"),
     "c_flex":     (MD2, "staging/c_flex.fm"),
     "c_sp2":      (SP2, "staging/c_sp2.sp2"),

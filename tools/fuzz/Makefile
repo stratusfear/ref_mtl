@@ -38,8 +38,18 @@ TARGETS  := fuzz_pcx fuzz_wal fuzz_stb fuzz_models fuzz_pvs
 
 # The exact flags from the round-22 brief: fuzzer + ASan + UBSan,
 # UBSan non-recovering so every report kills the run.
+# AF2.1: alignment UBSan is off on purpose.  The model loaders read
+# little-endian dwords out of byte-offset file sections, and the
+# DKM/MDL section offsets are file-chosen, so the misaligned loads
+# at models.c:47/68/133 (round 22's "report-only" list) fire on
+# nearly every DKM-path mutation and aborted every fuzz_models
+# session at first inits (AE4 review: fuzz_models effectively never
+# ran).  arm64 defines these loads; AE2 measured that the misaligned
+# offsets feed only same-file copies and stride arithmetic; they have
+# no consequence there.  Everything else in UBSan stays on.
 FUZZFLAGS := -g -O1 -fno-omit-frame-pointer \
              -fsanitize=fuzzer,address,undefined \
+             -fno-sanitize=alignment \
              -fno-sanitize-recover=undefined
 
 # Matching the shipping build's C semantics and build-system defines.
@@ -129,17 +139,51 @@ smoke: fuzzers
 			-artifact_prefix=$(CRASHDIR)/ || exit 1; \
 	done
 
-# --- long session: make run T=fuzz_pcx TIME=1800 SEED=1 ---
+# --- long session: make run T=fuzz_pcx TIME=1800 SEED=1 RUNS=1000000 ---
+# AF2.3: per-target input caps.  fuzz_pcx's corpus is dominated by
+# full-size 640x480 RLE skins; under ASan+LSR a handful of them set
+# the pace (measured: 4-23 exec/s), and small hostile inputs - which
+# is what the decoder guards actually need - never get airtime.  A
+# few-KB PCX is still a complete small image with real RLE runs.
+# fuzz_stb: the shipped TGA/PNG/JPEG seeds are big; cap keeps the
+# mutation rate sane and the quarantined TGA bomb (see mkseedcorpus
+# QUARANTINE) can never re-enter.  Empty maxlen = no cap.
+fuzz_pcx_MAXLEN  ?= 8192
+fuzz_stb_MAXLEN  ?= 16384
+fuzz_wal_MAXLEN  ?=
+fuzz_models_MAXLEN ?=
+fuzz_pvs_MAXLEN  ?=
 
 TIME ?= 1800
 SEED ?= 0
+RUNS ?= 0
 
 run: fuzzers
 	$(BUILD)/$(T) $(CORPUS)/$(T) \
+		$(if $($(T)_MAXLEN),-max_len=$($(T)_MAXLEN),) \
+		$(if $(RUNS),-runs=$(RUNS),) \
 		-max_total_time=$(TIME) -error_exitcode=1 \
 		-rss_limit_mb=8192 -artifact_prefix=$(CRASHDIR)/ \
 		-dict=dictionaries/$${T#fuzz_}.dic \
-		-rand_seed=$(SEED)
+		-seed=$(SEED)
+
+# --- AF2.3: corpus minimisation: copy only coverage-producing units
+# out of an existing corpus (in libFuzzer's own judgement) ---
+# Recursive make per target so $(T)_MAXLEN is a make-level
+# expansion; a shell loop would leave $($(t)_MAXLEN) empty at
+# recipe-parse time and silently drop the input cap.
+
+merge:
+	@for t in $(TARGETS); do \
+		$(MAKE) --no-print-directory mergeone T=$$t || exit 1; \
+	done
+
+mergeone: fuzzers
+	@echo "===> merge $(T)"
+	@rm -rf $(CORPUS)/$(T).min; mkdir -p $(CORPUS)/$(T).min
+	$(BUILD)/$(T) $(CORPUS)/$(T).min $(CORPUS)/$(T) -merge=1 \
+		$(if $($(T)_MAXLEN),-max_len=$($(T)_MAXLEN),) \
+		-rss_limit_mb=4096 -timeout=30
 
 # --- coverage build (same entry points, profile intrinsics) ---
 
@@ -174,8 +218,11 @@ $(COVDIR)/fuzz_models: $(COVOBJ)/fuzz_models.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)
 $(COVDIR)/fuzz_pvs: $(COVOBJ)/fuzz_pvs.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)/shared.o $(COVOBJ)/utils.o $(COVOBJ)/md4.o $(COVOBJ)/hunk_unix.o $(COVLOADER_OBJS) | $(COVDIR)
 	$(CC) $(COVFLAGS) -o $@ $^
 
-# Replay the final corpora through the coverage binaries so the
+# Replay the corpora through the coverage binaries so the
 # instrumented run sees exactly the inputs the fuzzing ended with.
+# AF2.3: the fuzz corpora (corpus/$T) are now the merged, cap-trimmed
+# sets; coverage uses corpus/$T.full when present, so the shipped
+# full-size seeds still count toward the coverage table.
 # 0 = replay exactly the corpus units, no fresh mutations: the line
 # coverage then belongs to the fuzz sessions, not to the replay run.
 REPLAY_RUNS ?= 0
@@ -183,9 +230,11 @@ REPLAY_RUNS ?= 0
 replay: covbins
 	@rm -f $(PROFDIR)/*.profraw
 	@for t in $(TARGETS); do \
-		echo "===> replay $$t"; \
+		d=$(CORPUS)/$$t; \
+		[ -d $(CORPUS)/$$t.full ] && d=$(CORPUS)/$$t.full; \
+		echo "===> replay $$t ($$d)"; \
 		LLVM_PROFILE_FILE=$(PROFDIR)/$$t-%p-%m.profraw \
-		$(COVDIR)/$$t $(CORPUS)/$$t \
+		$(COVDIR)/$$t $$d \
 			-runs=$(REPLAY_RUNS) -timeout=60 \
 			-rss_limit_mb=4096 -artifact_prefix=$(CRASHDIR)/ \
 			-error_exitcode=1 || exit 1; \

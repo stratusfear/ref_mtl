@@ -11,13 +11,21 @@ corpora are NOT committed; they are generated on the fuzzing machine
 No prefixes or wrappers: a corpus file IS the byte stream a loader
 would see from FS_LoadFile(), so the format magic survives intact.
 
+AF2 additions: well-formed DKM v1/v2, flex .fm and MDL seeds are
+synthesised via tools/hostile/mkimg.py (no shipped pak carries those
+formats), and shipped inputs on QUARANTINE_SHA1 (the fuzz_stb TGA
+bomb) are never written out.
+
 Usage: python3 mkseedcorpus.py [--src DIR ...] [--out DIR]
 """
 
 import argparse
+import hashlib
 import os
 import struct
+import subprocess
 import sys
+import tempfile
 
 # Extension sets per fuzz target.
 TARGET_EXTS = {
@@ -25,6 +33,30 @@ TARGET_EXTS = {
     "fuzz_wal": {".wal", ".m8", ".m32"},
     "fuzz_stb": {".tga", ".png", ".jpg", ".jpeg", ".pcx", ".wal"},
     "fuzz_models": {".md2", ".mdl", ".md3", ".sp2", ".dkm", ".fm"},
+}
+
+# AF2.3: shipped inputs that must NOT re-enter a corpus.  sha1 of the
+# file bytes -> reason.  The stb TGA bomb is a real shipped texture
+# whose RLE decode is slow enough to hit the replay timeout; it was
+# quarantined by hand in round 22 (report-only vendored behaviour),
+# and regeneration kept putting it back.
+QUARANTINE_SHA1 = {
+    "374d24715f9be4c23ae800a7c4276add66de4912":
+        "stb TGA bomb: full decode exceeds the 30 s session timeout "
+        "(round-22 AE4, vendored behaviour, report-only)",
+}
+
+# AF2.2: fuzz_models has nothing to teach it DKM, flex or MDL: no
+# shipped pak contains a .dkm, a .fm or a .mdl (AB1 scan), so the
+# pak-derived corpus never reaches those loaders past their ident
+# dispatch.  Hand-build one valid seed per format, reusing the
+# round-18 Z9 builder in tools/hostile/mkimg.py (the AF1 controls
+# and the c_flex/c_mdl controls are exactly those well-formed files).
+SYNTH_TARGETS = {
+    "fuzz_models/synth_dkm_v2.md2": "staging/af1_dkm_okv2.md2",
+    "fuzz_models/synth_dkm_v1.md2": "staging/af1_dkm_okv1.md2",
+    "fuzz_models/synth_flex.fm":    "staging/c_flex.fm",
+    "fuzz_models/synth_mdl.md2":    "staging/c_mdl.md2",
 }
 
 MAX_FILE = 8 * 1024 * 1024
@@ -63,6 +95,12 @@ def pak_entries(path):
 
 
 def emit(out_base, target, tag, data):
+    digest = hashlib.sha1(data).hexdigest()
+    reason = QUARANTINE_SHA1.get(digest)
+    if reason:
+        print("quarantined %s/%s: %s" % (target, tag, reason),
+                file=sys.stderr)
+        return
     dst = os.path.join(out_base, target)
     os.makedirs(dst, exist_ok=True)
     with open(os.path.join(dst, tag), "wb") as o:
@@ -109,6 +147,25 @@ def collect_loose(src, out_base):
                 emit(out_base, target, safe.replace("/", "_"), data)
 
 
+def synth_models(out_base, datadir):
+    """AF2.2: DKM v1/v2, flex .fm and MDL seeds for fuzz_models.
+
+    tools/hostile/mkimg.py (round-18 Z9) already hand-builds exactly
+    these as its well-formed controls (the AF1 DKM controls plus the
+    c_flex/c_mdl controls), built from the real pak sections.  Run it
+    into a scratch dir and copy the four files into the corpus."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    mkimg = os.path.join(here, "..", "hostile", "mkimg.py")
+    with tempfile.TemporaryDirectory() as td:
+        subprocess.run([sys.executable, mkimg,
+                "--datadir", datadir, "--out", td], check=True)
+        for dst, srcrel in SYNTH_TARGETS.items():
+            with open(os.path.join(td, "baseq2", srcrel), "rb") as f:
+                data = f.read()
+            target, tag = dst.split("/", 1)
+            emit(out_base, target, tag, data)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", action="append", default=None,
@@ -129,6 +186,8 @@ def main():
             continue
         collect_paks(src, out_base)
         collect_loose(src, out_base)
+
+    synth_models(out_base, srcs[0] if srcs else default_src)
 
     for target in sorted(TARGET_EXTS):
         d = os.path.join(out_base, target)

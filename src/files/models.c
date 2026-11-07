@@ -610,9 +610,36 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 
 			for(i = 0; i < num_st; i++)
 			{
+				int s = LittleLong (texcoords[i].s);
+				int t = LittleLong (texcoords[i].t);
+
+				/* AF2.5: s and t are raw file ints.  The destination
+				   is a dstvert_t of shorts, so the narrowing silently
+				   wrapped large values into a short; the seam offset
+				   and the 0..1 scaling below then ran a float-cast-
+				   overflow out of that wrapped value (fuzz_models:
+				   UBSan float-cast-overflow abort, models.c:619, and
+				   at the seam add itself for coordinates at the short
+				   boundary).  Reject outside the range the MDL format
+				   defines before any arithmetic: s in 0..skinwidth-1,
+				   t in 0..skinheight-1.  A coordinate at a skin edge
+				   plus the half-skin seam offset then stays inside
+				   the short destination by construction.  No shipped
+				   .mdl file exists in the scanned pak set (these
+				   loads only happen by ident dispatch), so the check
+				   touches no shipped data. */
+				if ((s < 0) || (s >= skinwidth) ||
+					(t < 0) || (t >= skinheight))
+				{
+					Com_Printf("%s: model %s has texcoord %d,%d "
+							"out of range",
+							__func__, mod_name, s, t);
+					goto fail; /* AC1 */
+				}
+
 				/* Compute texture coordinates */
-				poutst[i].s = LittleLong (texcoords[i].s);
-				poutst[i].t = LittleLong (texcoords[i].t);
+				poutst[i].s = s;
+				poutst[i].t = t;
 
 				if (texcoords[i].onseam)
 				{
@@ -921,6 +948,83 @@ Mod_CheckAliasHeader (const char *mod_name, const dmdl_t *hdr)
 		return false;
 	}
 
+	/* AF2.5: every section fitting inside ofs_end does not keep them
+	   from OVERLAPPING each other or the dmdl_t header the loader
+	   builds at the front of the model.  The section loaders write
+	   each section into the model at its file-given offset, so an
+	   overlap lets a later write clobber header fields that were
+	   stored first, and the copies after it run with counts re-read
+	   from file data: fuzz_models found a file with ofs_st=1 whose st
+	   list stomped pheader->num_skins, taking the skins memcpy past
+	   the end of the file buffer (heap READ of 32832 at the memcpy,
+	   models.c:1075).  Require the five sections to be pairwise
+	   disjoint and to start after the generated header.  Disjoint
+	   (not header-ordered) on purpose: the section writers index by
+	   offset, so any order is legal as long as no range is written
+	   twice; this keeps third-party .md2 files with a different
+	   section order loadable.  Gaps between sections stay legal; the
+	   checks above already keep every range inside ofs_end.  The MDL,
+	   flex and DKM loaders build these offsets chained by construction
+	   and pass trivially; the scan of the shipped .md2 set (AF2MSG)
+	   shows every shipped file satisfies this. */
+	{
+		struct {
+			const char	*name;
+			long long	start;
+			long long	end;
+		} sect[5];
+		int		i, j;
+
+		sect[0].name = "skins";
+		sect[0].start = hdr->ofs_skins;
+		sect[0].end = (long long)hdr->ofs_skins +
+			(long long)hdr->num_skins * MAX_SKINNAME;
+		sect[1].name = "st";
+		sect[1].start = hdr->ofs_st;
+		sect[1].end = (long long)hdr->ofs_st +
+			(long long)hdr->num_st * sizeof(dstvert_t);
+		sect[2].name = "triangles";
+		sect[2].start = hdr->ofs_tris;
+		sect[2].end = (long long)hdr->ofs_tris +
+			(long long)hdr->num_tris * sizeof(dtriangle_t);
+		sect[3].name = "frames";
+		sect[3].start = hdr->ofs_frames;
+		sect[3].end = (long long)hdr->ofs_frames +
+			(long long)hdr->num_frames * hdr->framesize;
+		sect[4].name = "glcmds";
+		sect[4].start = hdr->ofs_glcmds;
+		sect[4].end = (long long)hdr->ofs_glcmds +
+			(long long)hdr->num_glcmds * sizeof(int);
+
+		for (i = 0; i < 5; i++)
+		{
+			if (sect[i].start < (long long)sizeof(dmdl_t))
+			{
+				Com_Printf("%s: model %s has its %s section at %d, "
+						"inside its own header\n",
+						__func__, mod_name, sect[i].name,
+						(int)sect[i].start);
+				return false;
+			}
+		}
+
+		for (i = 0; i < 5; i++)
+		{
+			for (j = i + 1; j < 5; j++)
+			{
+				if (sect[i].start < sect[j].end &&
+					sect[j].start < sect[i].end)
+				{
+					Com_Printf("%s: model %s has overlapping %s "
+							"and %s sections\n",
+							__func__, mod_name,
+							sect[i].name, sect[j].name);
+					return false;
+				}
+			}
+		}
+	}
+
 	return true;
 }
 
@@ -1086,27 +1190,39 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 
 	while (modfilelen > 0)
 	{
-		char blockname[32];
+		/* AF2.5: the block name is 32 raw file bytes and every
+		   rejection print below feeds it to %s; the file never has
+		   to contain a NUL, so the array carries one terminator of
+		   padding.  Found by fuzz_models (first crash of the first
+		   session that ran at all): stack-buffer-overflow READ of
+		   size 33 at the block-size rejection, models.c:1115.
+		   The wire field stays 32 bytes: the layout uses
+		   sizeof(blockname) - 1 everywhere. */
+		char blockname[32 + 1];
 
 		/* Z6: a block header is 32 name bytes plus a version and a
 		   size word; the file has to hold a whole header before any
 		   of it is read */
-		if (modfilelen < (int)(sizeof(blockname) + (2 * sizeof(int))))
+		if (modfilelen < (int)(sizeof(blockname) - 1 + (2 * sizeof(int))))
 		{
 			Com_Printf("%s: %s is truncated, %d bytes left where a block header needs %d\n",
 				__func__, mod_name, modfilelen,
-				(int)(sizeof(blockname) + (2 * sizeof(int))));
-			return NULL;
+				(int)(sizeof(blockname) - 1 + (2 * sizeof(int))));
+			goto fail; /* AF2.5: on a later iteration this runs
+			              after Hunk_Begin(); Hunk_Free(NULL) is a
+			              no-op on the first block, so early
+			              rejects are unchanged */
 		}
 
-		memcpy(blockname, src, sizeof(blockname));
+		memcpy(blockname, src, sizeof(blockname) - 1);
+		blockname[sizeof(blockname) - 1] = '\0';
 
-		src += sizeof(blockname);
+		src += sizeof(blockname) - 1;
 		version = *(int*)src;
 		src += sizeof(version);
 		size = *(int*)src;
 		src += sizeof(size);
-		modfilelen = modfilelen - sizeof(blockname) - sizeof(version) - sizeof(size);
+		modfilelen = modfilelen - (sizeof(blockname) - 1) - sizeof(version) - sizeof(size);
 
 		/* Z6: the block handlers below read size bytes from src and src
 		   then advances by size, so the body has to lie inside the file */
@@ -1114,7 +1230,11 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 		{
 			Com_Printf("%s: %s block %s claims %d bytes, only %d left\n",
 				__func__, mod_name, blockname, size, modfilelen);
-			return NULL;
+			goto fail; /* AF2.5: AC1 audit miss - this loop-entry
+			              exit runs after Hunk_Begin() whenever a
+			              later block header is broken; Hunk_Free
+			              of a NULL extradata (first block) is a
+			              no-op, so early rejects are unchanged */
 		}
 
 		if (Q_strncasecmp(blockname, "header", sizeof(blockname)) == 0)
@@ -1124,10 +1244,26 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 			long long o_skins, o_st, o_tris, o_frames, o_glcmds, o_end;
 			int num_mesh_nodes;
 
+			/* AF2.5: a repeated header block would re-run
+			   Hunk_Begin() below over the first header's mapping
+			   (orphan) and its rejects below would exit over the
+			   first header's hunk too.  A well-formed .fm carries
+			   exactly one header block, first; the shipped set
+			   does (scan, AF2 commit message), so this reject
+			   touches no real file. */
+			if (pheader)
+			{
+				Com_Printf("%s: %s has a second header block\n",
+					__func__, mod_name);
+				goto fail;
+			}
+
 			if (sizeof(fmheader_t) > size)
 			{
 				Com_Printf("%s: Too short header", __func__);
-				return NULL;
+				return NULL; /* AF2.5: reachable only before any
+				              allocation now (second-header case
+				              rejected above), no hunk to free */
 			}
 
 			if (version != 2)
@@ -1353,6 +1489,12 @@ Mod_LoadFlexModel(const char *mod_name, const void *buffer, int modfilelen,
 				goto fail; /* AC1 */
 			}
 		}
+		/* AF2.5: no counter wrap is possible here any more: the
+		   loop-entry checks guarantee modfilelen >= the header size
+		   (rejected above) and 0 <= size <= modfilelen (rejected
+		   above), so this subtraction stays >= 0 and the walk
+		   cannot run off the buffer or exit the loop with a NULL
+		   pheader to dereference below. */
 		modfilelen -= size;
 		src += size;
 	}
@@ -1732,18 +1874,31 @@ Mod_LoadSP2 (const char *mod_name, const void *buffer, int modfilelen,
 	/* byte swap everything */
 	for (i = 0; i < sprout->numframes; i++)
 	{
+		char fname[MAX_SKINNAME + 1];
+
 		sprout->frames[i].width = LittleLong(sprin->frames[i].width);
 		sprout->frames[i].height = LittleLong(sprin->frames[i].height);
 		sprout->frames[i].origin_x = LittleLong(sprin->frames[i].origin_x);
 		sprout->frames[i].origin_y = LittleLong(sprin->frames[i].origin_y);
 		memcpy(sprout->frames[i].name, sprin->frames[i].name, MAX_SKINNAME);
+		/* AF2.5: the frame name is a fixed 64-byte raw file field;
+		   the find_image() lookups and the "sprites/%s" snprintf
+		   below all consume it as %s, and the file never has to
+		   carry a NUL.  Terminate the copied field (well-formed
+		   names are <= 63 chars, so their bytes are unchanged),
+		   and take the snprintf's source through a separate local
+		   so it never aliases its destination either.  fuzz_models
+		   found the read over the END of the file buffer: heap
+		   over-read of 90 bytes at the snprintf, models.c:1774. */
+		sprout->frames[i].name[MAX_SKINNAME - 1] = '\0';
 
-		skins[i] = find_image((char *)sprout->frames[i].name, it_sprite);
+		skins[i] = find_image(sprout->frames[i].name, it_sprite);
 		if (!skins[i])
 		{
 			/* heretic2 sprites have no "sprites/" prefix */
+			Q_strlcpy(fname, sprout->frames[i].name, sizeof(fname));
 			snprintf(sprout->frames[i].name, MAX_SKINNAME,
-				"sprites/%s", sprin->frames[i].name);
+				"sprites/%s", fname);
 			skins[i] = find_image(sprout->frames[i].name, it_sprite);
 		}
 	}
