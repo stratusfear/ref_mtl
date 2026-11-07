@@ -47,6 +47,7 @@ Mod_ClusterPVS(int cluster, const model_t *model)
 
 	return Mod_DecompressVis((byte *)model->vis +
 			model->vis->bitofs[cluster][DVIS_PVS],
+			(const byte *)model->vis + model->visLength,
 			(model->vis->numclusters + 7) >> 3);
 }
 
@@ -1303,6 +1304,10 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 		header->lumps[LUMP_LIGHTING].filelen);
 	Mod_LoadMarksurfaces(mod, mod_base, &header->lumps[LUMP_LEAFFACES]);
 	Mod_LoadVisibility(&mod->vis, mod_base, &header->lumps[LUMP_VISIBILITY]);
+	/* AF3: the decompressor needs the image extent; Mod_LoadVisibility
+	   hunk-allocates exactly filelen bytes for it (and NULL for an
+	   empty lump), so the lump length IS the image length here. */
+	mod->visLength = mod->vis ? header->lumps[LUMP_VISIBILITY].filelen : 0;
 	Mod_LoadLeafs(mod, mod_base, &header->lumps[LUMP_LEAFS]);
 	Mod_LoadNodes(mod->name, mod->planes, mod->numplanes, mod->leafs,
 		mod->numleafs, &mod->nodes, &mod->numnodes, mod_base,

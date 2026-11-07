@@ -161,6 +161,13 @@ typedef struct model_s
 
 	dvis_t		*vis;
 
+	/* AF3: byte size of the visibility image vis points into (the
+	   vis lump's filelen, exactly what Mod_LoadVisibility hunk
+	   allocates).  Mod_ClusterPVS passes vis + visLength as the end
+	   of the input to Mod_DecompressVis so the PVS decoder cannot
+	   read past the image.  0 when the map has no vis lump. */
+	int			visLength;
+
 	byte		*lightdata;
 
 	// for alias models and skins

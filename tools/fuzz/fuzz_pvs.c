@@ -9,6 +9,7 @@
  * synthesizes exactly the call Mod_ClusterPVS makes:
  *
  *     Mod_DecompressVis(vis + vis->bitofs[cluster][DVIS_PVS],
+ *                       (const byte *)vis + vis->visLength,
  *                       (vis->numclusters + 7) >> 3);
  *
  * The input's first four bytes are numclusters (file byte order);
@@ -17,11 +18,17 @@
  * target only applies the two gates Mod_LoadVisibility enforces
  * (src/files/models.c, Z5c block): the table must fit the lump, and
  * bitofs must point inside it.  Both hold for the synthesized call
- * by construction: the stream sits at the end of a malloc'ed lump,
- * so ASan sees the lump end exactly where a heap end would be in
- * the host test; a slack tail models the hunk bytes that follow a
- * real visibility lump, so a runaway stream must cross real
- * allocation bounds before it is reported.
+ * by construction: the stream sits at the end of a malloc'ed lump.
+ *
+ * AF3: the lump allocation has no slack tail any more.  Mod_Load-
+ * Visibility hunk-allocates exactly l->filelen for the visibility
+ * image (src/files/models.c), and the host's hunk is an mmap whose
+ * mapping ENDS at the current watermark (src/backends/hunk_unix.c),
+ * so the byte just past the image is the first byte the decompressor
+ * is not allowed to touch.  The harness models that edge exactly:
+ * lump end == allocation end, and any read past the image is a
+ * heap-buffer-overflow READ.  A stream that cannot fill its row from
+ * inside the lump must not read past the image at all.
  */
 
 #include <stdint.h>
@@ -32,20 +39,17 @@
  * is unsigned char there.  Declared locally, like the other
  * targets avoid pulling renderer headers into the harness. */
 extern const unsigned char *Mod_DecompressVis(const unsigned char *in,
-	int row);
+	const unsigned char *in_end, int row);
 
 /* the largest numclusters a hostile map could put in a 1 MB lump
    (Z5c: 8 table bytes per cluster); keeps the harness allocation
    bounded */
 #define MAX_CLUSTERS (200000)
 
-/* slack past the lump end, modelling the hunk allocation that a
-   real visibility lump is embedded in.  After the AE10 bound the
-   decompressor reads at most 2 * (MAX_MAP_LEAFS / 8) + 1 bytes
-   past bitofs, and a real vis hunk block has that much arena
-   behind the lump, so a post-fix read must stay inside this
-   allocation; a pre-fix runaway crosses it and is reported. */
-#define HUNK_SLACK (2 * (65536 / 8) + 64)
+/* AF3: no slack tail.  The visibility image in the host is exactly
+   l->filelen bytes of hunk, and the hunk mapping ends at the
+   watermark, so the harness lump ends at lump end.  Everything the
+   decompressor may read is inside [lump, lump + lumplen). */
 
 static int
 le32(const uint8_t *p)
@@ -80,17 +84,16 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	lumplen = (size_t)(4 + 8 * n) + (size - 4);
 	bitofs = 4 + 8 * n; /* stream offset, inside the lump: Z5c ok */
 
-	lump = malloc(lumplen + HUNK_SLACK);
+	lump = malloc(lumplen);
 	if (!lump)
 	{
 		return 0;
 	}
 	memset(lump, 0, (size_t)bitofs);
 	memcpy(lump + bitofs, data + 4, size - 4);
-	memset(lump + lumplen, 0, HUNK_SLACK);
 
 	row = (n + 7) >> 3;
-	Mod_DecompressVis(lump + bitofs, row);
+	Mod_DecompressVis(lump + bitofs, lump + lumplen, row);
 
 	free(lump);
 	return 0;

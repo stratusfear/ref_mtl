@@ -33,7 +33,7 @@ Mod_DecompressVis
 ===================
 */
 const byte *
-Mod_DecompressVis(const byte *in, int row)
+Mod_DecompressVis(const byte *in, const byte *in_end, int row)
 {
 	YQ2_ALIGNAS_TYPE(int) static byte decompressed[MAX_MAP_LEAFS / 8];
 	int c;
@@ -90,13 +90,34 @@ Mod_DecompressVis(const byte *in, int row)
 	   stream that can still produce output consumes at most two
 	   input bytes per output byte (the 00 c header with c == 1), so
 	   past that budget nothing can be decoded: stop and make the
-	   rest visible, like the !in path. */
+	   rest visible, like the !in path.
+
+	   AF3: the AE10 budget is not a bound against the input itself.
+	   Z5c accepts bitofs == l->filelen and anything below it, and the
+	   budget then allows bitofs + 2 * row to sit up to 2 * row bytes
+	   past the END of the visibility image (the hunk allocation for
+	   the lump is exactly l->filelen bytes, Mod_LoadVisibility, and
+	   the unix hunk is an mmap whose mapping ends at the current
+	   watermark plus 8 bytes, src/backends/hunk_unix.c).  Host repro
+	   on crafted maps (tools/fuzz/bspfuzz/craftpvs.py, af3_neigh /
+	   af3_guard): a bitofs parked at the lump end decompresses a
+	   whole row from hunk bytes that follow the image - a decoded
+	   PVS made up entirely of bytes outside the lump; on other
+	   layouts (fuzz_pvs seeds, b_spkrow-class targets) the same walk
+	   steps off the end of the mapping and faults.  in_end is one
+	   past the last byte of the visibility image; a stream that
+	   cannot finish the row inside the image must not read past it:
+	   stop at the edge and make the rest visible, like the !in path.
+	   The AE10 budget stays as the second limit - it also bounds the
+	   cost of a hostile image, which clamping alone would not. */
 	in_start = in;
 	budget = 2 * row;
 
 	do
 	{
-		if (in - in_start > budget)
+		/* AF3: the image edge and the AE10 budget, checked before
+		   every read of the stream. */
+		if ((in >= in_end) || (in - in_start > budget))
 		{
 			while (out - decompressed < row)
 			{
@@ -110,6 +131,22 @@ Mod_DecompressVis(const byte *in, int row)
 		{
 			*out++ = *in++;
 			continue;
+		}
+
+		/* AF3: the second header byte must be inside the image too;
+		   a 00 as the very last byte of the lump has no count byte
+		   to read, exactly the case that walks off the mapping end
+		   pre-fix. */
+		if ((in + 1) >= in_end)
+		{
+			in++;
+
+			while (out - decompressed < row)
+			{
+				*out++ = 0xff;
+			}
+
+			break;
 		}
 
 		c = in[1];
