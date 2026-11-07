@@ -28,19 +28,26 @@
 #   cinematic leg  +map idlog.cin with nextdemo "gamemap mintro" chaining:
 #                  the chaining map's banner must land in the leg cfgdir's
 #                  qconsole.log within CINWAIT (default 90 s), plus the
-#                  usual liveness/exit-status/error-grep checks. This
-#                  exercises the engine cinematic path end to end:
-#                  SCR_PlayCinematic open, the SCR_ReadNextFrame decode
-#                  loop, and the RE_Cinematic x10/CinVideo raw-texture
-#                  slot draw under mtl. It asserts NO decode fidelity or
-#                  duration floor: every .cin on this machine (bundle and
-#                  ~/Downloads copies) is a Mac App Store "PACK"-container
-#                  conversion - a structural frame walk breaks within the
-#                  first few frames of all of them, and the host decodes
-#                  garbage (console: "Decompression overread") until EOF
-#                  at ~6 s. Real video timing/pixel coverage is left open
-#                  on purpose: no valid .cin exists here and the gate
-#                  does not vendor content. See REVIEW_EXTERNAL round 19.
+#                  usual liveness/exit-status/error-grep checks. AD1 (round
+#                  21) observed this leg's exact command with temporary
+#                  instrumentation in the engine's cinematic reader: the
+#                  host opens video/idlog.cin, decodes all 82 frames of a
+#                  well-formed classic .cin (20-byte header, 65536-byte
+#                  Huffman counts table, then per-frame [cmd][palette?
+#                  ][size][compressed][sound] records), stops on the
+#                  cmd==2 EOF marker, and the nextdemo chain banner lands
+#                  at ~7 s. So the leg does exercise the SCR_ReadNextFrame
+#                  decode loop to clean EOF, not just open-and-chain. It
+#                  still asserts NO frame/pixel/audio fidelity: the banner
+#                  proves liveness, decode-to-EOF and chaining, not that
+#                  the drawn frames are correct. The round-19 claim that
+#                  these .cin files are broken "PACK"-container conversions
+#                  decoding garbage until EOF is refuted; see the AD1 rows
+#                  in REVIEW_EXTERNAL (round 21) for the measurement. The
+#                  earlier claim that no valid .cin exists here was an
+#                  artifact of a Python probe with the wrong record model
+#                  (it skipped the counts table and the per-frame sound
+#                  field). The gate does not vendor content either way.
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
@@ -224,15 +231,18 @@ else
 	echo "expansion leg OK (Map: industry at ${xelapsed}s, rc $XRC)"
 fi
 
-# ---- cinematic leg (round-19 AB2) -----------------------------------------
+# ---- cinematic leg (round-19 AB2; AD1/AD2 round-21 correction) ------------
 # Drives a shipped .cin through SCR_PlayCinematic, the SCR_ReadNextFrame
 # decode loop and the RE_Cinematic x10/CinVideo raw-texture slot draw
 # (round-7 L3/L4 area) live, then requires the nextdemo chain command to
 # complete: the demo map's banner in the leg's own qconsole.log inside
-# CINWAIT. The shipped .cin content on this machine is known-bad (Mac App
-# Store PACK conversion), so this leg checks the engine path - no hang,
-# no crash, clean chaining - and deliberately no frame or duration
-# assertions; see the header comment for the data audit.
+# CINWAIT. AD1 (round 21) measured the leg's command with engine-side
+# instrumentation: idlog.cin is a well-formed classic .cin, the host
+# decodes all 82 frames to the cmd==2 EOF marker (~6 s), then chains.
+# The leg therefore asserts open + full decode + chaining + liveness; it
+# asserts no frame/pixel/audio fidelity. The round-19 note calling the
+# shipped .cin content known-bad (PACK conversion, garbage decode) was
+# wrong - see the AD1 rows in REVIEW_EXTERNAL.
 echo "== cinematic leg: idlog.cin play-attempt + nextdemo gamemap chaining =="
 if [ ! -f "$DATADIR/baseq2/video/idlog.cin" ]; then
 	echo "NOTICE: no cinematic data at $DATADIR/baseq2/video - skipping cinematic leg"

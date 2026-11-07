@@ -154,11 +154,16 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
   cinematic leg (live `idlog.cin` play-attempt through
   `SCR_PlayCinematic`/`RE_Cinematic` with `gamemap` chaining
   asserted) - the two content legs auto-skip with a NOTICE when the
-  data dir lacks them. One content gap is left open on purpose:
-  every `.cin` on this machine is a Mac App Store "PACK"-container
-  conversion (a structural frame walk breaks in all of them), so
-  the leg asserts the engine's cinematic path but no video
-  decode-fidelity; see the round-19 note in `REVIEW_EXTERNAL.md`.
+  data dir lacks them. What the cinematic leg does not assert is
+  frame/pixel/audio fidelity: round-21 AD1 observed the leg's
+  command with engine-side instrumentation and found the shipped
+  `.cin` files are genuine classic cinematics - the host decodes
+  `idlog.cin`'s 82 frames to the `cmd==2` EOF marker in ~6 s and
+  then chains - so the round-19 claim that every `.cin` here is a
+  broken "PACK"-container conversion decoding garbage was wrong
+  (it came from a Python probe with the wrong record model); the
+  leg proves decode-to-EOF and chaining, not drawn-frame
+  correctness. See the AD1 rows in `REVIEW_EXTERNAL.md`.
 - Verified: hostile-input tooling under `tools/hostile/` (not part
   of the `fix_verify.sh` gate): `mkbsp.py` and `mkimg.py` rebuild
   the external audit's crafted BSP/skin/texture/model inputs from
@@ -977,10 +982,16 @@ MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
     cinematic play-attempt with `gamemap` chaining - each content
     leg NOTICE-skipping when its data is absent, with six injected
     fault cases in `fix_verify_selftest.sh`; the cinematic decode-
-    fidelity half stays open on purpose because every `.cin` on
-    this machine is a Mac App Store "PACK"-container conversion no
-    Q2 decoder can play (structural frame walk breaks in all of
-    them). AB3 closed round 18's coverage caveats: six minimize/
+    fidelity half (drawn-frame/audio correctness) stays unasserted
+    because the leg checks banner chaining and liveness, not
+    pixels. Round 21 AD1 measured that leg directly: the shipped
+    `.cin` files are genuine classic cinematics that the host
+    decodes cleanly to their EOF markers (`idlog.cin`: 82 frames,
+    ~6 s), so round 19's claim that every `.cin` on this machine
+    was a broken "PACK"-container conversion no Q2 decoder can
+    play was wrong - it came from an offline Python probe whose
+    record model skipped the Huffman counts table and the
+    per-frame sound field. AB3 closed round 18's coverage caveats: six minimize/
     resize-during-map-load rounds verified by banner counts, and
     the audit's 20-minute lifetime run repeated on the fixed
     build: 958 s, 335 MB start to 379 MB end, device-side
