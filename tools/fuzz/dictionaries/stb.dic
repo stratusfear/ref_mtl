@@ -1,0 +1,34 @@
+# AE1: stb_image container dictionary for fuzz_stb (TGA / PNG / JPG).
+# PNG signature and chunk types.
+"\x89PNG\x0d\x0a\x1a\x0a"
+"IHDR"
+"PLTE"
+"IDAT"
+"IEND"
+"gAMA"
+"tRNS"
+"bKGD"
+"cHRM"
+"pHYs"
+# JPEG SOI, APPn, SOF0, DHT, SOS, EOI.
+"\xff\xd8\xff\xe0"
+"\xff\xd8\xff\xdb"
+"\xff\xc0"
+"\xff\xc4"
+"\xff\xda"
+"\xff\xd9"
+"\xff\x01"
+# TGA: no leading magic; the 18-byte header opening.
+"\x00\x00\x02\x00\x00\x00\x00\x00"
+"\x00\x00\x01\x00"
+"\x00\x00\x10\x00"
+"\x28\x00\x00\x00"
+# zlib stream head (IDAT payload).
+"\x78\x9c"
+"\x78\x01"
+"\x78\xda"
+# Dimension / length bounds.
+"\xff\xff\xff\xff"
+"\x7f\xff\xff\xff"
+"\x00\x80\x00\x00"
+"\x00\x00\x10\x00"

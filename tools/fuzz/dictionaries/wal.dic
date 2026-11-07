@@ -1,0 +1,16 @@
+# AE1: WAL / M8 / M32 dictionary for fuzz_wal.
+# M8 version 0x2, M32 version 0x4 (checked headers).
+"\x02\x00\x00\x00"
+"\x04\x00\x00\x00"
+# Common WAL dimensions.
+"\x40\x00\x00\x00"
+"\x80\x00\x00\x00"
+"\x00\x01\x00\x00"
+# Offsets and dimension bounds worth reaching.
+"\xff\xff\xff\xff"
+"\x7f\xff\xff\xff"
+"\x00\x80\x00\x00"
+"\xff\x7f\x00\x00"
+"\x00\x10\x00\x00"
+# miptex frame group marker.
+"\x00\x00\x00\x01"

@@ -1,0 +1,26 @@
+# AE1: alias/sprite model dictionary for fuzz_models.
+# MD2: ident "IDP2" on disk, version 8.
+"IDP2"
+"\x08\x00\x00\x00"
+# MDL: ident "IDPO" on disk, version 6.
+"IDPO"
+"\x06\x00\x00\x00"
+# Daikatana: ident "DKMD", versions 1 and 2.
+"DKMD"
+"\x01\x00\x00\x00"
+"\x02\x00\x00\x00"
+# Sprite SP2: version 2.
+# Frame/vertex/triangle pool bounds (512 / 2048 / 4096).
+"\x00\x02\x00\x00"
+"\x00\x08\x00\x00"
+"\x00\x10\x00\x00"
+# Interesting offset ints for the ofs_* block.
+"\xff\xff\xff\xff"
+"\x7f\xff\xff\xff"
+"\x00\x80\x00\x00"
+"\xff\x7f\x00\x00"
+"\x00\x00\x00\x80"
+# Trivial triangle/vertex indices worth reaching.
+"\x00\x00\x00\x00"
+"\xff\xff"
+"\x00\x80"

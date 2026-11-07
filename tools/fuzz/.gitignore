@@ -1,0 +1,8 @@
+# AE1: generated fuzzing state stays on the fuzzing machine.
+build/
+build_cov/
+obj/
+objcov/
+profraw/
+corpus/
+crashers/
