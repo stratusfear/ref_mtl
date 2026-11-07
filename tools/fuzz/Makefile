@@ -46,7 +46,8 @@ FUZZFLAGS := -g -O1 -fno-omit-frame-pointer \
 CMFLAGS := -fno-strict-aliasing -fwrapv -Wall \
            -DYQ2OSTYPE=\"unix\" -DYQ2ARCH=\"aarch64\"
 
-COVFLAGS := -g -O1 -fprofile-instr-generate -fcoverage-mapping
+COVFLAGS := -g -O1 -fprofile-instr-generate -fcoverage-mapping \
+            -fsanitize=fuzzer
 
 # All loader TUs link into every target: FixFileExt() lives in
 # stb.c and is needed by pcx.c/wal.c, and dead-stripped extras do
@@ -169,9 +170,12 @@ $(COVDIR)/fuzz_models: $(COVOBJ)/fuzz_models.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)
 
 # Replay the final corpora through the coverage binaries so the
 # instrumented run sees exactly the inputs the fuzzing ended with.
-REPLAY_RUNS ?= 20000
+# 0 = replay exactly the corpus units, no fresh mutations: the line
+# coverage then belongs to the fuzz sessions, not to the replay run.
+REPLAY_RUNS ?= 0
 
 replay: covbins
+	@rm -f $(PROFDIR)/*.profraw
 	@for t in $(TARGETS); do \
 		echo "===> replay $$t"; \
 		LLVM_PROFILE_FILE=$(PROFDIR)/$$t-%p-%m.profraw \
@@ -182,10 +186,14 @@ replay: covbins
 	done
 	$(PROFDATA) merge -sparse $(PROFDIR)/*.profraw -o $(PROFDIR)/combined.profdata
 
+# every fuzz_* binary is an -object: each target links all loaders,
+# so a loader's counts live in the binary that fuzzed it.
+# -name-regex=src/files scopes the report to the loaders.  (llvm-23
+# dropped the -show-branches=count spelling the draft used.)
 report:
 	$(LLCOV) report $(foreach t,$(TARGETS),-object $(COVDIR)/$(t)) \
-		-input-files $(PROFDIR)/combined.profdata \
-		-name-only=src/files -show-branches=count
+		-instr-profile=$(PROFDIR)/combined.profdata \
+		-name-regex=src/files
 
 # --- seed corpus from shipped paks (not committed) ---
 
