@@ -238,6 +238,82 @@ def main():
                       132)                 # ofs_end
     out["staging/dk_wrap.dkm"] = dkm + b"\0" * (132 - len(dkm))
 
+    # AF1: hand-built DKM (Daikatana alias, DKMD magic) files, there
+    # are no shipped DKMs in any game.  dkm() assembles the 20-dword
+    # header and one well-formed copy of each checked section: a skin
+    # name, num_st stverts, num_tris dkmtriangles, num_frames frames
+    # of fs bytes, num_glcmds glcmd dwords.  glcmds is the section
+    # content (command dword, two skipped dwords, then 3 dwords per
+    # vertex for |command| vertices; a negative command is a fan);
+    # ext_ints pads zero dwords past the glcmds section, still inside
+    # the file.  With the Z6 checks in place, everything these cases
+    # break is the glcmd walk itself.
+    def dkmf(ver=2, num_xyz=3, num_st=3, num_tris=1, num_frames=1,
+             num_skins=1, glcmds=(), nglcmds=13, fs=None, ext_ints=0,
+             frames_last=False):
+        if fs is None:
+            fs = 40 + 5 * num_xyz if ver == 2 else 40 + 4 * num_xyz
+        SK, ST, TRI = 64 * num_skins, 8 * num_st, 8 * num_tris
+        FR = fs * num_frames
+        ofs = {"skins": 80}
+        ofs["st"] = ofs["skins"] + SK
+        ofs["tris"] = ofs["st"] + ST
+        if frames_last:
+            ofs["glcmds"] = ofs["tris"] + TRI
+            ofs["frames"] = ofs["glcmds"] + 4 * nglcmds
+        else:
+            ofs["frames"] = ofs["tris"] + TRI
+            ofs["glcmds"] = ofs["frames"] + FR
+        bodylen = SK + ST + TRI + FR + 4 * nglcmds
+        ofs_end = ofs["glcmds"] + 4 * nglcmds
+        h = struct.pack("<2i3f15i", 0x444D4B44, ver, 0.0, 0.0, 0.0,
+                        fs, num_skins, num_xyz, num_st, num_tris,
+                        nglcmds, num_frames, 0,
+                        ofs["skins"], ofs["st"], ofs["tris"],
+                        ofs["frames"], ofs["glcmds"], 0, ofs_end)
+        body = bytearray(b"\0" * bodylen)
+        body[ofs["skins"] - 80:ofs["skins"] - 80 + 6] = b"skin0\0"
+        body[ofs["st"] - 80:ofs["st"] - 80 + ST] = \
+            struct.pack("<4h", 0, 0, 8, 8) * num_st
+        body[ofs["tris"] - 80:ofs["tris"] - 80 + TRI] = \
+            struct.pack("<8h", 0, 1, 0, 1, 2, 0, 1, 2) * num_tris
+        frame = (b"frame0\0".ljust(16, b"\0") +
+                 struct.pack("<6f", 1, 1, 1, 0, 0, 0))
+        frame = (frame + b"\0" * (fs - len(frame))) * num_frames
+        body[ofs["frames"] - 80:ofs["frames"] - 80 + FR] = frame
+        body[ofs["glcmds"] - 80:ofs["glcmds"] - 80 + 4 * len(glcmds)] = \
+            struct.pack("<%di" % len(glcmds), *glcmds)
+        return h + bytes(body) + b"\0" * (4 * ext_ints)
+
+    # one triangle strip command (3 verts) plus the terminating zero,
+    # 1 + 2 + 9 + 1 = 13 dwords: exactly the promised section
+    DCTRL = [3, 0, 0] + [0x0A000000 + i for i in range(9)] + [0]
+    out["staging/af1_dkm_okv2.md2"] = dkmf(2, glcmds=DCTRL)
+    out["staging/af1_dkm_okv1.md2"] = dkmf(1, glcmds=DCTRL)
+    # READ: 1 + 2 + 3*268435455 input dwords chased through a
+    # 13-dword section: the walk runs off the end of the file buffer
+    out["staging/af1_dkm_read.md2"] = dkmf(2, glcmds=[0x0FFFFFFF])
+    # WRITE: count 1000 fits the file (zero padding after the
+    # section) but its 3001 output dwords do not fit the model's
+    # 13-dword glcmds area: the walk writes past the model block,
+    # which is the end of the hunk mapping
+    out["staging/af1_dkm_write.md2"] = dkmf(2, glcmds=[1000], ext_ints=2990)
+    # memset: same overrun but small (output 40 vs 13 dwords, inside
+    # the hunk mapping's page slack), so the broken-glcmd break runs
+    # and its (pendcmd - poutcmd) is negative: huge memset size_t
+    out["staging/af1_dkm_memset.md2"] = dkmf(2, glcmds=[13], ext_ints=30)
+    # INT_MIN: count negation is signed overflow UB before anything
+    # else in the walk runs
+    out["staging/af1_dkm_intmin.md2"] = dkmf(2, glcmds=[-2147483648])
+    # frames (AF1 family audit): v2 frames are 40 + 5*num_xyz bytes
+    # of input, the file claims 40 + 4*num_xyz (legal for the model
+    # side), and the frames section ends the file: the last frame's
+    # vertex reads run num_xyz bytes past the file end
+    out["staging/af1_dkm_frames.md2"] = dkmf(2, num_xyz=32, num_st=32,
+                                            glcmds=DCTRL, fs=168,
+                                            frames_last=True)
+
+
     for k, v in out.items():
         p = os.path.join(b, k)
         os.makedirs(os.path.dirname(p), exist_ok=True)

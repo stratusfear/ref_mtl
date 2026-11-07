@@ -138,6 +138,19 @@ CASES = [
     ("m_ae6_md2short",    ["+set", "allow_download_models", "0",
                            "+map", "base1"], "less than its header", None),
     ("m_ae6_mdlshort",    ["+map", "base1"], "less than its header", None),
+    # AF1: DKM glcmd converter (DKMD magic on the same overlay path;
+    # no shipped DKMs exist).  The read/write/memset cases all stop
+    # at the section bound with the converter's own line; intmin has
+    # its count line; frames is the v2 framesize floor, checked
+    # before the hunk.  Controls are well-formed v2/v1 DKMs that
+    # must load.
+    ("m_af1_read",        ["+map", "base1"], "possible broken glcmd", None),
+    ("m_af1_write",       ["+map", "base1"], "possible broken glcmd", None),
+    ("m_af1_memset",      ["+map", "base1"], "possible broken glcmd", None),
+    ("m_af1_intmin",      ["+map", "base1"], "glcmd count -2147483648", None),
+    ("m_af1_frames",      ["+map", "base1"], "v2 framesize 168 for 32 vertices", None),
+    ("c_af1_dkm_v2",      ["+map", "base1"], None, "Failed to load"),
+    ("c_af1_dkm_v1",      ["+map", "base1"], None, "Failed to load"),
     # Z6 controls: well-formed replacements must load
     ("c_md2",            ["+map", "base1"], None, "Failed to load"),
     ("c_flex",           ["+map", "base1"], None, "Failed to load"),
@@ -172,6 +185,13 @@ STAGE = {
     "m_ae6_ident1":    (MD2, "staging/ae6_ident1.md2"),
     "m_ae6_md2short":  (MD2, "staging/ae6_md2short.md2"),
     "m_ae6_mdlshort":  (MD2, "staging/ae6_mdlshort.md2"),
+    "m_af1_read":      (MD2, "staging/af1_dkm_read.md2"),
+    "m_af1_write":     (MD2, "staging/af1_dkm_write.md2"),
+    "m_af1_memset":    (MD2, "staging/af1_dkm_memset.md2"),
+    "m_af1_intmin":    (MD2, "staging/af1_dkm_intmin.md2"),
+    "m_af1_frames":    (MD2, "staging/af1_dkm_frames.md2"),
+    "c_af1_dkm_v2":    (MD2, "staging/af1_dkm_okv2.md2"),
+    "c_af1_dkm_v1":    (MD2, "staging/af1_dkm_okv1.md2"),
     "c_md2":      (MD2, "staging/c_md2.md2"),
     "c_flex":     (MD2, "staging/c_flex.fm"),
     "c_sp2":      (SP2, "staging/c_sp2.sp2"),

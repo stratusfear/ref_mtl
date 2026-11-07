@@ -120,6 +120,11 @@ override CFLAGS += -fsanitize=address -DUSE_SANITIZER
 endif
 ifdef UBSAN
 override CFLAGS += -fsanitize=undefined -DUSE_SANITIZER
+ifdef NOFALIGN
+# AF2: arm64 unaligned loads in the loaders are proven benign (AE2);
+# keep alignment UBSan off so reports show the real defect classes.
+override CFLAGS += -fno-sanitize=alignment
+endif
 endif
 else
 CFLAGS ?= -O2 -pipe -fomit-frame-pointer

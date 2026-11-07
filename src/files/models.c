@@ -170,50 +170,93 @@ Mod_LoadDKMCmdList
 Load the DKM glcmds
 =================
 */
-static void
+/* AF1: two trust holes here, one per direction.
+   - Input: the walk below consumes 1 + 2 + 3*|count| dwords per
+     command (command dword, two skipped dwords, three dwords per
+     counted vertex) plus the terminating zero, while the caller's
+     Z6 section check only guarantees pheader->num_glcmds dwords of
+     the file lie inside the file.  A large count read straight off
+     the end of the file buffer: the reviewer's
+     rev_dkm_glcmds_read.bin, ASan heap-buffer-overflow READ of size
+     4 at the LittleLong loads below, models.c:197 at tip 08bac21.
+   - Output: the dwords were written into the model block's glcmds
+     section before the pendcmd check could see them, so a count
+     whose output did not fit wrote past the end of the model block,
+     which is also the end of the hunk mapping (the round-22
+     calibration SEGV writing at models.c:198 in this function), and
+     a poutcmd past pendcmd made the trailing memset's negative
+     length a huge size_t.  A count of INT_MIN additionally negated
+     with signed overflow.
+   The converter now checks a whole command's input dwords against
+   the section and its output dwords against the model's glcmds
+   section before writing any of it, and returns false so the
+   caller gives the hunk back.  A list with no terminating zero
+   stops at the section end and the rest is zero filled, as the
+   trailing-zero convention intended.  Well-formed lists produce
+   byte-identical output to the old walk. */
+static qboolean
 Mod_LoadDKMCmdList (const char *mod_name, dmdl_t *pheader, int *pincmd)
 {
-	int *poutcmd, *pendcmd;
-	int i;
+	const int	*inend;
+	int			*poutcmd, *pendcmd;
+	long long	n;
+	int			i;
+
+	/* the caller guarantees, through Z6's s_glcmds check, that
+	   exactly pheader->num_glcmds little-endian dwords live at
+	   pincmd; that is the read bound for everything below */
+	inend = pincmd + pheader->num_glcmds;
 
 	poutcmd = (int *)((char*)pheader + pheader->ofs_glcmds);
 	pendcmd = poutcmd + pheader->num_glcmds;
-	/* read command count */
-	i = LittleLong(*pincmd++);
-	*poutcmd++ = i;
 
-	while (i != 0)
+	while (pincmd < inend)
 	{
-		if (i < 0)
+		/* read command count */
+		i = LittleLong(*pincmd++);
+		if (i == INT_MIN)
 		{
-			i = -i;
+			Com_Printf("%s: model %s has glcmd count %d\n",
+				__func__, mod_name, i);
+			return false;
+		}
+		if (poutcmd >= pendcmd)
+		{
+			Com_Printf("%s: Entity %s has possible broken glcmd.\n",
+				__func__, mod_name);
+			return false;
+		}
+		*poutcmd++ = i;
+		if (i == 0)
+		{
+			break;
+		}
+
+		n = (i < 0) ? -(long long)i : (long long)i;
+		if ((inend - pincmd) < (2 + 3 * n) ||
+			(pendcmd - poutcmd) < (3 * n))
+		{
+			Com_Printf("%s: Entity %s has possible broken glcmd.\n",
+				__func__, mod_name);
+			return false;
 		}
 
 		/* skip unused surf_id and skin index */
 		pincmd += 2;
 
-		while (i)
+		while (n)
 		{
 			poutcmd[0] = LittleLong (pincmd[1]);
 			poutcmd[1] = LittleLong (pincmd[2]);
 			poutcmd[2] = LittleLong (pincmd[0]);
 			poutcmd += 3;
 			pincmd += 3;
-			i --;
-		}
-
-		/* read command count */
-		i = LittleLong(*pincmd++);
-		*poutcmd++ = i;
-
-		if (pendcmd < poutcmd)
-		{
-			Com_Printf("%s: Entity %s has possible broken glcmd.\n",
-				__func__, mod_name);
-			break;
+			n --;
 		}
 	}
 	memset (poutcmd, 0, (pendcmd - poutcmd) * sizeof(int));
+
+	return true;
 }
 
 /*
@@ -1461,6 +1504,27 @@ Mod_LoadDKMModel(const char *mod_name, const void *buffer, int modfilelen,
 			return NULL;
 		}
 
+		/* AF1: a v2 frame is read as the 40 byte name/scale/translate
+		   head plus five bytes per vertex (a packed dword and a light
+		   byte), while the frames section is sized by the file's own
+		   framesize.  CheckAliasHeader only ever proves the model's
+		   (recomputed) stride carries four bytes per vertex, so a v2
+		   file may claim a framesize shorter than its frames really
+		   are, and the last frame's vertex reads run past the frames
+		   section - up to num_xyz bytes past the section end, which
+		   is past the file end when the section ends the file.  The
+		   v2 stride itself has to carry the v2 vertices. */
+		if ((header.version == DKM2_VERSION) &&
+			((long long)header.framesize <
+				((long long)sizeof(daliasframe_t) -
+					(long long)sizeof(dtrivertx_t)) +
+				(5LL * (long long)header.num_xyz)))
+		{
+			Com_Printf("%s: model %s has v2 framesize %d for %d vertices",
+					__func__, mod_name, header.framesize, header.num_xyz);
+			return NULL;
+		}
+
 		s_skins = (long long)header.ofs_skins +
 			((long long)header.num_skins * MAX_SKINNAME);
 		s_st = (long long)header.ofs_st +
@@ -1485,8 +1549,10 @@ Mod_LoadDKMModel(const char *mod_name, const void *buffer, int modfilelen,
 	}
 
 	/* AC1: audit: this loader has no return-NULL exit between
-	   Hunk_Begin() and its success return, so there is no
-	   post-allocation path to free here. */
+	   Hunk_Begin() and its success return, except the AF1 glcmd
+	   failure below, which is the one post-allocation exit and
+	   hands the mapping back with Hunk_Free like the MDL/flex
+	   fail: paths do. */
 	extradata = Hunk_Begin(dmdlheader.ofs_end);
 	pheader = Hunk_Alloc(dmdlheader.ofs_end);
 	memcpy(pheader, &dmdlheader, sizeof(dmdl_t));
@@ -1495,8 +1561,12 @@ Mod_LoadDKMModel(const char *mod_name, const void *buffer, int modfilelen,
 		pheader->num_skins * MAX_SKINNAME);
 	Mod_LoadSTvertList (pheader,
 		(dstvert_t *)((byte *)buffer + header.ofs_st));
-	Mod_LoadDKMCmdList (mod_name, pheader,
-		(int *)((byte *)buffer + header.ofs_glcmds));
+	if (!Mod_LoadDKMCmdList (mod_name, pheader,
+		(int *)((byte *)buffer + header.ofs_glcmds)))
+	{
+		Hunk_Free(extradata);
+		return NULL;
+	}
 	if (header.version == DKM1_VERSION)
 	{
 		Mod_LoadFrames (pheader, (byte *)buffer + header.ofs_frames,
