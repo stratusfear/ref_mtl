@@ -302,6 +302,17 @@ Mod_LoadMDL (const char *mod_name, const void *buffer, int modfilelen,
 
 	pinmodel = (mdl_header_t *)buffer;
 
+	/* AE6: AB1 bound every value the walk below reads, but the
+	   version and count loads here were still the first thing done
+	   to the buffer; a 4..(sizeof(mdl_header_t)-1) byte "IDPO" file
+	   reads past it before inputextent ever runs. */
+	if (modfilelen < (int)sizeof(mdl_header_t))
+	{
+		Com_Printf("%s: model %s is %d bytes, less than its header",
+				__func__, mod_name, modfilelen);
+		return NULL;
+	}
+
 	version = LittleLong (pinmodel->version);
 	if (version != MDL_VERSION)
 	{
@@ -892,19 +903,23 @@ Mod_LoadMD2 (const char *mod_name, const void *buffer, int modfilelen,
 
 	pinmodel = (dmdl_t *)buffer;
 
+	/* Z6: the header is read before any of its counts are trusted.
+	   AE6: the check has to run before the first field read, not
+	   after it - a 4..(sizeof(dmdl_t)-1) byte "IDP2" file used to
+	   make the version load below dereference past the buffer the
+	   host's FS handed over. */
+	if (modfilelen < (int)sizeof(dmdl_t))
+	{
+		Com_Printf("%s: model %s is %d bytes, less than its header",
+				__func__, mod_name, modfilelen);
+		return NULL;
+	}
+
 	version = LittleLong (pinmodel->version);
 	if (version != ALIAS_VERSION)
 	{
 		Com_Printf("%s: %s has wrong version number (%i should be %i)",
 				__func__, mod_name, version, ALIAS_VERSION);
-		return NULL;
-	}
-
-	/* Z6: the header is read before any of its counts are trusted */
-	if (modfilelen < (int)sizeof(dmdl_t))
-	{
-		Com_Printf("%s: model %s is %d bytes, less than its header",
-				__func__, mod_name, modfilelen);
 		return NULL;
 	}
 
@@ -1533,6 +1548,16 @@ Mod_LoadAliasModel (const char *mod_name, const void *buffer, int modfilelen,
 	vec3_t mins, vec3_t maxs, struct image_s **skins, findimage_t find_image,
 	modtype_t *type)
 {
+	/* AE6: the ident read pulls four bytes out of the buffer, and
+	   the host's load_model_file() admits any file with size > 0;
+	   shorter than the ident there is nothing to dispatch on. */
+	if (modfilelen < (int)sizeof(int))
+	{
+		Com_Printf("%s: model %s is %d bytes, less than its ident",
+				__func__, mod_name, modfilelen);
+		return NULL;
+	}
+
 	switch (LittleLong(*(unsigned *)buffer))
 	{
 		case DKMHEADER:

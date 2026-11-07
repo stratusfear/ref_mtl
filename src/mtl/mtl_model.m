@@ -1421,12 +1421,28 @@ Mod_ForName(const char *name, model_t *parent_model, qboolean crash)
 
 	/* update count of loaded models */
 	mod_loaded ++;
+
 	/* Z4: loading sentinel.  Any ERR_DROP from the loaders below
 	   longjmps out and leaves this slot named-but-incomplete; the
 	   cache search above treats a negative extradatasize as such
 	   and rebuilds the slot.  Cleared implicitly by Hunk_End at
 	   the bottom of this function. */
 	mod->extradatasize = -1;
+
+	/* AE6: the dispatch switch below reads the four-byte magic
+	   out of the buffer, and Mod_LoadFile accepts any file with
+	   size > 0; shorter than the magic the file is unusable and
+	   the switch would read past the buffer.  Treated exactly
+	   like a loader rejection: reason, then the Failed to load
+	   ERR_DROP the loader failures below raise. */
+	if (modfilelen < (int)sizeof(int))
+	{
+		Com_Printf("%s: %s is %d bytes, less than its ident\n",
+			__func__, mod->name, modfilelen);
+		ri.Sys_Error(ERR_DROP, "%s: Failed to load %s",
+			__func__, mod->name);
+		return NULL;
+	}
 	if (r_validation->value > 0)
 	{
 		Com_Printf("%s: Load %s[%d]\n", __func__, mod->name, mod_loaded);

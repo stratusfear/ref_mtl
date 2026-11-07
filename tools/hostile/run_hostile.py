@@ -125,6 +125,19 @@ CASES = [
     ("m_mdlframetype",    ["+map", "base1"], "unsupported frame type 1", None),
     ("f_badskn",          ["+map", "base1"], "Invalid skin version 7", None),
     ("f_badst",           ["+map", "base1"], "Invalid st coord size", None),
+    # AE6: files shorter than the first bytes the loaders read: the
+    # ident dispatch (1 byte), MD2 version-before-header-check (5
+    # bytes), MDL version/count reads before AB1's bounds (12 bytes).
+    # The first two also trip the *host's* precache skin check
+    # (cl_download.c) before the renderer sees the file - that is an
+    # upstream yquake2 bug of the same family, logged in the AE5
+    # report, not ours; allow_download_models 0 skips the host's
+    # model read so the staged file reaches the renderer.
+    ("m_ae6_ident1",      ["+set", "allow_download_models", "0",
+                           "+map", "base1"], "less than its ident", None),
+    ("m_ae6_md2short",    ["+set", "allow_download_models", "0",
+                           "+map", "base1"], "less than its header", None),
+    ("m_ae6_mdlshort",    ["+map", "base1"], "less than its header", None),
     # Z6 controls: well-formed replacements must load
     ("c_md2",            ["+map", "base1"], None, "Failed to load"),
     ("c_flex",           ["+map", "base1"], None, "Failed to load"),
@@ -156,6 +169,9 @@ STAGE = {
     "m_mdlframetype":  (MD2, "staging/mdl_frametype.md2"),
     "f_badskn":        (MD2, "staging/fm_badskn.fm"),
     "f_badst":         (MD2, "staging/fm_badst.fm"),
+    "m_ae6_ident1":    (MD2, "staging/ae6_ident1.md2"),
+    "m_ae6_md2short":  (MD2, "staging/ae6_md2short.md2"),
+    "m_ae6_mdlshort":  (MD2, "staging/ae6_mdlshort.md2"),
     "c_md2":      (MD2, "staging/c_md2.md2"),
     "c_flex":     (MD2, "staging/c_flex.fm"),
     "c_sp2":      (SP2, "staging/c_sp2.sp2"),

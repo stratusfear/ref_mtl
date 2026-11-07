@@ -111,6 +111,14 @@ def main():
     out["staging/md2_glcmds0.md2"] = md2(num_glcmds=0)
     out["staging/md2_ofs_st.md2"] = md2(ofs_st=0x7ffffff0)
     out["staging/md2_st_neg.md2"] = md2(num_st=-5)
+
+    # AE6: files shorter than the bytes the loaders read before they
+    # check the length: 1 byte (ident dispatch read), 5 bytes (IDP2
+    # + 1: MD2 version read before the Z6 header check), 12 bytes
+    # (IDPO + 8: MDL version/count reads before AB1's inputextent).
+    out["staging/ae6_ident1.md2"] = b" "
+    out["staging/ae6_md2short.md2"] = b"IDP2\x00"
+    out["staging/ae6_mdlshort.md2"] = b"IDPO" + struct.pack("<2i", 6, 0) + b"\0" * 4
     out["staging/c_md2.md2"] = VB
 
     # SP2: header claims 32 frames, file is only the 12-byte header (Z6)
