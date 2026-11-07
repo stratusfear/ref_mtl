@@ -34,7 +34,7 @@ BUILD    := build
 COVDIR   := build_cov
 PROFDIR  := profraw
 
-TARGETS  := fuzz_pcx fuzz_wal fuzz_stb fuzz_models
+TARGETS  := fuzz_pcx fuzz_wal fuzz_stb fuzz_models fuzz_pvs
 
 # The exact flags from the round-22 brief: fuzzer + ASan + UBSan,
 # UBSan non-recovering so every report kills the run.
@@ -53,7 +53,7 @@ COVFLAGS := -g -O1 -fprofile-instr-generate -fcoverage-mapping \
 # stb.c and is needed by pcx.c/wal.c, and dead-stripped extras do
 # not hurt. Unused translation units only widen the coverage
 # denominator slightly.
-LOADERS  := pcx wal stb models
+LOADERS  := pcx wal stb models pvs
 LOADER_OBJS     := $(addprefix $(OBJDIR)/,$(addsuffix .o,$(LOADERS)))
 COVLOADER_OBJS  := $(addprefix $(COVOBJ)/,$(addsuffix .o,$(LOADERS)))
 
@@ -106,6 +106,9 @@ $(BUILD)/fuzz_stb: $(OBJDIR)/fuzz_stb.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/shared
 	$(CC) $(FUZZFLAGS) -o $@ $^
 
 $(BUILD)/fuzz_models: $(OBJDIR)/fuzz_models.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/shared.o $(OBJDIR)/utils.o $(OBJDIR)/md4.o $(OBJDIR)/hunk_unix.o $(LOADER_OBJS) | $(BUILD)
+	$(CC) $(FUZZFLAGS) -o $@ $^
+
+$(BUILD)/fuzz_pvs: $(OBJDIR)/fuzz_pvs.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/shared.o $(OBJDIR)/utils.o $(OBJDIR)/md4.o $(OBJDIR)/hunk_unix.o $(LOADER_OBJS) | $(BUILD)
 	$(CC) $(FUZZFLAGS) -o $@ $^
 
 # --- smoke: >=2000 mutated iterations per target, well under 2 min ---
@@ -168,6 +171,9 @@ $(COVDIR)/fuzz_stb: $(COVOBJ)/fuzz_stb.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)/share
 $(COVDIR)/fuzz_models: $(COVOBJ)/fuzz_models.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)/shared.o $(COVOBJ)/utils.o $(COVOBJ)/md4.o $(COVOBJ)/hunk_unix.o $(COVLOADER_OBJS) | $(COVDIR)
 	$(CC) $(COVFLAGS) -o $@ $^
 
+$(COVDIR)/fuzz_pvs: $(COVOBJ)/fuzz_pvs.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)/shared.o $(COVOBJ)/utils.o $(COVOBJ)/md4.o $(COVOBJ)/hunk_unix.o $(COVLOADER_OBJS) | $(COVDIR)
+	$(CC) $(COVFLAGS) -o $@ $^
+
 # Replay the final corpora through the coverage binaries so the
 # instrumented run sees exactly the inputs the fuzzing ended with.
 # 0 = replay exactly the corpus units, no fresh mutations: the line
@@ -199,6 +205,7 @@ report:
 
 seeds:
 	$(PY) mkseedcorpus.py
+	$(PY) pvsseeds.py $(CORPUS)/fuzz_pvs
 
 clean:
 	rm -rf $(BUILD) $(COVDIR) $(PROFDIR) $(OBJDIR) $(COVOBJ)

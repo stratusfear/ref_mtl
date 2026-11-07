@@ -38,6 +38,34 @@ Mod_DecompressVis(const byte *in, int row)
 	YQ2_ALIGNAS_TYPE(int) static byte decompressed[MAX_MAP_LEAFS / 8];
 	int c;
 	byte *out;
+	const byte *in_start;
+	int budget;
+
+	/* AE10: row is (vis->numclusters + 7) >> 3 from the map file
+	   (Mod_ClusterPVS, src/mtl/mtl_model.m:41).  The Z5c guards in
+	   Mod_LoadVisibility only check numclusters against the length
+	   of the visibility lump, so a large enough lump carries
+	   numclusters past MAX_MAP_LEAFS and the loop below writes past
+	   decompressed[].  Reproduced on the real host with a crafted
+	   base1.bsp (tools/fuzz/bspfuzz/craftpvs.py, cal_bigvis):
+	   ASan global-buffer-overflow WRITE at decompressed + 8192;
+	   with ship flags the same run instead silently clobbers the
+	   dylib globals that sit after this static (nm layout: the
+	   stbi__* pipeline flags, va.string, paged_total) with
+	   attacker-chosen stream bytes.  In the fuzz harness the same
+	   write lands at pvs.c:60.  A row bigger than the output
+	   buffer can never be produced; treat it like missing vis:
+	   make all visible. */
+	if ((row <= 0) || (row > (int)sizeof(decompressed)))
+	{
+		c = 0;
+		while (c < (int)sizeof(decompressed))
+		{
+			decompressed[c++] = 0xff;
+		}
+
+		return decompressed;
+	}
 
 	out = decompressed;
 
@@ -53,8 +81,31 @@ Mod_DecompressVis(const byte *in, int row)
 		return decompressed;
 	}
 
+	/* AE10: the loop below terminates on the decompressed byte count
+	   alone, but a 00 00 run header writes zero bytes: a stream of
+	   those (or any stream that cannot fill the row) advances the
+	   input forever, past the end of the visibility lump.  Host
+	   repro: cal_earlyterm in the same generator; in the fuzz
+	   harness a heap-buffer-overflow READ at the in[1] fetch.  A
+	   stream that can still produce output consumes at most two
+	   input bytes per output byte (the 00 c header with c == 1), so
+	   past that budget nothing can be decoded: stop and make the
+	   rest visible, like the !in path. */
+	in_start = in;
+	budget = 2 * row;
+
 	do
 	{
+		if (in - in_start > budget)
+		{
+			while (out - decompressed < row)
+			{
+				*out++ = 0xff;
+			}
+
+			break;
+		}
+
 		if (*in)
 		{
 			*out++ = *in++;

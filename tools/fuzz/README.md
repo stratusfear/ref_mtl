@@ -15,6 +15,7 @@ longjmp-based `ERR_DROP`/`ERR_FATAL` recovery, Hunk bookkeeping).
 | `fuzz_wal`      | `src/files/wal.c`   | `LoadWal`, `LoadM8`, `LoadM32`, `GetWalInfo`, `GetM8Info`, `GetM32Info` |
 | `fuzz_stb`      | `src/files/stb.c` (+`pcx.c` for the pipeline) | `LoadSTB` (TGA/PNG/JPG through vendored `stb_image.h`), `ResizeSTB`, `R_LoadImage` |
 | `fuzz_models`   | `src/files/models.c`| `Mod_LoadAliasModel` (MDL/MD2/DKM), `Mod_LoadSP2` |
+| `fuzz_pvs`      | `src/files/pvs.c`   | `Mod_DecompressVis` (synthesized `Mod_ClusterPVS` call, AE10; seeds from `pvsseeds.py`) |
 
 Design rules (round-22 brief):
 

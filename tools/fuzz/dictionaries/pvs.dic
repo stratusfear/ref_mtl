@@ -1,0 +1,14 @@
+# AE10: dictionary for fuzz_pvs (PVS bit stream).
+# literal byte, zero-run header, run headers, numclusters shapes.
+"\x00\x00"
+"\x00\x01"
+"\x00\x02"
+"\x00\x08"
+"\x00\xff"
+"\x01"
+"\x02\x00"
+"\x03ab"
+# numclusters: 8193 (row just past decompressed), 100000, 20000
+"\x01\x20\x00\x00"
+"\xa0\x86\x01\x00"
+"\x20N\x00\x00"
