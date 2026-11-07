@@ -67,8 +67,33 @@ each target live in `dictionaries/`; pass them with `-dict=`.
 The seed corpus is generated from the shipped paks and loose game
 files by `mkseedcorpus.py` and is never committed.
 
-## Tier 2 status
+## Tier 2: BSP via the batched host (`bspfuzz/`)
 
-`Mod_LoadBrushModel` (BSP) lives in `src/mtl/mtl_model.m` next to
-the Metal renderer; see the AE3 notes in `REVIEW_EXTERNAL.md` for
-the link-or-fallback decision recorded during round 22.
+`Mod_LoadBrushModel` lives in `src/mtl/mtl_model.m` next to the
+Metal renderer and did not link into the libFuzzer harness (the
+whole renderer context comes with it).  AE3's fallback drives it
+through the real game host instead:
+
+```sh
+python3 bspfuzz/genbsp.py --datadir <datadir> --out <maps> \
+        --count 300 --seed 1
+python3 bspfuzz/batchhost.py --host <ASan-host quake2> \
+        --datadir <datadir> --maps <maps> --work <scratch>
+```
+
+`genbsp.py` mutates shipped BSPs with the weights the brief asks
+for: 60% lump-directory (the 19 `lump_t` offset/length pairs), 25%
+in-lump count words, 10% raw bytes, 5% header version; it writes a
+MANIFEST.tsv so every mutant is reproducible from the seed.
+`batchhost.py` runs one host boot per map and classifies the
+outcome from `qconsole.log` + captured stderr (`loaded`, `errdrop`,
+`asan` with the full report kept under `<work>/reports/`).
+
+Why one boot per map (measured 2026-11-06, this tree): queued
+`+map a +map b` does not survive an ERR_DROP - Host_Error clears
+the command buffer, the game subsystems shut down, and the client
+sits in the attract loop; console stdin is dedicated-only
+(`src/backends/unix/system.c`), so the loop cannot type the next
+`map` into a running client either.  A boot costs ~5 s with the
+ASan host, so several hundred maps per hour chew through the run.
+
