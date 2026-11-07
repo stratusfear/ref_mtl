@@ -24,6 +24,23 @@ stack is kept per map.  Reports are one TSV row per map.
 Throughput on this machine (measured by the driver itself, recorded
 per row): process start + map load + settle, roughly 8-10 s/map
 with the ASan host, i.e. several hundred maps per hour.
+
+Round 23 (AF4.1) classification rules, all measured on the nb2 rerun
+of the 86 old no-banner rows before being coded:
+
+- the exit status separates hung / signal-death / clean exit (see
+  sigtxt below);
+- an "ERROR:" console line without the "Map: <name>" banner is an
+  ERR_DROP during entity spawning - a rejection - and the host then
+  parks in nextDrawable and never exits by itself (measured on
+  af0016: sampled in the park, and a plain SIGTERM ends it within
+  20 s); the driver takes the error line and stops it: outcome
+  errdrop-nb;
+- a host that printed neither banner nor error and is still alive at
+  the deadline is quit-uncertain: the console gives no load verdict,
+  and one relaunch is taken before the row is written;
+- --keep-tail N archives the last N console lines of every
+  not-loaded attempt under <work>/logs/ for the report.
 """
 
 import argparse
@@ -37,6 +54,11 @@ import time
 
 SETTLE_SEC = 4.0          # after the "Map: <name>" banner before SIGTERM
 POLL_SEC = 0.2
+KILL_WAIT_SEC = 20.0      # SIGTERM patience; AF4.1 measured parked
+                          # hosts end within 20 s of SIGTERM
+BENIGN_ERRORS = {
+    "ERROR: OpenAL failed to initialize.",
+}
 
 
 def read_log(path):
@@ -47,11 +69,13 @@ def read_log(path):
         return ""
 
 
-def run_map(host, datadir, cfgdir, mapsdir, name, timeout):
-    """Run one host boot that loads `name`.  Returns (outcome, secs,
-    detail).  outcome is one of loaded, errdrop, asan, timeout,
-    no-banner.  cfgdir is the resolved game-config dir (<work>/hgame):
-    with HOME=<work> and `-cfgdir hgame` the engine writes under it."""
+def run_map_once(host, datadir, cfgdir, mapsdir, name, timeout):
+    """One host attempt.  Returns (outcome, secs, detail, logtxt,
+    rc, we_killed).  outcome from the poll/watch rules only:
+    asan, errdrop, errdrop-nb, loaded, post-crash, no-banner,
+    quit-uncertain.  cfgdir is the resolved game-config dir
+    (<work>/hgame): with HOME=<work> and `-cfgdir hgame` the engine
+    writes under it."""
     log = os.path.join(cfgdir, "baseq2", "qconsole.log")
     try:
         os.remove(log)
@@ -77,7 +101,8 @@ def run_map(host, datadir, cfgdir, mapsdir, name, timeout):
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     banner = "Map: %s" % name
-    outcome, detail = "timeout", ""
+    pre_err = None
+    detail = ""
     deadline = t0 + timeout
     while time.time() < deadline:
         if proc.poll() is not None:
@@ -89,18 +114,52 @@ def run_map(host, datadir, cfgdir, mapsdir, name, timeout):
             while time.time() < end and proc.poll() is None:
                 time.sleep(POLL_SEC)
             break
+        # AF4.1: an ERR_DROP during SpawnEntities never reaches the
+        # "Map:" banner (the banner lands after a successful spawn).
+        # Measured on af0016: the host prints ERROR: ..., runs the
+        # shutdown banners, and then sits in RE_BeginFrame ->
+        # [CAMetalLayer nextDrawable] forever (sampled: 215/215
+        # main-thread samples in _dispatch_semaphore_wait_slow), so
+        # waiting the full timeout buys nothing: take the error line
+        # and stop the host.
+        # BENIGN: the OpenAL line this machine prints at EVERY boot
+        # (no sound device); the fix_verify gate greps the same line
+        # as benign.  Without the skip, every still-loading map dies
+        # at 0.8 s on it (measured in the smoke run).
+        if "ERROR:" in logtxt:
+            errs = [ln for ln in logtxt.splitlines()
+                    if ln.startswith("ERROR:")
+                    and ln not in BENIGN_ERRORS]
+            if errs:
+                pre_err = errs[0]
+                break
         time.sleep(POLL_SEC)
 
     if proc.poll() is None:
+        we_killed = True
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=KILL_WAIT_SEC)
         except subprocess.TimeoutExpired:
+            # AF4.1 measured: a host parked in nextDrawable does not
+            # even die on SIGTERM within the wait; SIGKILL it.
             proc.kill()
             proc.wait()
+    else:
+        we_killed = False
     stderr = proc.stderr.read().decode("utf-8", "replace")
     secs = time.time() - t0
     logtxt = read_log(log)
+    rc = proc.returncode
+    if we_killed:
+        sigtxt = ("hung-killed" if rc in (None, -signal.SIGTERM,
+                  -signal.SIGKILL) else "exited-%s-after-TERM" % rc)
+    elif rc is not None and rc < 0:
+        sigtxt = "died-signal-%d" % -rc
+    elif rc == 0:
+        sigtxt = "exit-0"
+    else:
+        sigtxt = "exit-%d" % rc
 
     if "AddressSanitizer" in stderr:
         outcome = "asan"
@@ -111,17 +170,71 @@ def run_map(host, datadir, cfgdir, mapsdir, name, timeout):
         os.makedirs(keep, exist_ok=True)
         with open(os.path.join(keep, name + ".asan.txt"), "w") as f:
             f.write(stderr)
+    elif pre_err is not None:
+        # AF4.1: ERR_DROP that never reached the Map: banner.  The
+        # engine REJECTED the map; sigtxt says whether it then exited
+        # or had to be killed out of the post-error redraw park.
+        outcome = "errdrop-nb"
+        detail = ("%s | console-err: %s" % (sigtxt, pre_err[:200]))[:400]
     elif banner in logtxt:
         line = logtxt.split("ERROR:", 1)
         if len(line) > 1 and banner in line[0]:
             outcome = "errdrop"
             detail = line[1].splitlines()[0][:200]
+        elif (rc is not None) and (rc < 0) and not we_killed:
+            # AF4: banner printed, then the host died by a signal
+            # without the driver touching it: a post-load crash.
+            # On a release host (no ASan reports) this is the only
+            # way to see it; calling it "loaded" would hide it.
+            outcome = "post-crash"
+            detail = "%s | log-tail: %s" % (sigtxt,
+                (logtxt.splitlines()[-1][:200] if logtxt else ""))
         else:
+            # A loaded run is ended by the driver's own SIGTERM, so
+            # we_killed is expected here and must not fall through
+            # to the quit-uncertain rule.
             outcome = "loaded"
+    elif we_killed:
+        # AF4.1: the host never reported the map load, never printed
+        # ERROR:, and was still alive at the deadline.  The console
+        # gives no load verdict; calling it loaded or rejected would
+        # be a guess.
+        outcome = "quit-uncertain"
+        tail = [ln for ln in logtxt.splitlines() if ln.strip()]
+        detail = ("%s | log-tail: %s | killed after banner-less hang; "
+                  "engine quit not observable" % (sigtxt,
+                  (tail[-1][:120] if tail else "<empty log>")))[:400]
     else:
+        # AF4.1: crash by signal, or clean exit, without ever
+        # printing the banner and without an ERROR: line.  For the
+        # clean ones, the last log line and the first stderr line
+        # say why the engine stopped (missing map, ERR_DROP text
+        # that never reached the log, driver abort...).
         outcome = "no-banner"
-        detail = "host never printed the map banner"
-    return outcome, secs, detail
+        tail = [ln for ln in logtxt.splitlines() if ln.strip()]
+        errl = [ln for ln in stderr.splitlines() if ln.strip()]
+        detail = ("%s | log-tail: %s | stderr-first: %s" % (
+            sigtxt,
+            (tail[-1][:120] if tail else "<empty log>"),
+            (errl[0][:120] if errl else "<empty stderr>")))[:400]
+    return outcome, secs, detail, logtxt, rc, we_killed
+
+
+def run_map(host, datadir, cfgdir, mapsdir, name, timeout):
+    """run_map_once plus the AF4.1 relaunch rule: if the first
+    attempt had to be killed without the console ever showing this
+    map's load outcome, try once more; only if that one is killed
+    too does the map get the quit-uncertain row.  A map whose first
+    quit was just an ignored SIGTERM (SIGKILL followed) is not
+    re-judged as if it were clean - the second attempt is what the
+    row is based on."""
+    outcome, secs, detail, logtxt, rc, we_killed = run_map_once(
+            host, datadir, cfgdir, mapsdir, name, timeout)
+    if outcome == "quit-uncertain":
+        outcome, secs2, detail, logtxt, rc, we_killed = run_map_once(
+                host, datadir, cfgdir, mapsdir, name, timeout)
+        secs += secs2
+    return outcome, secs, detail, logtxt, rc, we_killed
 
 
 def main():
@@ -133,6 +246,9 @@ def main():
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--out", default=None, help="results TSV (default "
             "<work>/results.tsv)")
+    ap.add_argument("--keep-tail", type=int, default=0, metavar="N",
+            help="keep the last N console log lines of every attempt "
+            "that is not 'loaded' under <work>/logs/ (AF4.1 evidence)")
     args = ap.parse_args()
 
     os.makedirs(args.work, exist_ok=True)
@@ -146,12 +262,20 @@ def main():
     with open(out, "w") as tsv:
         tsv.write("map\toutcome\tsecs\tdetail\n")
         for i, name in enumerate(names):
-            outcome, secs, detail = run_map(args.host, args.datadir,
-                    cfgdir, args.maps, name, args.timeout)
+            outcome, secs, detail, logtxt, rc, we_killed = run_map(
+                    args.host, args.datadir, cfgdir, args.maps, name,
+                    args.timeout)
             counts[outcome] = counts.get(outcome, 0) + 1
             tsv.write("%s\t%s\t%.1f\t%s\n" % (name, outcome, secs, detail))
             tsv.flush()
-            print("[%4d/%4d] %-9s %6.1fs  %s" % (i + 1, len(names),
+            if args.keep_tail and outcome != "loaded":
+                keep = os.path.join(args.work, "logs")
+                os.makedirs(keep, exist_ok=True)
+                tail = [ln for ln in logtxt.splitlines() if ln.strip()]
+                with open(os.path.join(keep, name + ".tail.txt"), "w") as f:
+                    f.write("rc=%s killed=%s\n" % (rc, we_killed))
+                    f.write("\n".join(tail[-args.keep_tail:]) + "\n")
+            print("[%4d/%4d] %-13s %6.1fs  %s" % (i + 1, len(names),
                     outcome, secs, detail))
     total = time.time()
     print("counts:", counts)
