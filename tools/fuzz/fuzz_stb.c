@@ -56,7 +56,12 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	}
 
 	/* Resize path with dimensions derived from the input so the
-	 * buffer geometry itself is input-controlled. */
+	 * buffer geometry itself is input-controlled.  Needs two
+	 * header bytes of its own: libFuzzer's minimiser drives the
+	 * unit down to one byte and this block reads data[1] (AE2:
+	 * that is a harness defect, not a loader one, so it is
+	 * guarded here instead of rejecting the input outright). */
+	if (size >= 2)
 	{
 		int iw = (int)((data[0] & 31) + 1);
 		int ih = (int)((data[1] & 31) + 1);
