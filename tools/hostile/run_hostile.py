@@ -130,6 +130,31 @@ CASES = [
     ("s_p_tiny",         ["+set", "skin", "male/p_tiny",   "+map", "base1"], "Map: base1", None),
     ("s_p_nodata",       ["+set", "skin", "male/p_nodata", "+map", "base1"], "Map: base1", None),
     ("s_p_planes",       ["+set", "skin", "male/p_planes", "+map", "base1"], "Bad pcx file", None),
+    # AH1: stb canvas-size caps.  Header-only files claiming a huge
+    # canvas must be refused BEFORE stbi allocates; the marker pins
+    # the exact per-file reason line.  s_t_bomb stages the same-named
+    # .tga/.png/.jpg trio, so that run proves all three formats hit
+    # the cap (the tga line is asserted; the loader tries the
+    # extensions in that order).  The boundary pair (t_sideover: side
+    # cap, t_pxover: pixel cap) pins both cap rules; c_t_edge stages
+    # exactly-on-cap files with complete payloads, which must DECODE,
+    # so no refusal line may appear.  The PNG sibling is caught one
+    # layer down instead: stb's own PNG allocation guard
+    # ((1<<30)/x/n < y, stb_image.h:5158) fails it before the canvas
+    # is sized - asserted as the exact line, because that is the
+    # rejection the input really gets, cap or no cap.
+    ("s_t_bomb",         ["+set", "skin", "male/t_bomb",   "+map", "base1"],
+     "LoadSTB: refusing to decode players/male/t_bomb.tga claiming 27164x26480", None),
+    ("s_t_bombpng",      ["+set", "skin", "male/t_bombpng", "+map", "base1"],
+     "LoadSTB couldn't load data from players/male/t_bombpng.png: too large!", None),
+    ("s_t_bombjpg",      ["+set", "skin", "male/t_bombjpg", "+map", "base1"],
+     "LoadSTB: refusing to decode players/male/t_bombjpg.jpg claiming 27164x26480", None),
+    ("s_t_sideover",     ["+set", "skin", "male/t_sideover", "+map", "base1"],
+     "LoadSTB: refusing to decode players/male/t_sideover.tga claiming 16385x16384", None),
+    ("s_t_pxover",       ["+set", "skin", "male/t_pxover",  "+map", "base1"],
+     "LoadSTB: refusing to decode players/male/t_pxover.tga claiming 4097x4096", None),
+    ("c_t_edge",         ["+set", "skin", "male/c_t_edge",  "+map", "base1"],
+     "Map: base1", "refusing to decode"),
     # Z6: alias models swapped onto the precached view-model path
     ("m_tris",           ["+map", "base1"], "Failed to load", None),
     ("m_frames",         ["+map", "base1"], "Failed to load", None),

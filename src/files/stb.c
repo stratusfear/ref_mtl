@@ -84,6 +84,68 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 		return false;
 	}
 
+	/* AH1: bound the decode BEFORE stb allocates its canvas.  A
+	   34-byte file (the fuzz_stb timeout artifact, sha1 35106c89..)
+	   claims a 27164 x 26480 8bpp RLE TGA = 719302720 pixels.  What
+	   that costs was measured on the release host with this file
+	   staged as base1's e1u1/metal2_1 loose texture (loose beats
+	   paks, r_retexturing 1): peak RSS 922 MB against a 238 MB
+	   baseline, and the first r_speeds frame slipped from 1.05 s to
+	   3.09 s; the console got one line, "LoadSTB couldn't load data
+	   from ...: outofmem!" - stb allocated the 719 MB 8-bit canvas,
+	   ground the RLE fill from a 34-byte payload, then failed the
+	   2877210880-byte RGBA postprocess on its own size guard and
+	   fell back to notexture.  So the host pays a ~684 MB transient
+	   allocation and ~2 s per such texture; in the fuzz_stb harness
+	   (twelve loads per iteration, ASan/UBSan in the way) the same
+	   input never finished inside a 30 s session timeout.  The same
+	   shape is what rounds 22/23 carried as "TGA bomb, report-only"
+	   and what mkseedcorpus.py quarantined by sha1 (374d2471.., a
+	   63-byte unit claiming 34532 x 20920); that file was NOT found
+	   in any corpus source at the round-25 tip (scan_img.py over 10
+	   paks + every loose image under the app datadir finds no image
+	   past 1024 px on a side), so the quarantine entry is retired
+	   below and the cap rejects the shape either way.
+	   The caps: 16384 per side, exactly MTL_MAX_TEXTURE_DIM in
+	   mtl_image.m - anything past that is already rejected to
+	   notexture by Z2 AFTER the full decode, so decoding it is pure
+	   waste; and 16777216 pixels (= 4096^2, 64 MB RGBA canvas).  The
+	   product bound is tighter than Z2's post-decode product bound
+	   (16384^2) on purpose: the side cap alone still lets a 34-byte
+	   claim of 16384 x 16384 burn a 1 GB canvas for minutes.  Head-
+	   room data: scan_img.py's census over the same 10 paks and the
+	   loose trees - 2459 image files, max side 1024, max pixel
+	   count 524288, no .png/.jpg at all - so 4096^2 is 32x the
+	   largest shipped claim.  The worst canvas a small file can now
+	   force is 64 MB, and every file that decoded and loaded before
+	   still decodes: shipped claims sit under the cap by 32x.  A
+	   sibling shape is already caught one layer down - a PNG with
+	   the same claim fails stb's own allocation guard
+	   ((1<<30)/x/n < y, stb_image.h:5158, "too large") - asserted
+	   that way in the hostile suite so the line stays honest either
+	   way.
+	   stbi_info_from_memory() parses only the header; if it fails,
+	   fall through to the normal load so its failure reason stays
+	   the console evidence for non-header files. */
+	{
+		int aw, ah, ac;
+
+		if (stbi_info_from_memory(rawdata, rawsize, &aw, &ah, &ac))
+		{
+			long long px = (long long)aw * ah;
+
+			if (aw > 16384 || ah > 16384 ||
+				px > 16777216LL)
+			{
+				Com_Printf("%s: refusing to decode %s claiming "
+						"%dx%d (%lld pixels)\n",
+						__func__, filename, aw, ah, px);
+				ri.FS_FreeFile(rawdata);
+				return false;
+			}
+		}
+	}
+
 	int w, h, bytesPerPixel;
 	byte* data = NULL;
 	data = stbi_load_from_memory(rawdata, rawsize, &w, &h, &bytesPerPixel, STBI_rgb_alpha);

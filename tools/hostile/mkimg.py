@@ -10,7 +10,9 @@ every spawn), so each hostile file loads on `+map base1`.
 usage: mkimg.py --datadir <dir with baseq2/pak0.pak> --out <scratch game dir>
 requires: python3 (stdlib only); v_blast.md2 is extracted from the paks
 """
-import argparse, os, struct
+import argparse, hashlib, os, struct, zlib
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def pak_extract(datadir, want):
@@ -49,6 +51,29 @@ def wal(w, h, ofs, body):
                        b"", 0, 0, 0) + body
 
 
+def png_chunk(typ, data):
+    return (struct.pack(">I", len(data)) + typ + data +
+            struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF))
+
+
+def png(w, h, extra=b""):
+    """8bpp RGBA PNG: signature, IHDR claiming w x h, optional extra
+    bytes (real IDAT payload or junk), IEND."""
+    return (b"\x89PNG\r\n\x1a\n" +
+            png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) +
+            extra + png_chunk(b"IEND", b""))
+
+
+def jpg(w, h):
+    """Baseline JPEG whose SOF0 claims w x h and whose scan data is
+    absent: enough header for stbi_info, no payload to decode."""
+    sof = (b"\xff\xc0" + struct.pack(">HBHHB", 8 + 3 * 3, 8, h, w, 3) +
+           b"\x01\x11\x00\x02\x11\x01\x03\x11\x01")
+    return (b"\xff\xd8" +
+            b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00\x01\x01\x00" +
+            struct.pack(">HH", 1, 1) + b"\x00\x00" + sof + b"\xff\xd9")
+
+
 def m32(w, h, ofs, body):
     hdr = struct.pack("<i128s128s128s128s16I16I16Iiiiffi128sfffffii80s",
                       4, b"evil", b"", b"", b"",
@@ -84,6 +109,32 @@ def main():
     out["players/male/t_huge.tga"] = tga(20000, 20000, rle=True,
                                          data=b"\xff\x10\x20\x30\x40" * 64)
     out["players/male/t_trunc.tga"] = tga(64, 64, data=b"\x01" * 10)
+
+    # AH1: pre-decode canvas-size caps in LoadSTB (stb.c).  The three
+    # "bomb" fixtures are header-only files claiming far more than the
+    # cap; the pair beyond the caps pins the boundary (refused), and
+    # t_ok4095 is the cap-adjacent control: it must still DECODE,
+    # which the skin route then discards for being larger than the
+    # 256x256 male base PCX, so it prints no rejection at all.
+    # t_bomb.tga is the exact fuzz_stb timeout artifact (sha1
+    # 35106c89..), inlined here because crashers/ is not checked in.
+    out["players/male/t_bomb.tga"] = (
+        b"\x00\x00\x0a\x03\xf8\xfe\xdb\x70\x6e\x00\x00\x08\x1c\x6a\x70\x67"
+        b"\x08\xac\x00\x00\x00\x81\x00\x00\x08\xba\x00\x00\x0e\x00\x18\x18"
+        b"\x0a\x18")
+    if hashlib.sha1(out["players/male/t_bomb.tga"]).hexdigest() != \
+            "35106c89bc7dcdaa160387254bfe7ae38c0e2e95":
+        raise SystemExit("AH1: t_bomb.tga must stay the fuzz artifact bytes")
+    out["players/male/t_bomb.png"] = png(27164, 26480)
+    out["players/male/t_bomb.jpg"] = jpg(27164, 26480)
+    # distinct basenames so one skin case reaches exactly one format
+    out["players/male/t_bombpng.png"] = png(27164, 26480)
+    out["players/male/t_bombjpg.jpg"] = jpg(27164, 26480)
+    out["players/male/t_sideover.tga"] = tga(16385, 16384, data=b"\x80" * 16)
+    out["players/male/t_pxover.tga"] = tga(4097, 4096, data=b"\x80" * 16)
+    out["players/male/c_t_edge.tga"] = tga(16384, 1, data=b"\x80" * 16384 * 4)
+    out["players/male/c_t_edge.png"] = png(16384, 1,
+        png_chunk(b"IDAT", zlib.compress(b"\x00" * (16384 * 4 + 1))))
 
     # WAL/M32 variants referenced by the b_tex_* maps from mkbsp.py (Z3)
     out["textures/evil/w_wide.wal"] = wal(20000, 1, 100, b"\x10" * 20000)

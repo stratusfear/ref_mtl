@@ -13,8 +13,14 @@ would see from FS_LoadFile(), so the format magic survives intact.
 
 AF2 additions: well-formed DKM v1/v2, flex .fm and MDL seeds are
 synthesised via tools/hostile/mkimg.py (no shipped pak carries those
-formats), and shipped inputs on QUARANTINE_SHA1 (the fuzz_stb TGA
-bomb) are never written out.
+formats).  AF2 also quarantined a fuzz_stb TGA "bomb" by sha1; AH1
+retired that entry - the shape is now refused before stb allocates
+(stb.c LoadSTB caps), and a round-25 re-scan of the corpora sources
+(10 paks plus every loose image under the game data dirs, via
+tools/hostile/scan_img.py) could not find the file in any source, so
+the quarantine's "shipped texture" label was no longer verifiable.
+AH1 instead feeds the exact regression inputs (the 34-byte timeout
+artifact and its PNG/JPEG siblings) as SYNTH_TARGETS seeds.
 
 Usage: python3 mkseedcorpus.py [--src DIR ...] [--out DIR]
 """
@@ -35,16 +41,15 @@ TARGET_EXTS = {
     "fuzz_models": {".md2", ".mdl", ".md3", ".sp2", ".dkm", ".fm"},
 }
 
-# AF2.3: shipped inputs that must NOT re-enter a corpus.  sha1 of the
-# file bytes -> reason.  The stb TGA bomb is a real shipped texture
-# whose RLE decode is slow enough to hit the replay timeout; it was
-# quarantined by hand in round 22 (report-only vendored behaviour),
-# and regeneration kept putting it back.
-QUARANTINE_SHA1 = {
-    "374d24715f9be4c23ae800a7c4276add66de4912":
-        "stb TGA bomb: full decode exceeds the 30 s session timeout "
-        "(round-22 AE4, vendored behaviour, report-only)",
-}
+# AH1: the pre-decode caps in LoadSTB (src/files/stb.c) make the
+# AF2.3 quarantine moot - the TGA-bomb shape is refused with a reason
+# line before any canvas is allocated, and a round-25 re-scan
+# (tools/hostile/scan_img.py, 10 paks + every loose image under the
+# game data dirs) did not find the quarantined file in any corpus
+# source, so its "real shipped texture" label could not be
+# re-verified.  The dictionary machinery is kept for the next such
+# input; the AF2 entry is gone (see the module docstring).
+QUARANTINE_SHA1 = {}
 
 # AF2.2: fuzz_models has nothing to teach it DKM, flex or MDL: no
 # shipped pak contains a .dkm, a .fm or a .mdl (AB1 scan), so the
@@ -52,11 +57,24 @@ QUARANTINE_SHA1 = {
 # dispatch.  Hand-build one valid seed per format, reusing the
 # round-18 Z9 builder in tools/hostile/mkimg.py (the AF1 controls
 # and the c_flex/c_mdl controls are exactly those well-formed files).
+
+# AH1.2: pin the fixed shapes in the corpus so a future regression
+# replays them.  tools/hostile/mkimg.py builds these; the .tga is
+# byte-identical to the fuzz_stb timeout artifact (sha1 35106c89..)
+# that ended AF2's report-only stance, the PNG/JPEG siblings are the
+# same 27164x26480 claim in the other two header formats LoadSTB
+# reads, and synth_stb_sideover sits one pixel past the side cap.
+# (The pixel-product cap's sibling, 4097x4096, is a strict subset of
+# what the 27164x26480 seed already exercises, so it is not seeded.)
 SYNTH_TARGETS = {
     "fuzz_models/synth_dkm_v2.md2": "staging/af1_dkm_okv2.md2",
     "fuzz_models/synth_dkm_v1.md2": "staging/af1_dkm_okv1.md2",
     "fuzz_models/synth_flex.fm":    "staging/c_flex.fm",
     "fuzz_models/synth_mdl.md2":    "staging/c_mdl.md2",
+    "fuzz_stb/synth_stb_tgabomb.tga":  "players/male/t_bomb.tga",
+    "fuzz_stb/synth_stb_bomb.png":     "players/male/t_bombpng.png",
+    "fuzz_stb/synth_stb_bomb.jpg":     "players/male/t_bombjpg.jpg",
+    "fuzz_stb/synth_stb_sideover.tga": "players/male/t_sideover.tga",
 }
 
 MAX_FILE = 8 * 1024 * 1024
@@ -149,6 +167,9 @@ def collect_loose(src, out_base):
 
 def synth_models(out_base, datadir):
     """AF2.2: DKM v1/v2, flex .fm and MDL seeds for fuzz_models.
+
+    AH1.2 adds the four fuzz_stb size-cap regression seeds through
+    the same path; the SYNTH_TARGETS table names what is copied.
 
     tools/hostile/mkimg.py (round-18 Z9) already hand-builds exactly
     these as its well-formed controls (the AF1 DKM controls plus the
