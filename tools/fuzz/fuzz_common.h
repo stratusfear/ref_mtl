@@ -56,12 +56,24 @@ extern unsigned long fuzz_image_hits;   /* successful load_image()  */
 extern unsigned long fuzz_load_ok;      /* guarded call produced a
                                            buffer/model/hunk        */
 
-/* Guard a loader call; returns 1 when re-entered through longjmp. */
+/* Guard a loader call; returns 1 when re-entered through longjmp.
+ *
+ * AG2: setjmp() runs here, in the target's own frame, and the jmp_buf
+ * lives in fuzz_engine.c.  The round-22 plumbing wrapped setjmp() in a
+ * function (FuzzSetjmp), so longjmp() returned to a frame that had
+ * already returned: undefined, and measured to be worse than undefined -
+ * with ASan it dies at a garbage address, with ASan off execution just
+ * continues after the guarded call, so a rejection was counted as a
+ * successful load and the guard_hits counter stayed 0.  The round-22
+ * corpora never noticed because none of their inputs reaches
+ * Sys_Error(); the AG2 nodes harness hits it constantly.
+ */
 #define FUZZ_GUARD_BEGIN()                        \
 	do                                          \
 	{                                           \
-		int _fm_before = FuzzHunk_Begin();  \
-		if (FuzzSetjmp() != 0)              \
+		volatile int _fm_before = FuzzHunk_Begin(); \
+		FuzzGuardArm();                       \
+		if (setjmp(fuzz_abort) != 0)        \
 		{                                   \
 			fuzz_guard_hits++;          \
 			FuzzHunk_End(_fm_before, __func__, 0); \
@@ -73,7 +85,10 @@ extern unsigned long fuzz_load_ok;      /* guarded call produced a
 	}                                           \
 	while (0)
 
-int FuzzSetjmp(void);
+#include <setjmp.h>
+
+extern jmp_buf fuzz_abort;   /* AG2: shared; the targets setjmp it */
+void FuzzGuardArm(void);     /* marks the guard live for Sys_Error */
 
 /* Fixed stub callbacks handed to the loaders. */
 struct image_s *FuzzLoadImage(const char *name, byte *pic, int width,

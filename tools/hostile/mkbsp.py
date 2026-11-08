@@ -126,6 +126,54 @@ def main():
     def _(d):
         o, l = lump(d, L["LIGHT"]); setlump(d, L["LIGHT"], -5, 100)
 
+    # AG2: node-tree shape (the tree the renderer's recursive walks take).
+    # dnode_t: planenum +0, children[2] int at +4/+8 (negative = -(leaf+1)),
+    # mins/maxs 6 shorts, firstface/numfaces at +24/+26.
+    def node_at(d, i):
+        return lump(d, L["NODES"])[0] + 28 * i
+
+    def leaf_at(d, i):
+        return lump(d, L["LEAFS"])[0] + 28 * i
+
+    def leaf_solid(d, i):
+        return struct.unpack_from("<i", d, leaf_at(d, i))[0] & 1  # CONTENTS_SOLID
+
+    def append_lump(d, idx, payload):
+        pad = (-len(d)) % 4
+        d += b"\0" * pad + payload
+        o, l = lump(d, idx)
+        setlump(d, idx, len(d) - len(payload), len(payload))
+
+    @mut("b_ag2_cycleroot")   # node 0's child[1] points back at node 0
+    def _(d):
+        struct.pack_into("<i", d, node_at(d, 0) + 8, 0)
+
+    @mut("b_ag2_sharenod")    # node 2193 (node 0's other child) also becomes
+                              # a child of node 1: one node, two parents
+    def _(d):
+        other = struct.unpack_from("<i", d, node_at(d, 0) + 8)[0]
+        struct.pack_into("<i", d, node_at(d, 1) + 4, other)
+
+    @mut("b_ag2_shareleaf")   # one NON-SOLID leaf reached by two nodes
+    def _(d):
+        lc = lump(d, L["LEAFS"])[1] // 28
+        leaf = next(i for i in range(1, lc) if not leaf_solid(d, i))
+        struct.pack_into("<i", d, node_at(d, 1) + 4, -(leaf + 1))
+        struct.pack_into("<i", d, node_at(d, 2) + 4, -(leaf + 1))
+
+    @mut("c_ag2_solidleaf")   # a SOLID leaf reached by two nodes: legal, must load
+    def _(d):
+        lc = lump(d, L["LEAFS"])[1] // 28
+        leaf = next(i for i in range(1, lc) if leaf_solid(d, i))
+        struct.pack_into("<i", d, node_at(d, 1) + 4, -(leaf + 1))
+        struct.pack_into("<i", d, node_at(d, 2) + 4, -(leaf + 1))
+
+    @mut("b_ag2_leafbig")     # leafs lump repeated 13x: 68094 records, past
+                              # MAX_MAP_LEAFS (the stack arrays of Mod_LoadNodes)
+    def _(d):
+        o, l = lump(d, L["LEAFS"])
+        append_lump(d, L["LEAFS"], d[o:o + l] * 13)
+
     @mut("b_lightofs")        # every lit face points at the last byte of the lighting lump
     def _(d):
         o, l = lump(d, L["LIGHT"])

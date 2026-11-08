@@ -2101,10 +2101,56 @@ Mod_LoadNodes(const char *name, cplane_t *planes, int numplanes, mleaf_t *leafs,
 	}
 
 	count = l->filelen / sizeof(*in);
+
+	/* AG2: the two walks at the tail of this function (Mod_SetParent and
+	   Mod_NumberLeafs) are recursive, and Mod_LoadNodes keeps two stack
+	   arrays of MAX_MAP_LEAFS ints.  Both are bounded here by the record
+	   counts of the lump, which is what makes them bounds and not
+	   guesses: measured with tools/fuzz/fuzz_nodes.c on this tree before
+	   the change, a chain of 300000 dnode_t records (an 8.4 MB nodes
+	   lump, all child indexes legal) died of AddressSanitizer
+	   "stack-overflow" inside Mod_SetParent at models.c:2036, and a
+	   leafs lump with 65537 records put a leaf index past
+	   r_leaftovis[] - AddressSanitizer "stack-buffer-overflow" WRITE at
+	   models.c:2068.  The shipped set pays nothing for either cap:
+	   tools/hostile/scan_tree.py over 172 maps finds the largest node
+	   lump at 16168 records and the largest leafs lump at 16349, against
+	   the MAX_MAP_NODES / MAX_MAP_LEAFS pair in files.h (38.x qbsp's own
+	   limits).  The same precedent as Z5c capping numclusters against
+	   MAX_MAP_LEAFS for pvs.c's static row buffer. */
+	if (count > MAX_MAP_NODES)
+	{
+		ri.Sys_Error(ERR_DROP, "%s: %s has %i node records, more than the "
+				"%i a BSP node tree may have",
+				__func__, name, count, MAX_MAP_NODES);
+	}
+
+	if (numleafs > MAX_MAP_LEAFS)
+	{
+		ri.Sys_Error(ERR_DROP, "%s: %s has %i leaf records, more than the "
+				"%i leafs this build numbers",
+				__func__, name, numleafs, MAX_MAP_LEAFS);
+	}
+
 	out = Hunk_Alloc(count * sizeof(*out));
 
 	*nodes = out;
 	*numnodes = count;
+
+	/* AG2: the shape rules below mark "already has a parent" in the
+	   parent field, which Mod_SetParent writes last anyway.  Clear it
+	   first for every record: Hunk_Alloc() hands out bump-pointer
+	   memory and does not fill it, so a mark left by the previous model
+	   in this hunk would read as a shared child. */
+	for (i = 0; i < count; i++)
+	{
+		(*nodes)[i].parent = NULL;
+	}
+
+	for (i = 0; i < numleafs; i++)
+	{
+		leafs[i].parent = NULL;
+	}
 
 	for (i = 0; i < count; i++, in++, out++)
 	{
@@ -2168,6 +2214,45 @@ Mod_LoadNodes(const char *name, cplane_t *planes, int numplanes, mleaf_t *leafs,
 							__func__, leafnum);
 				}
 
+				/* AG2: a legal BSP node tree is a tree: every node has
+				   exactly one parent, and node 0 (the record the
+				   renderer's walks start from, Mod_SetParent(*nodes,
+				   NULL)) has none.  Measured with
+				   tools/fuzz/fuzz_nodes.c on this tree before the
+				   change: a node whose child[0] is itself gave
+				   AddressSanitizer "stack-overflow" in Mod_SetParent
+				   (models.c:2036); the same back-edge in child[1] gave
+				   no report at all, because that call is a tail call and
+				   the walk became an endless loop - the harness had to
+				   be killed by its timeout; and 20 nodes with both
+				   children equal to the next node reached one leaf
+				   2^20 times and wrote past r_vistoleaf[]
+				   ("stack-buffer-overflow" WRITE, models.c:2069).  All
+				   three are unreachable once every node has one parent
+				   and node 0 has none: a cycle the walk can reach then
+				   needs either a node with two parents (rejected here)
+				   or node 0 as a child (rejected below), and no shape is
+				   left that visits a node twice.  tools/hostile/-
+				   scan_tree.py over the shipped set (172 maps) counts
+				   ZERO shared node references and ZERO references of
+				   node 0 anywhere in any nodes lump, so this rule costs
+				   nothing real. */
+				if (leafnum == 0)
+				{
+					ri.Sys_Error(ERR_DROP, "%s: %s node %i has the root node 0 "
+							"as its child %i: the node tree is a cycle",
+							__func__, name, i, j);
+				}
+
+				if ((*nodes)[leafnum].parent)
+				{
+					ri.Sys_Error(ERR_DROP, "%s: %s node %i is the child of both "
+							"node %i and node %i: the node tree is not a tree",
+							__func__, name, leafnum,
+							(int)((*nodes)[leafnum].parent - *nodes), i);
+				}
+
+				(*nodes)[leafnum].parent = out; /* provisional, set for real below */
 				out->children[j] = *nodes + leafnum;
 			}
 			else
@@ -2179,9 +2264,49 @@ Mod_LoadNodes(const char *name, cplane_t *planes, int numplanes, mleaf_t *leafs,
 							__func__, leafnum);
 				}
 
+				/* AG2: the same argument for the leaf records, with the
+				   one exception the format allows: a SOLID leaf is the
+				   "content" filler and may hang off any number of
+				   parents, and it cannot blow up a walk because it has
+				   no children of its own.  A non-solid leaf reached
+				   twice is what overran r_vistoleaf[] above - each visit
+				   of a non-solid leaf consumes one of its MAX_MAP_LEAFS
+				   slots - so one parent per non-solid leaf is the least
+				   strict rule the shipped set allows (scan_tree.py: no
+				   shipped map shares a leaf of either kind, but the
+				   solid case stays legal because the format says so). */
+				if (!(leafs[leafnum].contents & CONTENTS_SOLID) &&
+					leafs[leafnum].parent)
+				{
+					ri.Sys_Error(ERR_DROP, "%s: %s leaf %i is the child of both "
+							"node %i and node %i: the node tree is not a tree",
+							__func__, name, leafnum,
+							(int)(leafs[leafnum].parent - *nodes), i);
+				}
+
+				if (!(leafs[leafnum].contents & CONTENTS_SOLID))
+				{
+					leafs[leafnum].parent = out;
+				}
+
 				out->children[j] = (mnode_t *)(leafs + leafnum);
 			}
 		}
+	}
+
+	/* AG2: the marks above are scratch, not the product.  Wipe them so the
+	   parent graph this function leaves behind is exactly the one the
+	   recursive walks produce - records the walk from node 0 never reaches
+	   (the submodel headnode trees, which the renderer does not walk) keep
+	   their zeroed parent, as before. */
+	for (i = 0; i < count; i++)
+	{
+		(*nodes)[i].parent = NULL;
+	}
+
+	for (i = 0; i < numleafs; i++)
+	{
+		leafs[i].parent = NULL;
 	}
 
 	Mod_SetParent(*nodes, NULL); /* sets nodes and leafs */

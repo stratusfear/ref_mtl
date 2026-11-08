@@ -29,7 +29,19 @@
    A clean rejection through this path is a PASS, not a crash.       */
 /* ------------------------------------------------------------------ */
 
-static jmp_buf fuzz_abort;
+/* AG2: the jmp_buf is shared, NOT used from here.  The round-22 plumbing
+   called setjmp() inside this file (FuzzSetjmp), so by the time
+   ri.Sys_Error() unwound, that frame had long since returned: the
+   recovery landed on a dead frame.  Measured on the AG2 nodes harness
+   both ways - with ASan it died at a garbage address ("stack-overflow"
+   with pc in the stack and no frames at all, even for the pre-existing
+   planenum reject, which is why the bug hid: none of the round-22
+   corpora contains an input that reaches Sys_Error), and with ASan off
+   execution simply continued past the guarded call and counted the
+   rejected load as a success.  setjmp must execute in the frame that
+   longjmp returns to, so the targets call setjmp(fuzz_abort) themselves
+   and this file only arms the guard flag. */
+jmp_buf fuzz_abort;
 static int fuzz_in_guard;
 static char fuzz_last_error[512];
 
@@ -38,11 +50,10 @@ unsigned long fuzz_hunk_orphans;
 unsigned long fuzz_image_hits;
 unsigned long fuzz_load_ok;
 
-int
-FuzzSetjmp(void)
+void
+FuzzGuardArm(void)
 {
 	fuzz_in_guard = 1;
-	return setjmp(fuzz_abort);
 }
 
 static YQ2_ATTR_NORETURN void

@@ -34,7 +34,7 @@ BUILD    := build
 COVDIR   := build_cov
 PROFDIR  := profraw
 
-TARGETS  := fuzz_pcx fuzz_wal fuzz_stb fuzz_models fuzz_pvs
+TARGETS  := fuzz_pcx fuzz_wal fuzz_stb fuzz_models fuzz_pvs fuzz_nodes
 
 # The exact flags from the round-22 brief: fuzzer + ASan + UBSan,
 # UBSan non-recovering so every report kills the run.
@@ -121,6 +121,9 @@ $(BUILD)/fuzz_models: $(OBJDIR)/fuzz_models.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/
 $(BUILD)/fuzz_pvs: $(OBJDIR)/fuzz_pvs.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/shared.o $(OBJDIR)/utils.o $(OBJDIR)/md4.o $(OBJDIR)/hunk_unix.o $(LOADER_OBJS) | $(BUILD)
 	$(CC) $(FUZZFLAGS) -o $@ $^
 
+$(BUILD)/fuzz_nodes: $(OBJDIR)/fuzz_nodes.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/shared.o $(OBJDIR)/utils.o $(OBJDIR)/md4.o $(OBJDIR)/hunk_unix.o $(LOADER_OBJS) | $(BUILD)
+	$(CC) $(FUZZFLAGS) -o $@ $^
+
 # --- smoke: >=2000 mutated iterations per target, well under 2 min ---
 # -runs counts corpus INITED too, and the seed corpora are bigger
 # than 2000 files, which would leave zero mutated executions.  Run
@@ -153,6 +156,11 @@ fuzz_stb_MAXLEN  ?= 16384
 fuzz_wal_MAXLEN  ?=
 fuzz_models_MAXLEN ?=
 fuzz_pvs_MAXLEN  ?=
+# AG2: the nodes harness' interesting inputs are small (cycles and
+# shared subtrees need a handful of dnode_t records); the cap is there
+# so a long session spends its time on shapes, and so the exponential
+# shapes stay reachable inside one iteration's work.
+fuzz_nodes_MAXLEN ?= 65536
 
 TIME ?= 1800
 SEED ?= 0
@@ -216,6 +224,9 @@ $(COVDIR)/fuzz_models: $(COVOBJ)/fuzz_models.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)
 	$(CC) $(COVFLAGS) -o $@ $^
 
 $(COVDIR)/fuzz_pvs: $(COVOBJ)/fuzz_pvs.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)/shared.o $(COVOBJ)/utils.o $(COVOBJ)/md4.o $(COVOBJ)/hunk_unix.o $(COVLOADER_OBJS) | $(COVDIR)
+	$(CC) $(COVFLAGS) -o $@ $^
+
+$(COVDIR)/fuzz_nodes: $(COVOBJ)/fuzz_nodes.o $(COVOBJ)/fuzz_engine.o $(COVOBJ)/shared.o $(COVOBJ)/utils.o $(COVOBJ)/md4.o $(COVOBJ)/hunk_unix.o $(COVLOADER_OBJS) | $(COVDIR)
 	$(CC) $(COVFLAGS) -o $@ $^
 
 # Replay the corpora through the coverage binaries so the

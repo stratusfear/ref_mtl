@@ -71,6 +71,29 @@ CASES = [
     ("b_ag1_edgeover",     ["+map", "b_ag1_edgeover"], "surfaces of the model", None),
     ("b_ag1_edgeeq",       ["+map", "b_ag1_edgeeq"],   "Map: b_ag1_edgeeq",
      "surfaces of the model"),
+    # AG2: node-tree shape.  The two shapes the game side walks without
+    # complaint reach the renderer's Mod_LoadNodes and are rejected there;
+    # the exact-line pair also pins which node/leaf pair the message names.
+    ("b_ag2_sharenod",     ["+map", "b_ag2_sharenod"],
+     "node 2193 is the child of both node 0 and node 1", None),
+    ("b_ag2_shareleaf",    ["+map", "b_ag2_shareleaf"],
+     "leaf 5 is the child of both node 1 and node 2", None),
+    # AG2 control: the solid leaf may be shared by any number of parents, so
+    # the same fixture with a solid leaf must still load.
+    ("c_ag2_solidleaf",    ["+map", "c_ag2_solidleaf"], "Map: c_ag2_solidleaf",
+     "the node tree is"),
+    # AG2: the cycle fixture never reaches this renderer on the host route:
+    # the game side walks the same tree first and hangs in its own traversal
+    # (measured: the console stops at "------- server initialization ------"
+    # and the process is still alive when the window closes).  The
+    # assertion here is that the host does not die; the crash itself is
+    # measured in the fuzz harness (tools/fuzz/fuzz_nodes.c).
+    ("b_ag2_cycleroot",    ["+map", "b_ag2_cycleroot"], None, "Mod_LoadNodes"),
+    # AG2: same for a leafs lump past MAX_MAP_LEAFS - the game side rejects
+    # the map before the renderer loads it, so the case documents who gets
+    # there first; the stack-array bound is the harness' business.
+    ("b_ag2_leafbig",      ["+map", "b_ag2_leafbig"],  "Map has too many planes",
+     "Mod_LoadNodes"),
     # Z5h: BSPX lightgrid (soft rejection: the map still loads, sans grid)
     ("b_lgrid_neg",      ["+map", "b_lgrid_neg"],      "LIGHTGRID_OCTREE", None),
     ("b_lgrid_hang",     ["+map", "b_lgrid_hang"],     "LIGHTGRID_OCTREE", None),
@@ -263,7 +286,15 @@ def run_case(a, gd, name, extra, wait):
     alive = p.poll() is None
     if alive:
         p.terminate()
-    p.wait()
+        # AG2: a case whose hang lives in the GAME side (a cyclic node tree
+        # the collision code walks before the renderer ever sees the map)
+        # does not answer SIGTERM.  Without the grace-and-kill step the
+        # runner itself blocks here forever, so escalate instead.
+        try:
+            p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
     out.close()
     logs = ""
     if os.path.exists(qlog):
