@@ -199,6 +199,25 @@ def main():
         o, l = lump(d, L["TEXINFO"])
         d[o + 40:o + 72] = b"evil/doesnotexist".ljust(32, b"\0")
 
+    # AG1: node surface range vs the surface array
+    # dnode_t: firstface at +24, numfaces at +26 (unsigned short), 28-byte records
+    def node0(d):
+        return lump(d, L["NODES"])[0]
+
+    @mut("b_ag1_wide")        # node 0: firstface 65535 / numfaces 65535 (the af0176 mutation)
+    def _(d):
+        struct.pack_into("<HH", d, node0(d) + 24, 0xffff, 0xffff)
+
+    @mut("b_ag1_edgeeq")      # node 0 range ends exactly at numfaces: must load
+    def _(d):
+        n = lump(d, L["FACES"])[1] // 20
+        struct.pack_into("<HH", d, node0(d) + 24, n - 1, 1)
+
+    @mut("b_ag1_edgeover")    # node 0 range ends one past numfaces: must reject
+    def _(d):
+        n = lump(d, L["FACES"])[1] // 20
+        struct.pack_into("<HH", d, node0(d) + 24, n - 1, 2)
+
     @mut("b_lgrid_neg")       # LIGHTGRID_OCTREE: numnodes chosen so ctx.ofs wraps negative
     def _(d):
         p = (struct.pack("<3f", 8, 8, 8) + struct.pack("<3i", 1, 1, 1)

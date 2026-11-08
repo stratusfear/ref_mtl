@@ -1309,9 +1309,12 @@ Mod_LoadBrushModel (model_t *mod, const void *buffer, int modfilelen)
 	   empty lump), so the lump length IS the image length here. */
 	mod->visLength = mod->vis ? header->lumps[LUMP_VISIBILITY].filelen : 0;
 	Mod_LoadLeafs(mod, mod_base, &header->lumps[LUMP_LEAFS]);
+	/* AG1: mod->numsurfaces is the surface-array length Mod_LoadFaces
+	   just allocated from the FACES lump; it bounds every node's
+	   firstsurface/numsurfaces range inside Mod_LoadNodes now. */
 	Mod_LoadNodes(mod->name, mod->planes, mod->numplanes, mod->leafs,
-		mod->numleafs, &mod->nodes, &mod->numnodes, mod_base,
-		&header->lumps[LUMP_NODES]);
+		mod->numleafs, mod->numsurfaces, &mod->nodes, &mod->numnodes,
+		mod_base, &header->lumps[LUMP_NODES]);
 	Mod_LoadSubmodels (mod, mod_base, &header->lumps[LUMP_MODELS]);
 	mod->numframes = 2; /* regular and alternate animation */
 }

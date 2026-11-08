@@ -64,6 +64,13 @@ CASES = [
     ("b_lightofs",       ["+map", "b_lightofs"],       "runs past the", None),
     ("b_lightofs_big",   ["+map", "b_lightofs_big"],   "runs past the", None),
     ("b_declm_ofs",      ["+map", "b_declm_ofs"],      "runs past the", None),
+    # AG1: node surface range vs the surface array (the af0176 class).
+    # The check lives in the renderer loader, so the rejection lands
+    # after the spawn banner, at precache; the host must survive it.
+    ("b_ag1_wide",         ["+map", "b_ag1_wide"],     "surfaces of the model", None),
+    ("b_ag1_edgeover",     ["+map", "b_ag1_edgeover"], "surfaces of the model", None),
+    ("b_ag1_edgeeq",       ["+map", "b_ag1_edgeeq"],   "Map: b_ag1_edgeeq",
+     "surfaces of the model"),
     # Z5h: BSPX lightgrid (soft rejection: the map still loads, sans grid)
     ("b_lgrid_neg",      ["+map", "b_lgrid_neg"],      "LIGHTGRID_OCTREE", None),
     ("b_lgrid_hang",     ["+map", "b_lgrid_hang"],     "LIGHTGRID_OCTREE", None),

@@ -248,8 +248,8 @@ extern struct image_s *R_FindPic(const char *name, findimage_t find_image);
 extern struct image_s* R_LoadImage(const char *name, const char* namewe, const char *ext,
 	imagetype_t type, qboolean r_retexturing, loadimage_t load_image);
 extern void Mod_LoadNodes(const char *name, cplane_t *planes, int numplanes,
-	mleaf_t *leafs, int numleafs, mnode_t **nodes, int *numnodes,
-	const byte *mod_base, const lump_t *l);
+	mleaf_t *leafs, int numleafs, int numsurfaces, mnode_t **nodes,
+	int *numnodes, const byte *mod_base, const lump_t *l);
 extern void Mod_LoadVertexes(const char *name, mvertex_t **vertexes, int *numvertexes,
 	const byte *mod_base, const lump_t *l, int extra);
 extern void Mod_LoadVisibility(dvis_t **vis, const byte *mod_base, const lump_t *l);

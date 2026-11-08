@@ -2084,8 +2084,8 @@ Mod_LoadNodes
 */
 void
 Mod_LoadNodes(const char *name, cplane_t *planes, int numplanes, mleaf_t *leafs,
-	int numleafs, mnode_t **nodes, int *numnodes, const byte *mod_base,
-	const lump_t *l)
+	int numleafs, int numsurfaces, mnode_t **nodes, int *numnodes,
+	const byte *mod_base, const lump_t *l)
 {
 	int	r_leaftovis[MAX_MAP_LEAFS], r_vistoleaf[MAX_MAP_LEAFS];
 	int	i, count, numvisleafs;
@@ -2126,6 +2126,32 @@ Mod_LoadNodes(const char *name, cplane_t *planes, int numplanes, mleaf_t *leafs,
 
 		out->firstsurface = LittleShort(in->firstface);
 		out->numsurfaces = LittleShort(in->numfaces);
+
+		/* AG1: a node's surface range must stay inside the surface array
+		   the renderer walks it through.  R_RecursiveWorldNode
+		   (mtl_surf.m:812) iterates surfaces[firstsurface, +numsurfaces)
+		   for the draw chains, R_MarkSurfaceLights (mtl_light.m:208)
+		   writes dlightbits/dlightframe over that range for every
+		   dlight, and RecursiveLightPoint (mtl_light.m:307) reads
+		   texinfo/texturemins/extents through it; an out-of-array entry
+		   is read AND written, position chosen by two 2-byte file
+		   fields.  This is the missing sibling of Z5d's submodel range
+		   check (mtl_model.m:242).  The sum is done in 64-bit for the
+		   same rule style even though both fields are unsigned short;
+		   the rule is strict, so an empty range (numsurfaces 0) with a
+		   firstsurface past the end is rejected too - it cannot be
+		   walked, but the shipped-set scan (tools/hostile/scan_nodes.py:
+		   172 maps, 975489 nodes) shows no shipped map has one, so
+		   strictness costs nothing real. */
+		if ((long long)out->firstsurface + out->numsurfaces >
+			(long long)numsurfaces)
+		{
+			ri.Sys_Error(ERR_DROP, "%s: %s node %i at surface %u with %u "
+					"surfaces exceeds the %i surfaces of the model",
+					__func__, name, i, (unsigned int)out->firstsurface,
+					(unsigned int)out->numsurfaces, numsurfaces);
+		}
+
 		out->contents = CONTENTS_NODE; /* differentiate from leafs */
 
 		for (j = 0; j < 2; j++)
