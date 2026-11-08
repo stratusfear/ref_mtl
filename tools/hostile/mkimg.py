@@ -46,6 +46,16 @@ def tga(w, h, bpp=32, rle=False, data=None):
     return hdr + (data if data is not None else b"")
 
 
+def rle_solid(npx, color=b"\x42"):
+    """Complete solid RLE payload: max-length (256 px) run packets."""
+    out = bytearray()
+    while npx > 0:
+        k = min(256, npx)
+        out += bytes([0x80 | (k - 1)]) + color
+        npx -= k
+    return bytes(out)
+
+
 def wal(w, h, ofs, body):
     return struct.pack("<32sII4I32siii", b"evil", w, h, ofs, ofs, ofs, ofs,
                        b"", 0, 0, 0) + body
@@ -135,6 +145,16 @@ def main():
     out["players/male/c_t_edge.tga"] = tga(16384, 1, data=b"\x80" * 16384 * 4)
     out["players/male/c_t_edge.png"] = png(16384, 1,
         png_chunk(b"IDAT", zlib.compress(b"\x00" * (16384 * 4 + 1))))
+    # AI4: cap-boundary pair with COMPLETE payloads (the pack author's
+    # real experience, not a truncated header): t_pxexact claims
+    # 8192x2048 = exactly 16777216 px, ON the pixel cap, and must
+    # LOAD; t_bigvalid claims 8192x4096 = 33554432 px, a shape Z2
+    # would have loaded, and must be refused with the limits stated
+    # in the line.
+    out["players/male/t_pxexact.tga"] = tga(8192, 2048, bpp=8, rle=True,
+        data=rle_solid(8192 * 2048))
+    out["players/male/t_bigvalid.tga"] = tga(8192, 4096, bpp=8, rle=True,
+        data=rle_solid(8192 * 4096))
 
     # WAL/M32 variants referenced by the b_tex_* maps from mkbsp.py (Z3)
     out["textures/evil/w_wide.wal"] = wal(20000, 1, 100, b"\x10" * 20000)

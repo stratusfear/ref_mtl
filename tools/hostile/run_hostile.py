@@ -149,7 +149,13 @@ CASES = [
     # layer down instead: stb's own PNG allocation guard
     # ((1<<30)/x/n < y, stb_image.h:5158) fails it before the canvas
     # is sized - asserted as the exact line, because that is the
-    # rejection the input really gets, cap or no cap.
+    # rejection the input really gets, cap or no cap.  AI4: the
+    # refusal line states the limits (the same two constants the
+    # check uses), so s_t_pxover pins the exact wording; the
+    # cap-boundary pair with COMPLETE payloads is new: t_pxexact
+    # (8192x2048, exactly 16777216 px) must load like c_t_edge, and
+    # t_bigvalid (8192x4096, a shape Z2 would have loaded) must be
+    # refused with the limits visible in the line.
     ("s_t_bomb",         ["+set", "skin", "male/t_bomb",   "+map", "base1"],
      "LoadSTB: refusing to decode players/male/t_bomb.tga claiming 27164x26480", None),
     ("s_t_bombpng",      ["+set", "skin", "male/t_bombpng", "+map", "base1"],
@@ -159,9 +165,17 @@ CASES = [
     ("s_t_sideover",     ["+set", "skin", "male/t_sideover", "+map", "base1"],
      "LoadSTB: refusing to decode players/male/t_sideover.tga claiming 16385x16384", None),
     ("s_t_pxover",       ["+set", "skin", "male/t_pxover",  "+map", "base1"],
-     "LoadSTB: refusing to decode players/male/t_pxover.tga claiming 4097x4096", None),
+     "LoadSTB: refusing to decode players/male/t_pxover.tga claiming "
+     "4097x4096 (16781312 pixels; limit 16384 per side, 16777216 pixels)",
+     None),
     ("c_t_edge",         ["+set", "skin", "male/c_t_edge",  "+map", "base1"],
      "Map: base1", "refusing to decode"),
+    ("s_t_pxexact",      ["+set", "skin", "male/t_pxexact", "+map", "base1"],
+     "Map: base1", "refusing to decode"),
+    ("s_t_bigvalid",     ["+set", "skin", "male/t_bigvalid", "+map", "base1"],
+     "LoadSTB: refusing to decode players/male/t_bigvalid.tga claiming "
+     "8192x4096 (33554432 pixels; limit 16384 per side, 16777216 pixels)",
+     None),
     # Z6: alias models swapped onto the precached view-model path
     ("m_tris",           ["+map", "base1"], "Failed to load", None),
     ("m_frames",         ["+map", "base1"], "Failed to load", None),

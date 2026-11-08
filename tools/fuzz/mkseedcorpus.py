@@ -43,12 +43,18 @@ TARGET_EXTS = {
 
 # AH1: the pre-decode caps in LoadSTB (src/files/stb.c) make the
 # AF2.3 quarantine moot - the TGA-bomb shape is refused with a reason
-# line before any canvas is allocated, and a round-25 re-scan
+# line before any canvas is allocated.  A round-25 re-scan
 # (tools/hostile/scan_img.py, 10 paks + every loose image under the
-# game data dirs) did not find the quarantined file in any corpus
-# source, so its "real shipped texture" label could not be
-# re-verified.  The dictionary machinery is kept for the next such
-# input; the AF2 entry is gone (see the module docstring).
+# game data dirs) found no such image in any shipped texture, so the
+# file's "real shipped texture" label could not be re-verified - AI4
+# visible correction: an earlier form of this comment said the file
+# was not found "in any corpus source", which was wrong: it is on
+# disk in tools/fuzz/crashers/ (libFuzzer copy, name = its sha1, 63
+# bytes).  Not shipped content, but present, and now measured: the
+# cap refuses it and the native (no-asan) cost of the uncapped shape
+# is ~5.7 s on a ~1.37 GB canvas, ended by stb's own guard.  The
+# dictionary machinery is kept for the next such input; the AF2 entry
+# is gone (see the module docstring).
 QUARANTINE_SHA1 = {}
 
 # AF2.2: fuzz_models has nothing to teach it DKM, flex or MDL: no

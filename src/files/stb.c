@@ -94,18 +94,19 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 	   3.09 s; the console got one line, "LoadSTB couldn't load data
 	   from ...: outofmem!" - stb allocated the 719 MB 8-bit canvas,
 	   ground the RLE fill from a 34-byte payload, then failed the
-	   2877210880-byte RGBA postprocess on its own size guard and
-	   fell back to notexture.  So the host pays a ~684 MB transient
+	   2877210880-byte RGBA postprocess on its own size guard and the
+	   surface fell back to the shipped .wal (AI4 correction: an
+	   earlier form of this comment said "fell back to notexture" -
+	   that was never shown; with a temporary GOTIMAGE probe on the
+	   same staged file, the loader's .wal fallback IS what loads,
+	   and notexture is not involved).  So the host pays a ~684 MB transient
 	   allocation and ~2 s per such texture; in the fuzz_stb harness
 	   (twelve loads per iteration, ASan/UBSan in the way) the same
 	   input never finished inside a 30 s session timeout.  The same
 	   shape is what rounds 22/23 carried as "TGA bomb, report-only"
-	   and what mkseedcorpus.py quarantined by sha1 (374d2471.., a
-	   63-byte unit claiming 34532 x 20920); that file was NOT found
-	   in any corpus source at the round-25 tip (scan_img.py over 10
-	   paks + every loose image under the app datadir finds no image
-	   past 1024 px on a side), so the quarantine entry is retired
-	   below and the cap rejects the shape either way.
+	   and what mkseedcorpus.py quarantined by sha1 (374d2471..) -
+	   round 26 re-checked that entry; the two correction
+	   paragraphs at the end of this block say what came of it.
 	   The caps: 16384 per side, exactly MTL_MAX_TEXTURE_DIM in
 	   mtl_image.m - anything past that is already rejected to
 	   notexture by Z2 AFTER the full decode, so decoding it is pure
@@ -123,10 +124,45 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 	   the same claim fails stb's own allocation guard
 	   ((1<<30)/x/n < y, stb_image.h:5158, "too large") - asserted
 	   that way in the hostile suite so the line stays honest either
-	   way.
-	   stbi_info_from_memory() parses only the header; if it fails,
-	   fall through to the normal load so its failure reason stays
-	   the console evidence for non-header files. */
+	   way.  stbi_info_from_memory() parses only the header; if it
+	   fails, fall through to the normal load so its failure reason
+	   stays the console evidence for non-header files.
+
+	   The same shape is what rounds 22/23 carried as "TGA bomb,
+	   report-only" and what mkseedcorpus.py quarantined by sha1
+	   (374d2471.., a 63-byte unit).  Two visible corrections from
+	   round 26 re-checking that entry: (1) its header parses as
+	   20920 x 65279 (an earlier form of this comment said "34532 x
+	   20920" - that is the yOrigin field and the width, not the
+	   claimed canvas); (2) "that file was NOT found in any corpus
+	   source" was wrong - it is on disk at tools/fuzz/crashers/,
+	   file name = its own sha1, 63 bytes.  What the scan really
+	   showed is narrower and still true: no such image exists in
+	   the 10 app paks or any loose image under the app datadir
+	   (max shipped side 1024), so those bytes were never live game
+	   content.  The quarantine entry is retired below and the cap
+	   rejects the shape either way; measured natively (clang -O2,
+	   no sanitizers, round 26 AI3) that unit spends ~5.7 s inside
+	   stb on a ~1.37 GB 8-bit canvas before stb's own guard fails
+	   the RGBA postprocess ("outofmem").
+
+	   AI4: the caps get names so the refusal line can state them -
+	   a pack author who sees "claiming 8192x4096" should not have
+	   to read this source to learn the limit.  The check and the
+	   message below both use these two constants; the numbers
+	   appear nowhere else.  The side cap is the same value as
+	   MTL_MAX_TEXTURE_DIM (src/mtl/header/mtl.h, used by
+	   mtl_image.m's post-decode reject), repeated here because
+	   mtl.h is the Metal TU's header and does not include into a
+	   plain C file.  Aggregate cost note from the same round-26
+	   AI3 measurement: the cap bounds each texture, not the sum -
+	   128 within-cap 4096x4096 claims staged over base1's texture
+	   names cost 14.9 s to the first frame and 11.3 GB resident on
+	   the 64 GB host (1024x512 controls: 1.03 s, 527 MB); a per-
+	   session decoded-pixel budget is the standing recommendation,
+	   not implemented. */
+#define LOADSTB_MAX_TEXTURE_DIM 16384
+#define LOADSTB_MAX_TEXTURE_PX  16777216LL
 	{
 		int aw, ah, ac;
 
@@ -134,12 +170,16 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 		{
 			long long px = (long long)aw * ah;
 
-			if (aw > 16384 || ah > 16384 ||
-				px > 16777216LL)
+			if (aw > LOADSTB_MAX_TEXTURE_DIM ||
+				ah > LOADSTB_MAX_TEXTURE_DIM ||
+				px > LOADSTB_MAX_TEXTURE_PX)
 			{
 				Com_Printf("%s: refusing to decode %s claiming "
-						"%dx%d (%lld pixels)\n",
-						__func__, filename, aw, ah, px);
+						"%dx%d (%lld pixels; limit %d "
+						"per side, %lld pixels)\n",
+						__func__, filename, aw, ah, px,
+						LOADSTB_MAX_TEXTURE_DIM,
+						LOADSTB_MAX_TEXTURE_PX);
 				ri.FS_FreeFile(rawdata);
 				return false;
 			}
