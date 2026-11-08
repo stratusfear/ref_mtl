@@ -94,6 +94,13 @@ CASES = [
     # there first; the stack-array bound is the harness' business.
     ("b_ag2_leafbig",      ["+map", "b_ag2_leafbig"],  "Map has too many planes",
      "Mod_LoadNodes"),
+    # AH2: nodes lump with zero records.  The game side (CMod_LoadNodes,
+    # collision.c:1294) rejects before the renderer is ever asked for the
+    # model, so the asserting line here is the game-side one; the
+    # renderer's own "has no node records" reject is pinned in the
+    # harness instead (p_count_zero), because no +map route reaches it.
+    ("b_ag2_zerocount",    ["+map", "b_ag2_zerocount"],
+     "with no nodes", None),
     # Z5h: BSPX lightgrid (soft rejection: the map still loads, sans grid)
     ("b_lgrid_neg",      ["+map", "b_lgrid_neg"],      "LIGHTGRID_OCTREE", None),
     ("b_lgrid_hang",     ["+map", "b_lgrid_hang"],     "LIGHTGRID_OCTREE", None),

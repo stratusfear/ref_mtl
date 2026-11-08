@@ -2167,6 +2167,41 @@ Mod_LoadNodes(const char *name, cplane_t *planes, int numplanes, mleaf_t *leafs,
 				__func__, name, count, MAX_MAP_NODES);
 	}
 
+	/* AH2: the lower end of the same division.  count == 0 (a nodes
+	   lump of zero records - the length check above already rejects
+	   1..27-byte lumps as "funny lump size") reaches Hunk_Alloc(0),
+	   whose bump-pointer return is UNINITIALISED memory, and the two
+	   walks at the tail then read node 0's contents and children out
+	   of it.  Measured on this tree with tools/fuzz/fuzz_nodes.c
+	   before the change: the 12-byte input "\x00*12" (counts 0/0/0,
+	   empty lump) died with UBSan "pointer index expression with
+	   base 0x00016b8da100 overflowed to 0xffffffff7c5810c8" at
+	   models.c:2068 in Mod_NumberLeafs - leaf = (mleaf_t *)garbage
+	   pointer, leafnum = leaf - leafs wild - and libFuzzer reported
+	   it as a deadly signal.  This is the missing lower bound of the
+	   AG2 caps, and the game side has had its copy of the rule all
+	   along: CMod_LoadNodes (src/common/collision.c:1294) rejects
+	   count < 1 with "Map %s with no nodes" for every model BEFORE
+	   the renderer ever sees the lump, which is why no +map route
+	   can reach this on the host (hostile case b_ag2_zerocount
+	   asserts the game-side line; the renderer reject is asserted
+	   through the harness, which is the only caller that gets here
+	   with a zero-count lump).  The zero neighbours of the same
+	   division were checked and are clean already: numplanes == 0
+	   drops on every record at the planenum range check in the
+	   record loop below, and numleafs == 0 with count >= 1 drops at
+	   the leafnum range check below (seeds p_numplanes_zero /
+	   p_numleafs_zero in nodesseeds.py, both ERR_DROP guard_hits=1,
+	   no sanitizer report).  A "legitimate" zero-node map is already unplayable
+	   through the game-side drop, and all 172 shipped maps have at
+	   least one node record (scan_tree.py, AG2 census), so the
+	   mirror rule costs nothing real. */
+	if (count < 1)
+	{
+		ri.Sys_Error(ERR_DROP, "%s: %s has no node records",
+				__func__, name);
+	}
+
 	if (numleafs > MAX_MAP_LEAFS)
 	{
 		ri.Sys_Error(ERR_DROP, "%s: %s has %i leaf records, more than the "

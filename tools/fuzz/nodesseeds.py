@@ -12,7 +12,13 @@ Writes, into --out (default <fuzz dir>/corpus/fuzz_nodes):
                     exponential double-child chain, a leaf index past
                     MAX_MAP_LEAFS, a node lump past MAX_MAP_NODES, and
                     deep chains of a given depth (the depth-blowup
-                    measurement).
+                    measurement).  AH2 adds the zero end of the node
+                    count: p_count_zero (the exact 12-byte artifact:
+                    counts 0/0/0, empty lump), p_count_one (the
+                    smallest tree that must still load), and the zero
+                    neighbours p_numleafs_zero / p_numplanes_zero
+                    (count 1 with empty leafs/planes arrays; both
+                    already drop at the record-loop range checks).
 
 usage: nodesseeds.py [--datadir DIR] [--out DIR] [--depths 20000,100000,1000000]
 requires: python3 (stdlib only)
@@ -106,6 +112,22 @@ def main():
     bigleafs = 65537
     open(os.path.join(a.out, "p_leaf_past_max.bin"), "wb").write(
         header(1, bigleafs, 0) + node(0, -bigleafs, -1))
+    # AH2: the zero end of the node-count division.  p_count_zero is
+    # the exact 12-byte reproduction input (counts 0/0/0, empty
+    # lump); before the Mod_LoadNodes count<1 reject it died with a UBSan
+    # pointer-index report inside Mod_NumberLeafs.  p_count_one is
+    # the smallest tree that must still load (solid leaf 0 on one
+    # side, non-solid leaf 1 on the other).  The zero neighbours
+    # already dropped at the record-loop checks before AH2, and are
+    # pinned here so they stay ERR_DROP-only.
+    open(os.path.join(a.out, "p_count_zero.bin"), "wb").write(header(0, 0, 0))
+    open(os.path.join(a.out, "p_count_one.bin"), "wb").write(
+        header(1, 2, 0) + node(0, -1, -2))
+    open(os.path.join(a.out, "p_numleafs_zero.bin"), "wb").write(
+        header(1, 0, 0) + node(0, -1, -1))
+    open(os.path.join(a.out, "p_numplanes_zero.bin"), "wb").write(
+        header(0, 1, 0) + node(0, -1, -1))
+
     # chains that go down child[0] with the SOLID leaf 0 hanging off
     # child[1] (legal: leaf 0 is the shared content filler, and it has no
     # children of its own), so the only thing being probed is the depth of

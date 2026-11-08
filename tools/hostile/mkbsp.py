@@ -174,6 +174,18 @@ def main():
         o, l = lump(d, L["LEAFS"])
         append_lump(d, L["LEAFS"], d[o:o + l] * 13)
 
+    @mut("b_ag2_zerocount")   # AH2: nodes lump length set to 0 records.
+                              # The game side gets there first
+                              # (collision.c CMod_LoadNodes, "Map %s with
+                              # no nodes"), so this case asserts the
+                              # game-side reject line and that the host
+                              # survives the drop; the renderer's own
+                              # count < 1 reject is unreachable through
+                              # +map and is pinned by the p_count_zero
+                              # seed of nodesseeds.py instead.
+    def _(d):
+        struct.pack_into("<i", d, 8 + L["NODES"] * 8 + 4, 0)
+
     @mut("b_lightofs")        # every lit face points at the last byte of the lighting lump
     def _(d):
         o, l = lump(d, L["LIGHT"])
