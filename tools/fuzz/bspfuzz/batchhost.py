@@ -177,10 +177,18 @@ def run_map_once(host, datadir, cfgdir, mapsdir, name, timeout):
         outcome = "errdrop-nb"
         detail = ("%s | console-err: %s" % (sigtxt, pre_err[:200]))[:400]
     elif banner in logtxt:
-        line = logtxt.split("ERROR:", 1)
-        if len(line) > 1 and banner in line[0]:
+        # AF4.1/AG4: banner printed first, ERROR: after it.  The split
+        # must skip the BENIGN OpenAL line the way the watch loop does:
+        # AG4 measured that splitting on the FIRST "ERROR:" (always the
+        # OpenAL boot line, before the banner) put every post-banner
+        # rejection into the "loaded" bucket - af0176's AG1 reject line
+        # ("node 0 at surface 65535 ... exceeds the 8055 surfaces")
+        # sat in a run logged exactly like that, labelled loaded.
+        errs = [ln for ln in logtxt.splitlines()
+                if ln.startswith("ERROR:") and ln not in BENIGN_ERRORS]
+        if errs:
             outcome = "errdrop"
-            detail = line[1].splitlines()[0][:200]
+            detail = errs[0][:200]
         elif (rc is not None) and (rc < 0) and not we_killed:
             # AF4: banner printed, then the host died by a signal
             # without the driver touching it: a post-load crash.
