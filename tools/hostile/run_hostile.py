@@ -192,6 +192,16 @@ CASES = [
     ("m_af2_stinhdr",     ["+map", "base1"], "inside its own header", None),
     ("m_af2_ovl",         ["+map", "base1"], "overlapping triangles and glcmds", None),
     ("m_af2_stomp",       ["+map", "base1"], "st section at 1, inside its own header", None),
+    # AG3: a section with ZERO records copies nothing at its offset, so
+    # its empty range must not be mistaken for a header stomp or an
+    # overlap.  Both of these are well-formed v_blast files with
+    # num_skins = 0 and one skins-offset patch; they must load.  (The
+    # m_af2_* trio above keeps the opposite half: NON-empty sections
+    # in the header / overlapping each other still reject.)
+    ("c_a3_zeroskins",    ["+map", "base1"], "Map: base1",
+     "its skins section at 0, inside its own header"),
+    ("c_a3_zeroinside",   ["+map", "base1"], "Map: base1",
+     "overlapping skins and frames"),
     ("m_af2_2hdr",        ["+map", "base1"], "has a second header block", None),
     ("m_af2_trun",        ["+map", "base1"], "where a block header needs", None),
     ("m_af2_blk33",       ["+map", "base1"], "Unknown block AAAA", None),
@@ -242,6 +252,8 @@ STAGE = {
     "c_af1_dkm_v1":    (MD2, "staging/af1_dkm_okv1.md2"),
     "m_af2_stinhdr":   (MD2, "staging/af2_md2_stinhdr.md2"),
     "m_af2_ovl":       (MD2, "staging/af2_md2_ovl.md2"),
+    "c_a3_zeroskins":  (MD2, "staging/a3_zeroskins.md2"),
+    "c_a3_zeroinside": (MD2, "staging/a3_zeroinside.md2"),
     "m_af2_stomp":     (MD2, "staging/af2_md2_stomp.md2"),
     "m_af2_2hdr":      (MD2, "staging/af2_flex_2hdr.fm"),
     "m_af2_trun":      (MD2, "staging/af2_flex_trun.fm"),

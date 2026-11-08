@@ -998,6 +998,40 @@ Mod_CheckAliasHeader (const char *mod_name, const dmdl_t *hdr)
 
 		for (i = 0; i < 5; i++)
 		{
+			/* AG3: a section with zero records has an empty
+			   range (end == start) and the section loaders
+			   copy exactly that many bytes at its offset -
+			   nothing.  Such a range can neither stomp the
+			   generated header nor overlap another section,
+			   so it takes part in neither rule.  Measured
+			   on the release host before this change: a
+			   well-formed v_blast with num_skins = 0 and
+			   ofs_skins = 0 (a converter's "no skins"
+			   idiom) was rejected with "has its skins
+			   section at 0, inside its own header", and
+			   the same file with the empty range moved
+			   inside the frames section with "has
+			   overlapping skins and frames sections" -
+			   both while the skins memcpy ran 0 bytes and
+			   the skin loop ran 0 iterations.  The bounds
+			   above (ofs_skins >= 0, extent inside
+			   ofs_end) are NOT relaxed; only the empty
+			   range's participation in these two rules
+			   is.  num_st/num_tris/num_frames/num_glcmds
+			   are already required > 0 above, so in
+			   practice only skins can reach here empty;
+			   the MDL/flex/DKM conversion paths chain
+			   their offsets at sizeof(dmdl_t) and pass
+			   either way.  Shipped set (scan_md2.py): 5
+			   files with num_skins = 0, none with
+			   ofs_skins < sizeof(dmdl_t), so skipping
+			   empty sections changes the verdict on 0 of
+			   the 434 shipped .md2. */
+			if (sect[i].end == sect[i].start)
+			{
+				continue;
+			}
+
 			if (sect[i].start < (long long)sizeof(dmdl_t))
 			{
 				Com_Printf("%s: model %s has its %s section at %d, "
@@ -1012,6 +1046,14 @@ Mod_CheckAliasHeader (const char *mod_name, const dmdl_t *hdr)
 		{
 			for (j = i + 1; j < 5; j++)
 			{
+				/* AG3: empty ranges copy nothing, so they
+				   cannot clash; see the start rule above. */
+				if (sect[i].end == sect[i].start ||
+					sect[j].end == sect[j].start)
+				{
+					continue;
+				}
+
 				if (sect[i].start < sect[j].end &&
 					sect[j].start < sect[i].end)
 				{

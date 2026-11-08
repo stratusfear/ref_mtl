@@ -350,6 +350,27 @@ def main():
                             68, 1, 584, 2888, 10056, 13428)  # ofs_*    assert len(STOMP_HDR) == 68, len(STOMP_HDR)
     out["staging/af2_md2_stomp.md2"] = (STOMP_HDR +
                                         VB[68:68 + 13428])[:13496]
+    # AG3: a converter's "no skins" idiom: num_skins = 0 with
+    # ofs_skins = 0.  Nothing is copied at that offset (the skins
+    # memcpy is num_skins * MAX_SKINNAME = 0 bytes and the skin-name
+    # loop runs zero times), so the section's zero-size range may not
+    # be treated as "inside its own header" - the range writes
+    # nothing.  The existing bounds (ofs_skins >= 0 and
+    # ofs_skins + num_skins*MAX_SKINNAME <= ofs_end) still stand.
+    d = bytearray(VB)
+    struct.pack_into("<i", d, 20, 0)	    # num_skins
+    struct.pack_into("<i", d, 44, 0)	    # ofs_skins
+    out["staging/a3_zeroskins.md2"] = bytes(d)
+    # AG3, second face of the same rule: the empty skins range placed
+    # strictly INSIDE the frames section.  An empty range overlaps
+    # nothing - it copies nothing - so this must load too.
+    d = bytearray(VB)
+    struct.pack_into("<i", d, 20, 0)
+    ofr = struct.unpack_from("<i", VB, 56)[0]
+    fs = struct.unpack_from("<i", VB, 16)[0]
+    nf = struct.unpack_from("<i", VB, 40)[0]
+    struct.pack_into("<i", d, 44, ofr + fs * (nf // 2))
+    out["staging/a3_zeroinside.md2"] = bytes(d)
     # flex: a second header block (would re-run Hunk_Begin), a
     # truncated trailing block header (loop-top reject after
     # Hunk_Begin), and a block name that fills all 32 bytes with no
