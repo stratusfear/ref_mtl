@@ -73,10 +73,46 @@ if ! ( cd "$ROOT/yquake2" && make -C build-sdl3 >"$HOSTLOG" 2>&1 ); then
 fi
 rm -f "$HOSTLOG"
 
-LOG=$(mktemp /tmp/fix_verify_game_log.XXXXXX)
-# Round-19: scratch for the content legs' cfgdirs/logs; removed on exit.
+# AL1.3 (round 29): fuzz-harness link leg.  The tools/fuzz harnesses
+# link the loader TUs directly (stb.o and friends), so a ref_mtl
+# change that adds a bridge symbol only the Metal TUs define breaks
+# every fuzz target - which is exactly what AJ1 did at 86c2940: the
+# fuzzers did not link for four commits, invisible because no gate
+# ever built them (the AJ1/AJ2/AK2/AK3 gate batteries all built the
+# renderer + host + suite, not tools/fuzz).  This leg is build-only
+# (measured: 7.6 s cold with the pinned toolchain, OBJDIR/BUILD into
+# the run's scratch so nothing lands in the tree; the fuzzer
+# sanitizers are compile-time, the link check needs no run).  A fuzz RUN needs the MacPorts
+# toolchain the fuzz Makefile pins, and so does this LINK check
+# (libFuzzer's main lives in the fuzzer runtime).
+# leg cannot silently no-op on machines without clang-mp.  It must
+# not no-op at all: silence here is how AJ1 survived.  (The link
+# genuinely needs the fuzzer runtime for libFuzzer's main(): this
+# host's plain cc has none - Xcode 21 dropped it - so the leg uses
+# the Makefile's pinned toolchain, present here and verified by
+# this leg itself; README.md documents the fallback recipe for
+# other machines.  A FAIL on a machine that has no toolchain at
+# all is the honest outcome, per the same reasoning.)
+# SCRATCH (also used by the content legs below) holds the fuzz
+# OBJDIR/BUILD; created here, removed by the trap.
 SCRATCH=$(mktemp -d /tmp/fix_verify_legs.XXXXXX)
 trap 'rm -rf "$SCRATCH"; echo "(game log: $LOG)"' EXIT
+echo "== fuzz-harness link leg (tools/fuzz, build-only) =="
+FUZZLOG=$(mktemp /tmp/fix_verify_fuzz.XXXXXX)
+if ! ( cd "$ROOT/ref_mtl/tools/fuzz" \
+	&& make BUILD="$SCRATCH/fuzz-build" \
+		OBJDIR="$SCRATCH/fuzz-obj" fuzzers >"$FUZZLOG" 2>&1 ); then
+	echo "FAIL: fuzz harnesses do not link:"
+	tail -30 "$FUZZLOG"
+	rm -f "$FUZZLOG"
+	exit 1
+fi
+rm -f "$FUZZLOG"
+echo "fuzz link leg OK (all six targets)"
+
+LOG=$(mktemp /tmp/fix_verify_game_log.XXXXXX)
+# Round-19: scratch for the content legs' cfgdirs/logs; removed on exit.
+# (The SCRATCH dir + trap moved up to the fuzz link leg, round 29 AL1.3.)
 
 # T3: FIX_VERIFY_GAME lets tools/fix_verify_selftest.sh point the smoke at a
 # scripted stand-in that reproduces each failure mode the checks below are
