@@ -29,6 +29,120 @@
 #include <stdlib.h>
 
 #include "../common/header/ref_shared.h"
+#include "../common/header/stb_budget.h"
+
+/* AJ1 (round 27): the aggregate stb decode budget.  The per-file caps
+   above LoadSTB bound ONE canvas (max 64 MB RGBA); round-26 AI3
+   measured what N within-cap canvases cost together: 128 staged
+   4096x4096 loads over base1's texture names reached 11.3 GB resident
+   and 14.9 s to the first frame on a 64 GB host.  This TU owns the
+   counter of canvas bytes currently claimed by successful stb loads;
+   the effective budget (cvar clamped by a device query) lives in
+   mtl_main.m and the slot binding/free sites in mtl_image.m - see
+   stb_budget.h for the crossing points and invariants. */
+
+/* charged: bytes currently claimed.  A successful LoadSTB adds its
+   canvas to the claim; the claim is released either by the caller
+   (load callback returned NULL or was not reached) or, after
+   MTL_STBMarkImage binds it to an image slot, by the Metal free
+   sites.  refusals/print counters are per registration level, reset
+   by MTL_STBLevelBoundary (mtl_model.m calls it at each new map);
+   print bound keeps a hostile 2000-texinfo map from flooding the
+   console - measured before choosing the cap: N=128 refusals print
+   one line each, and mkbsp's synthetic 2000-name map was the case
+   that needed the suppression line. */
+static long long stb_charged_bytes;
+static int stb_level_refusals;
+static long long stb_level_refused_bytes;
+static int stb_level_printed;
+#define STB_BUDGET_REFUSAL_PRINT_MAX 8
+
+/* stb.c's side of the bridge; called by the Metal TU (stb_budget.h). */
+void
+MTL_STBReleaseBytes(long long bytes)
+{
+	if (bytes <= 0)
+	{
+		return;
+	}
+
+	stb_charged_bytes -= bytes;
+	if (stb_charged_bytes < 0)
+	{
+		/* Accounting bug, not hostile input: something released a
+		   claim that was never made (or made twice).  State it and
+		   re-zero so the budget keeps working. */
+		Com_Printf("LoadSTB: budget accounting error: released %lld MB, "
+				"charged was %lld MB; re-zeroed\n",
+				bytes / (1024 * 1024),
+				(stb_charged_bytes + bytes) / (1024 * 1024));
+		stb_charged_bytes = 0;
+	}
+}
+
+long long
+MTL_STBChargedBytes(void)
+{
+	return stb_charged_bytes;
+}
+
+/* Called by mtl_model.m at RE_BeginRegistration: one per-level summary
+   of what the budget refused, and reset of the per-level print
+   allowance. */
+void
+MTL_STBLevelBoundary(void)
+{
+	if (stb_level_refusals > 0)
+	{
+		Com_Printf("LoadSTB: %d image decode(s) refused by the stb "
+				"budget this level (%lld MB canvas); %lld MB of "
+				"%lld MB charged\n",
+				stb_level_refusals,
+				stb_level_refused_bytes / (1024 * 1024),
+				stb_charged_bytes / (1024 * 1024),
+				MTL_STBEffectiveBudgetBytes() / (1024 * 1024));
+	}
+
+	stb_level_refusals = 0;
+	stb_level_refused_bytes = 0;
+	stb_level_printed = 0;
+}
+
+/* Admit-or-refuse for one canvas.  Claimed up front (header known:
+   before stb allocates; header unknown: after decode, see LoadSTB).
+   Returns true and adds canvas_bytes to the claim when the budget
+   fits it; otherwise counts a refusal and prints at most
+   STB_BUDGET_REFUSAL_PRINT_MAX lines for the current level. */
+static qboolean
+STBBudgetReserve(long long canvas_bytes, const char *filename)
+{
+	long long budget = MTL_STBEffectiveBudgetBytes();
+
+	if (canvas_bytes > 0 && stb_charged_bytes + canvas_bytes <= budget)
+	{
+		stb_charged_bytes += canvas_bytes;
+		return true;
+	}
+
+	stb_level_refusals++;
+	stb_level_refused_bytes += (canvas_bytes > 0 ? canvas_bytes : 0);
+	if (stb_level_printed < STB_BUDGET_REFUSAL_PRINT_MAX)
+	{
+		Com_Printf("%s: refusing to decode %s: %lld MB canvas does not "
+				"fit the stb budget (%lld MB of %lld MB charged)\n",
+				__func__, filename,
+				canvas_bytes / (1024 * 1024),
+				stb_charged_bytes / (1024 * 1024),
+				budget / (1024 * 1024));
+		stb_level_printed++;
+		if (stb_level_printed == STB_BUDGET_REFUSAL_PRINT_MAX)
+		{
+			Com_Printf("LoadSTB: further budget refusals "
+					"suppressed until the next level\n");
+		}
+	}
+	return false;
+}
 
 // don't need HDR stuff
 #define STBI_NO_LINEAR
@@ -67,15 +181,22 @@ FixFileExt(const char *origname, const char *ext, char *filename, size_t size)
  * origname: the filename to be opened, might be without extension
  * type: extension of the type we wanna open ("jpg", "png" or "tga")
  * pic: pointer RGBA pixel data will be assigned to
+ * claimed: AJ1, out: the budget bytes reserved for this canvas on
+ *   the caller's behalf when this returns true; exactly
+ *   width*height*4.  The caller must pass the result to
+ *   MTL_STBMarkImage (load callback returned an image) or to
+ *   MTL_STBReleaseBytes (it did not).
  */
 static qboolean
-LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *height)
+LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *height,
+	long long *claimed)
 {
 	char filename[256];
 
 	FixFileExt(origname, type, filename, sizeof(filename));
 
 	*pic = NULL;
+	*claimed = 0;
 
 	byte* rawdata = NULL;
 	int rawsize = ri.FS_LoadFile(filename, (void **)&rawdata);
@@ -160,9 +281,13 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 	   names cost 14.9 s to the first frame and 11.3 GB resident on
 	   the 64 GB host (1024x512 controls: 1.03 s, 527 MB); a per-
 	   session decoded-pixel budget is the standing recommendation,
-	   not implemented. */
+	   not implemented.  Visible correction (AJ1, round 27): that
+	   last clause is now stale - the aggregate budget IS
+	   implemented; see the counter above LoadSTB, the admit checks
+	   below, and r_stb_budget in mtl_main.m. */
 #define LOADSTB_MAX_TEXTURE_DIM 16384
 #define LOADSTB_MAX_TEXTURE_PX  16777216LL
+	long long claim = 0;
 	{
 		int aw, ah, ac;
 
@@ -183,6 +308,21 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 				ri.FS_FreeFile(rawdata);
 				return false;
 			}
+
+			/* AJ1: header parsed - the canvas size is known, so
+			   reserve it BEFORE stb allocates: this is the order
+			   that actually protects against the aggregate cost.
+			   stbi returns exactly the header dims for the tga/
+			   png/jpg formats this reaches, so the claim below is
+			   the canvas; if a format ever disagreed the claim
+			   still bounds the charge (release uses the claim,
+			   never the real size). */
+			claim = px * 4;
+			if (!STBBudgetReserve(claim, filename))
+			{
+				ri.FS_FreeFile(rawdata);
+				return false;
+			}
 		}
 	}
 
@@ -191,6 +331,10 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 	data = stbi_load_from_memory(rawdata, rawsize, &w, &h, &bytesPerPixel, STBI_rgb_alpha);
 	if (data == NULL)
 	{
+		if (claim)
+		{
+			MTL_STBReleaseBytes(claim);
+		}
 		Com_Printf("%s couldn't load data from %s: %s!\n", __func__, filename, stbi_failure_reason());
 		ri.FS_FreeFile(rawdata);
 		return false;
@@ -198,11 +342,29 @@ LoadSTB(const char *origname, const char* type, byte **pic, int *width, int *hei
 
 	ri.FS_FreeFile(rawdata);
 
+	if (claim == 0)
+	{
+		/* AJ1: stbi_info failed to parse the header but the decode
+		   succeeded, so the real canvas size is first knowable
+		   HERE - after stb has already allocated it.  Weaker
+		   protection (the transient allocation happened) but still
+		   correct accounting: the sum of surviving canvases stays
+		   bounded, and an over-budget canvas never reaches an
+		   image slot. */
+		claim = (long long)w * h * 4;
+		if (!STBBudgetReserve(claim, filename))
+		{
+			free(data);
+			return false;
+		}
+	}
+
 	Com_DPrintf("%s() loaded: %s\n", __func__, filename);
 
 	*pic = data;
 	*width = w;
 	*height = h;
+	*claimed = claim;
 	return true;
 }
 
@@ -545,6 +707,7 @@ LoadHiColorImage(const char *name, const char* namewe, const char *ext,
 	int width = 0, height = 0;
 	struct image_s	*image = NULL;
 	byte *pic = NULL;
+	long long claim = 0;
 
 	/* Get size of the original texture */
 	if (strcmp(ext, "pcx") == 0)
@@ -565,9 +728,9 @@ LoadHiColorImage(const char *name, const char* namewe, const char *ext,
 	}
 
 	/* try to load a tga, png or jpg (in that order/priority) */
-	if (  LoadSTB(namewe, "tga", &pic, &width, &height)
-	   || LoadSTB(namewe, "png", &pic, &width, &height)
-	   || LoadSTB(namewe, "jpg", &pic, &width, &height) )
+	if (  LoadSTB(namewe, "tga", &pic, &width, &height, &claim)
+	   || LoadSTB(namewe, "png", &pic, &width, &height, &claim)
+	   || LoadSTB(namewe, "jpg", &pic, &width, &height, &claim) )
 	{
 		if (width >= realwidth && height >= realheight)
 		{
@@ -582,6 +745,19 @@ LoadHiColorImage(const char *name, const char* namewe, const char *ext,
 				height, realheight,
 				width * height,
 				type, 32);
+		}
+
+		/* AJ1: the successful LoadSTB reserved budget for its
+		   canvas.  Hand it to the slot the load callback produced,
+		   or give it back when it produced none (size check failed,
+		   or load_image declined: bad dims, upload rollback, OOM). */
+		if (image != NULL)
+		{
+			MTL_STBMarkImage(image, claim);
+		}
+		else
+		{
+			MTL_STBReleaseBytes(claim);
 		}
 	}
 
@@ -653,8 +829,9 @@ R_LoadImage(const char *name, const char* namewe, const char *ext, imagetype_t t
 		{
 			byte *pic = NULL;
 			int width = 0, height = 0;
+			long long claim = 0;
 
-			if (LoadSTB (namewe, ext, &pic, &width, &height) && pic)
+			if (LoadSTB (namewe, ext, &pic, &width, &height, &claim) && pic)
 			{
 				image = load_image(name, pic,
 					width, width,
@@ -663,6 +840,17 @@ R_LoadImage(const char *name, const char* namewe, const char *ext, imagetype_t t
 					type, 32);
 
 				free(pic);
+
+				/* AJ1: same commit-or-release rule as
+				   LoadHiColorImage (see there). */
+				if (image != NULL)
+				{
+					MTL_STBMarkImage(image, claim);
+				}
+				else
+				{
+					MTL_STBReleaseBytes(claim);
+				}
 			}
 		}
 	}

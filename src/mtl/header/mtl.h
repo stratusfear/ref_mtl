@@ -79,6 +79,15 @@ typedef struct image_s
 	                                       sampler, per r_nolerp_list /
 	                                       r_lerp_list / r_2D_unfiltered
 	                                       (mirrors vk_image.c) */
+	long long stb_bytes;                /* AJ1 (round 27): canvas bytes this
+	                                       slot carries on the stb decode
+	                                       budget (src/files/stb.c).  Nonzero
+	                                       only for images whose pixels came
+	                                       from a stb decode that survived
+	                                       into this slot; released by the
+	                                       free sites (MTL_FreeUnusedImages,
+	                                       MTL_ShutdownImages) before the
+	                                       slot memset. */
 } image_t;
 
 #define MAX_MTLTEXTURES	1024

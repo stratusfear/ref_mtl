@@ -28,6 +28,7 @@
 
 #include "header/mtl.h"
 #include "header/mtl_shaders.h"
+#include "../common/header/stb_budget.h"
 
 #define REF_VERSION "Yamagi Quake II Metal 4 Refresher " MTL_VERSION
 
@@ -82,6 +83,9 @@ static cvar_t	*mtl_postprocess;	// W6c: world postprocess (vk_postprocess parity
 static cvar_t	*mtl_pixel_size;	// W6e: world downscale (vk_pixel_size parity)
 static cvar_t	*mtl_msaa;		// W7: world MSAA (vk_msaa parity)
 static cvar_t	*mtl_sampleshading;	// R2: sample-rate shading (vk_sampleshading parity)
+/* AJ1 (round 27): r_stb_budget, the aggregate stb decode budget in
+   MB; used through MTL_STBEffectiveBudgetBytes() below. */
+static cvar_t	*r_stb_budget;
 
 cvar_t		*r_lefthand;
 cvar_t		*r_drawworld;
@@ -220,6 +224,100 @@ R_Register(void)
 	   forces that rebuild, so the cvar applies mid-session (ref_vk
 	   waits for a device reinit). */
 	mtl_sampleshading = ri.Cvar_Get("mtl_sampleshading", "1", CVAR_ARCHIVE);
+
+	/* AJ1 (round 27): the aggregate stb decode budget, in megabytes.
+	   Round-26 AI3 measured the per-file caps' blind spot: each
+	   within-cap canvas costs up to 64 MB of decode memory, and 128
+	   such textures staged over one map reached 11.3 GB resident and
+	   14.9 s to the first frame on a 64 GB host - a hostile server
+	   can steer that content in through downloads (no per-texture
+	   category gate exists, see REVIEW_EXTERNAL.md AJ1).  The sum of
+	   live stb canvases is now bounded by this budget; see the
+	   counter in src/files/stb.c and the clamp below R_Register.
+	   Naming: the brief suggested r_retexturing_budget, but the
+	   budget also covers explicit .tga/.png/.jpg loads made with
+	   r_retexturing 0 (R_LoadImage's extension branch), so
+	   r_stb_budget names what it actually bounds.  Not CVAR_ARCHIVE:
+	   the clamp depends on the local device, and a saved value from
+	   a bigger machine would mislead on a smaller one. */
+	r_stb_budget = ri.Cvar_Get("r_stb_budget", "1024", 0);
+}
+
+/* AJ1 (round 27): stb budget clamp, stb.c's other side.
+   stb_budget_device_cap is the device term of the ceiling, taken
+   once per RE_InitContext from recommendedMaxWorkingSetSize (the
+   same MTLDevice property the device banner prints, see the
+   "recommendedMaxWorkingSetSize:" line in the device list): 1/4 of
+   it, on top of the STB_BUDGET_HARD_MAX_BYTES absolute term.  On
+   this 64 GB M1 Max host the 4096 MB hard term binds (RWSet/4
+   ~ 12 GB); on an 8 GB machine the device term binds at ~2 GB.
+   1/4 mirrors how the same class of query is used for headroom
+   elsewhere (there is no engine precedent to copy; the number is
+   a judgement call, stated so).  Zero cvars, negatives and garbage
+   ("set r_stb_budget abc" parses as 0.0; NaN fails !(mb > 0)) all
+   land on the floor, never on "unlimited" - the point of the
+   feature is a ceiling, and svc_stufftext is unfiltered
+   (yquake2 cl_parse.c:1413-1417: svc_stufftext goes straight to
+   Cbuf_AddText), so the cvar must be hostile-proof. */
+static long long stb_budget_device_cap;   /* 0 until the device exists */
+static long long stb_budget_printed;      /* effective value of the last print */
+
+long long
+MTL_STBEffectiveBudgetBytes(void)
+{
+	long long cap = STB_BUDGET_HARD_MAX_BYTES;
+	long long want;
+	float mb;
+
+	if (r_stb_budget == NULL)
+	{
+		/* Loader ran before R_Register (should not happen; the
+		   floor keeps it bounded either way). */
+		return STB_BUDGET_FLOOR_BYTES;
+	}
+
+	if (stb_budget_device_cap > 0 && stb_budget_device_cap < cap)
+	{
+		cap = stb_budget_device_cap;
+	}
+
+	mb = r_stb_budget->value;
+	/* NaN-safe: !(mb > 0.0f) is true for 0, negatives and NaN.
+	   The >HARD_MAX arm also keeps the cast defined: any float
+	   above it wants more than the ceiling can ever allow. */
+	if (!(mb > 0.0f))
+	{
+		want = 0;
+	}
+	else if (mb > STB_BUDGET_HARD_MAX_MB)
+	{
+		want = cap;
+	}
+	else
+	{
+		want = (long long)mb * (1024 * 1024);
+	}
+
+	if (want > cap)
+	{
+		want = cap;
+	}
+	if (want < STB_BUDGET_FLOOR_BYTES)
+	{
+		want = STB_BUDGET_FLOOR_BYTES;
+	}
+
+	if (want != stb_budget_printed)
+	{
+		Com_Printf("r_stb_budget: stb image budget is %lld MB "
+				"(r_stb_budget %g MB, ceiling %lld MB, "
+				"%lld MB charged)\n",
+				want / (1024 * 1024), mb,
+				cap / (1024 * 1024),
+				MTL_STBChargedBytes() / (1024 * 1024));
+		stb_budget_printed = want;
+	}
+	return want;
 }
 
 /*
@@ -2789,6 +2887,23 @@ RE_InitContext(void *sdl_window)
 
 		st->device = device;
 		st->command_queue = command_queue;
+
+		/* AJ1 (round 27): device term of the r_stb_budget ceiling,
+		   now that the device exists: recommendedMaxWorkingSetSize
+		   /4, floored against the absolute hard term (see the clamp
+		   after R_Register).  The same property the device banner
+		   prints.  The call also forces the one-line budget status
+		   print at context init. */
+		{
+			unsigned long long rwset = device.recommendedMaxWorkingSetSize;
+
+			stb_budget_device_cap = STB_BUDGET_HARD_MAX_BYTES;
+			if (rwset > 0 && (long long)(rwset / 4) < stb_budget_device_cap)
+			{
+				stb_budget_device_cap = (long long)(rwset / 4);
+			}
+			(void)MTL_STBEffectiveBudgetBytes();
+		}
 
 		st->pass_descriptor = [MTLRenderPassDescriptor new];
 

@@ -259,6 +259,29 @@ def main():
         o, l = lump(d, L["TEXINFO"])
         d[o + 40:o + 72] = b"evil/doesnotexist".ljust(32, b"\0")
 
+    # AJ1.0 (round 27): the hostile-server download drill map.  Rename
+    # texinfo "e1u1/metal2_1" to a name that exists ONLY on the
+    # server (its .tga reaches the client through the malicious
+    # model's skin-name download, dlroute.py); the map itself is
+    # downloaded too, which gates the whole precache walk.
+    @mut("b_dl2")
+    def _(d):
+        o, l = lump(d, L["TEXINFO"])
+        for k in range(l // 76):
+            rec = o + 76 * k
+            if d[rec + 40:rec + 72].split(b"\0")[0] == b"e1u1/metal2_1":
+                d[rec + 40:rec + 72] = b"e1u1/r27evil_tex".ljust(32, b"\0")
+
+    # AJ1 (round 27): budget pair for run_hostile's b_budget cases.
+    # The two first texinfo records (both face-referenced; b_notex
+    # proves record 0's rename is what the loader asks for) name the
+    # staged bud/one + bud/two 4096x4096 claims from mkimg.py.
+    @mut("b_budget")
+    def _(d):
+        o, l = lump(d, L["TEXINFO"])
+        d[o + 40:o + 72] = b"bud/one".ljust(32, b"\0")
+        d[o + 76 + 40:o + 76 + 72] = b"bud/two".ljust(32, b"\0")
+
     # AG1: node surface range vs the surface array
     # dnode_t: firstface at +24, numfaces at +26 (unsigned short), 28-byte records
     def node0(d):

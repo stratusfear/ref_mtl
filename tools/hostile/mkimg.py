@@ -156,6 +156,18 @@ def main():
     out["players/male/t_bigvalid.tga"] = tga(8192, 4096, bpp=8, rle=True,
         data=rle_solid(8192 * 4096))
 
+    # AJ1 (round 27): the stb-budget pair, staged for the b_budget map
+    # (mkbsp.py).  Each is a within-cap 4096x4096 8bpp RLE claim - a
+    # 64 MB RGBA canvas, the per-file cap's worst case - with a
+    # truncated payload (stb's EOF-fill decodes the rest flat, the
+    # same shape round-26 AI3's t4096 ladder measured).  At the floor
+    # budget (64 MB) one loads and the second must be refused with
+    # the budget line; at the default 1024 MB both load.
+    out["textures/bud/one.tga"] = tga(4096, 4096, bpp=8, rle=True,
+        data=rle_solid(384))
+    out["textures/bud/two.tga"] = tga(4096, 4096, bpp=8, rle=True,
+        data=rle_solid(384))
+
     # WAL/M32 variants referenced by the b_tex_* maps from mkbsp.py (Z3)
     out["textures/evil/w_wide.wal"] = wal(20000, 1, 100, b"\x10" * 20000)
     out["textures/evil/w_zero.wal"] = wal(0, 0, 100, b"\x10" * 16)

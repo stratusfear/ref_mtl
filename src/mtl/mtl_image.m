@@ -21,6 +21,7 @@
  */
 
 #include "header/mtl.h"
+#include "../common/header/stb_budget.h"
 
 image_t		mtltextures[MAX_MTLTEXTURES];
 int		nummtltextures = 0;
@@ -790,6 +791,11 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 	strcpy(image->name, name);
 	image->registration_sequence = registration_sequence;
 	image->mtl_texture = nil;
+	/* AJ1: defensive reset; slots reach this fresh path only zeroed
+	   (static array) or after a free site's memset, which already
+	   clears stb_bytes - but the claim that ends here is bound right
+	   after load_image returns, so make the precondition explicit. */
+	image->stb_bytes = 0;
 	image->type = type;
 	image->nolerp = nolerp;
 	if (realwidth && realheight)
@@ -887,6 +893,56 @@ MTL_LoadPic(const char *name, byte *pic, int width, int realwidth,
 		free(texBuffer);
 	}
 	return image;
+}
+
+/*
+===============
+MTL_STBMarkImage
+
+AJ1 (round 27): bind the budget claim a successful stb decode made in
+stb.c to the slot MTL_LoadPic just returned (called from stb.c after
+the load_image callback).  The bytes are already charged against the
+counter in stb.c; this only records which slot owns them, so the free
+sites can release them.  All decisions here are deliberately in the
+conservative direction - a claim is kept whenever the slot may carry
+stb-decoded bytes and given back only when it provably carries none:
+
+  - NULL slot: load_image declined (dim reject, scale OOM, upload
+    rollback); give the claim back.
+  - slot->stb_bytes != 0: MTL_LoadPic's M5 name scan reused a slot
+    that already carries an stb charge; its GPU texture is the old
+    one, this decode's pixels were dropped - give the new claim back
+    (double-charge guard).
+  - slot->stb_bytes == 0 but name-reused (the M5 early return, e.g.
+    a slot first filled from a .wal and hit again through a
+    retexture decode): this decode's pixels never reached the GPU,
+    but distinguishing that would need a new flag; binding the
+    claim instead over-charges by one canvas and the eviction free
+    site still releases it exactly once - over-charge bounds the
+    budget early, which is the safe direction.
+  - MTL_UploadTexture's notexture substitution (M6, nil
+    newTextureWithDescriptor): the slot keeps its name and burns no
+    extra device memory; keeping the charge again over-charges, and
+    an ERR_DROP path never returns here at all.
+===============
+*/
+void
+MTL_STBMarkImage(struct image_s *slot, long long canvas_bytes)
+{
+	image_t	*image = (image_t *)slot;
+
+	if (canvas_bytes <= 0)
+	{
+		return;
+	}
+
+	if ((image == NULL) || (image->stb_bytes != 0))
+	{
+		MTL_STBReleaseBytes(canvas_bytes);
+		return;
+	}
+
+	image->stb_bytes = canvas_bytes;
 }
 
 /*
@@ -1050,6 +1106,10 @@ void MTL_FreeUnusedImages (void)
 		}
 
 		/* free it */
+		/* AJ1: give the slot's stb budget claim back before the
+		   memset erases stb_bytes.  No-op for slots that never
+		   carried one (stb_bytes == 0). */
+		MTL_STBReleaseBytes(image->stb_bytes);
 		/* G1: mtl_texture holds the +1 from newTextureWithDescriptor;
 		   dropping it without a release leaked the GPU texture (Shared
 		   storage: system RAM + device allocation) on every eviction. */
@@ -1144,6 +1204,9 @@ void	MTL_ShutdownImages (void)
 			Com_Printf("%s: Unload %s[%d]\n", __func__, image->name, img_loaded);
 		}
 
+		/* AJ1: release this slot's budget claim, see
+		   MTL_FreeUnusedImages */
+		MTL_STBReleaseBytes(image->stb_bytes);
 		/* G1: release before dropping the slot, see MTL_FreeUnusedImages */
 		[image->mtl_texture release];
 		image->mtl_texture = nil;

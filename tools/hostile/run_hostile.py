@@ -176,6 +176,21 @@ CASES = [
      "LoadSTB: refusing to decode players/male/t_bigvalid.tga claiming "
      "8192x4096 (33554432 pixels; limit 16384 per side, 16777216 pixels)",
      None),
+    # AJ1 (round 27): the aggregate stb budget (r_stb_budget).  The
+    # b_budget map (mkbsp) names the staged pair of within-cap
+    # 4096x4096 claims (mkimg), 64 MB canvas each.  Over case: the
+    # cvar sits below the floor, so the effective budget is the floor
+    # (64 MB) - one canvas fits, the rest of the map's claims must
+    # meet the budget line, and the map still loads on the shipped
+    # fallbacks.  The clamp case pins the status print for garbage
+    # input (parses as 0 -> floor).  Control at the default budget:
+    # whole map fits (worst shipped demand ~172 MB), no budget line.
+    ("b_bud_over",   ["+set", "r_stb_budget", "32", "+map", "b_budget"],
+     "does not fit the stb budget", None),
+    ("b_bud_clamp",  ["+set", "r_stb_budget", "abc", "+map", "b_budget"],
+     "stb image budget is 64 MB (r_stb_budget 0 MB", None),
+    ("c_bud_under",  ["+map", "b_budget"], "Map: b_budget",
+     "does not fit the stb budget"),
     # Z6: alias models swapped onto the precached view-model path
     ("m_tris",           ["+map", "base1"], "Failed to load", None),
     ("m_frames",         ["+map", "base1"], "Failed to load", None),

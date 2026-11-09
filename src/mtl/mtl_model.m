@@ -26,6 +26,7 @@
  */
 
 #include "header/mtl.h"
+#include "../common/header/stb_budget.h"
 
 static YQ2_ALIGNAS_TYPE(int) byte mod_novis[MAX_MAP_LEAFS / 8];
 
@@ -1534,6 +1535,10 @@ RE_BeginRegistration(char *model)
 	Mod_Reallocate();
 
 	registration_sequence++;
+	/* AJ1 (round 27): new level boundary for the stb decode budget -
+	   flushes its per-level refusal summary and re-opens the print
+	   allowance (src/files/stb.c). */
+	MTL_STBLevelBoundary();
 	/* T2: invalidate both halves of the viewcluster state, current
 	   and previous. R_SetupFrame copies r_oldviewcluster2 =
 	   r_viewcluster2 back from the current pair at the start of every
