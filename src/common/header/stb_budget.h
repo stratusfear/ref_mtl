@@ -45,6 +45,9 @@ long long MTL_STBChargedBytes(void);
    recommendedMaxWorkingSetSize)).  Prints one line whenever the
    effective value changes. */
 long long MTL_STBEffectiveBudgetBytes(void);
+/* AK3 (round 28): the ceiling term alone (min of the hard-max and the
+   device term), so the refusal lines can name it to the user. */
+long long MTL_STBBudgetCeilingBytes(void);
 
 /* implemented in mtl_image.m (called by stb.c): bind the claim to
    the slot the load callback just returned.  Releases the claim

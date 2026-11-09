@@ -262,10 +262,27 @@ R_Register(void)
 static long long stb_budget_device_cap;   /* 0 until the device exists */
 static long long stb_budget_printed;      /* effective value of the last print */
 
+/* AK3 (round 28): the ceiling term on its own - min of the absolute
+   hard-max term and the device term.  The budget refusal lines use it
+   to tell a pack author how far r_stb_budget can actually go; the
+   single computation below, no second copy of the constants. */
+long long
+MTL_STBBudgetCeilingBytes(void)
+{
+	long long cap = STB_BUDGET_HARD_MAX_BYTES;
+
+	if (stb_budget_device_cap > 0 && stb_budget_device_cap < cap)
+	{
+		cap = stb_budget_device_cap;
+	}
+
+	return cap;
+}
+
 long long
 MTL_STBEffectiveBudgetBytes(void)
 {
-	long long cap = STB_BUDGET_HARD_MAX_BYTES;
+	long long cap = MTL_STBBudgetCeilingBytes();
 	long long want;
 	float mb;
 
@@ -274,11 +291,6 @@ MTL_STBEffectiveBudgetBytes(void)
 		/* Loader ran before R_Register (should not happen; the
 		   floor keeps it bounded either way). */
 		return STB_BUDGET_FLOOR_BYTES;
-	}
-
-	if (stb_budget_device_cap > 0 && stb_budget_device_cap < cap)
-	{
-		cap = stb_budget_device_cap;
 	}
 
 	mb = r_stb_budget->value;

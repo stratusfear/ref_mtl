@@ -186,7 +186,8 @@ CASES = [
     # input (parses as 0 -> floor).  Control at the default budget:
     # whole map fits (worst shipped demand ~172 MB), no budget line.
     ("b_bud_over",   ["+set", "r_stb_budget", "32", "+map", "b_budget"],
-     "does not fit the stb budget", None),
+     ("does not fit the stb budget", "; raise r_stb_budget, ceiling"),
+     None),
     ("b_bud_clamp",  ["+set", "r_stb_budget", "abc", "+map", "b_budget"],
      "stb image budget is 64 MB (r_stb_budget 0 MB", None),
     ("c_bud_under",  ["+map", "b_budget"], "Map: b_budget",
@@ -410,8 +411,10 @@ def main():
             why = "died rc=%d (signal %d)" % (rc, -rc) if rc < 0 else "died rc=%d" % rc
         elif crash:
             why = "sanitizer/segmentation in logs"
-        elif marker and marker not in logs:
-            why = "missing marker %r" % marker
+        elif marker and any(m not in logs
+                            for m in ([marker] if isinstance(marker, str)
+                                      else marker)):
+            why = "missing marker %r" % (marker,)
         elif forbidden and forbidden in logs:
             why = "control shows %r" % forbidden
         else:

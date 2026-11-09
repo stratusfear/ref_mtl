@@ -96,11 +96,13 @@ MTL_STBLevelBoundary(void)
 	{
 		Com_Printf("LoadSTB: %d image decode(s) refused by the stb "
 				"budget this level (%lld MB canvas); %lld MB of "
-				"%lld MB charged\n",
+				"%lld MB charged; raise r_stb_budget, ceiling "
+				"%lld MB\n",
 				stb_level_refusals,
 				stb_level_refused_bytes / (1024 * 1024),
 				stb_charged_bytes / (1024 * 1024),
-				MTL_STBEffectiveBudgetBytes() / (1024 * 1024));
+				MTL_STBEffectiveBudgetBytes() / (1024 * 1024),
+				MTL_STBBudgetCeilingBytes() / (1024 * 1024));
 	}
 
 	stb_level_refusals = 0;
@@ -128,17 +130,25 @@ STBBudgetReserve(long long canvas_bytes, const char *filename)
 	stb_level_refused_bytes += (canvas_bytes > 0 ? canvas_bytes : 0);
 	if (stb_level_printed < STB_BUDGET_REFUSAL_PRINT_MAX)
 	{
-		Com_Printf("%s: refusing to decode %s: %lld MB canvas does not "
-				"fit the stb budget (%lld MB of %lld MB charged)\n",
-				__func__, filename,
+		/* AK3/AK4 (round 28): literal "LoadSTB:" (this file's
+		   user-visible prefix; STBBudgetReserve is internal) and
+		   the cvar + ceiling named where a pack author needs
+		   them. */
+		Com_Printf("LoadSTB: refusing to decode %s: %lld MB canvas "
+				"does not fit the stb budget (%lld MB of %lld MB "
+				"charged; raise r_stb_budget, ceiling %lld MB)\n",
+				filename,
 				canvas_bytes / (1024 * 1024),
 				stb_charged_bytes / (1024 * 1024),
-				budget / (1024 * 1024));
+				budget / (1024 * 1024),
+				MTL_STBBudgetCeilingBytes() / (1024 * 1024));
 		stb_level_printed++;
 		if (stb_level_printed == STB_BUDGET_REFUSAL_PRINT_MAX)
 		{
 			Com_Printf("LoadSTB: further budget refusals "
-					"suppressed until the next level\n");
+					"suppressed until the next level; raise "
+					"r_stb_budget (ceiling %lld MB)\n",
+					MTL_STBBudgetCeilingBytes() / (1024 * 1024));
 		}
 	}
 	return false;
