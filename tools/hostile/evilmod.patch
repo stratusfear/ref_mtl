@@ -1,0 +1,53 @@
+--- a/src/game/g_spawn.c
++++ b/src/game/g_spawn.c
+@@ -354,7 +354,16 @@
+ 	const char *com_token;
+ 	int i;
+ 	float skill_level;
++
++	gi.dprintf("AJ1-SPAWN map=[%s]\n", mapname ? mapname : "(null)");
+ 
++	/* R27/AJ1.0 hostile-server drill (scratch copy only, never
++	   committed): precache a model the stock client does not have,
++	   so its MD2 skin names become download requests.  Here, not
++	   in InitGame: configstring broadcast needs the server game
++	   state, which InitGame runs before. */
++	gi.modelindex("models/evil/tris.md2");
++
+ 	if (!mapname || !entities || !spawnpoint)
+ 	{
+ 		return;
+--- a/src/game/player/client.c
++++ b/src/game/player/client.c
+@@ -1760,7 +1760,31 @@
+ ClientBegin(edict_t *ent)
+ {
+ 	int i;
++
++	gi.bprintf(PRINT_HIGH, "AJ1-ENTER: top of ClientBegin\n");
++
++	/* R27/AJ1 drill (scratch copy only, never committed): the real
++	   hostile client-console route - svc_stufftext unicast to one
++	   client (there is no `stuff` console command in this engine;
++	   svc_stufftext is what the game/protocol can produce).  Once
++	   per game process, when a client has entered b_dl1: raise the
++	   renderer's stb budget and force a vid_restart.  Placed at the
++	   top: this build's game mode takes the deathmatch early-return
++	   path below, so a tail-block would never run. */
++	{
++		static qboolean aj1_stuffed;
+ 
++		if (!aj1_stuffed && ent && !Q_strcasecmp(level.mapname, "b_dl1"))
++		{
++			aj1_stuffed = true;
++			gi.WriteByte(svc_stufftext);
++			gi.WriteString("set r_stb_budget 2048\nvid_restart\n");
++			gi.unicast(ent, true);
++			gi.bprintf(PRINT_HIGH, "AJ1: stuffing client on map %s\n",
++					level.mapname);
++		}
++	}
++
+ 	if (!ent)
+ 	{
+ 		return;

