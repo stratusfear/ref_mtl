@@ -16,6 +16,8 @@
 
 #include "fuzz_common.h"
 
+#include "../../src/common/header/stb_budget.h"
+
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -362,6 +364,49 @@ FuzzFindImage(const char *name, imagetype_t type)
 {
 	(void)name; (void)type;
 	return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* AL1 (round 29): the stb budget bridge (stb_budget.h).  AJ1 gave
+   stb.c three callers that live in Metal TUs (MTL_STBMarkImage in
+   mtl_image.m, the two budget-value readers in mtl_main.m); the
+   harness links no Metal TU, so since 86c2940 every fuzz target
+   failed to link.  The stubs below keep the budget code paths in
+   stb.c exercised, honestly: */
+/* ------------------------------------------------------------------ */
+
+void
+MTL_STBMarkImage(struct image_s *slot, long long canvas_bytes)
+{
+	/* The real one binds the claim to the image slot and releases
+	   it when the slot is wiped.  FuzzLoadImage hands out one
+	   shared stand-in that dies with each iteration, so the slot's
+	   whole lifetime is this call's end: release the charge
+	   immediately.  A return-only stub would be the silent
+	   failure mode: charges accumulate to the budget and every
+	   later decode is refused without any input-side reason. */
+	(void)slot;
+	MTL_STBReleaseBytes(canvas_bytes);
+}
+
+long long
+MTL_STBEffectiveBudgetBytes(void)
+{
+	/* Engine default: the r_stb_budget cvar default is 1024 MB
+	   (mtl_main.m); the cvar does not exist in the harness, so
+	   the literal with its provenance is the faithful stand-in.
+	   1024 MB also sits 7.6x above the round-27 swept worst case
+	   (135 MB peak, mapbudget sweep), so corpus decodes stay
+	   admissible and refusals stay input-driven. */
+	return 1024LL * 1024 * 1024;
+}
+
+long long
+MTL_STBBudgetCeilingBytes(void)
+{
+	/* No Metal device here, so no device term: the ceiling is
+	   the absolute hard-max term alone. */
+	return STB_BUDGET_HARD_MAX_BYTES;
 }
 
 /* ------------------------------------------------------------------ */

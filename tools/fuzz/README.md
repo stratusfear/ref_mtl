@@ -55,15 +55,21 @@ not use it. Verified fallback (used if clang-mp-23 ever vanishes):
 ## Use
 
 ```sh
-make                 # build the four fuzzers (ASan+UBSan)
+make                 # build all six fuzzers (ASan+UBSan)
 make seeds           # corpus/ from shipped paks (NOT committed)
-make smoke           # 2000 iterations per target (AE1 gate)
+make smoke           # seeds + 2000 mutated iterations per target (AE1 gate)
 make run T=fuzz_pcx TIME=1800 SEED=1     # 30 min session
 make cov && make replay && make report   # line coverage per loader
 ```
 
 Crash artifacts land in `crashers/` (git-ignored). Dictionaries for
-each target live in `dictionaries/`; pass them with `-dict=`.
+each target live in `dictionaries/`; `make smoke`/`make run` pass
+them with `-dict=` when present (`fuzz_nodes` has never had one -
+AL1 made the flag conditional rather than shipping a dict that
+would change its mutation distribution after the fact). Since
+round-29 AL1 the outer gate (`tools/fix_verify.sh`) also builds all
+six fuzz targets on every run, so a loader-side bridge change cannot
+ silently break the harness link again.
 
 The seed corpus is generated from the shipped paks and loose game
 files by `mkseedcorpus.py` and is never committed.

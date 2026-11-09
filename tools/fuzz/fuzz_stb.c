@@ -18,6 +18,9 @@
 
 #include "fuzz_common.h"
 
+#include "../../src/common/header/stb_budget.h"
+
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -82,5 +85,31 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	}
 
 	MemFS_Clear();
+
+	/* AL1 (round 29): budget-accounting invariant, loud.  The
+	   stb_budget.h contract: every reserved canvas byte is either
+	   committed (MTL_STBMarkImage - the harness stub releases
+	   immediately, the stand-in slot dying with the call) or
+	   released by stb.c itself before R_LoadImage returns.  So a
+	   non-zero charge here is an accounting defect in stb.c on
+	   THIS input, not harness noise: abort and report the input
+	   instead of letting the run grind on with a full budget. */
+	{
+		long long charged = MTL_STBChargedBytes();
+
+		if (charged != 0)
+		{
+			fprintf(stderr,
+				"BUDGET_ACCOUNTING: MTL_STBChargedBytes() = %lld "
+				"bytes after input of %zu byte(s); expected 0 "
+				"(stb_budget.h: every claim is marked or "
+				"released). This is a finding about src/files/"
+				"stb.c: stop and report this input.\n",
+				charged, size);
+			fflush(stderr);
+			abort();
+		}
+	}
+
 	return 0;
 }

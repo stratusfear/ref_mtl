@@ -129,16 +129,26 @@ $(BUILD)/fuzz_nodes: $(OBJDIR)/fuzz_nodes.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/sh
 # than 2000 files, which would leave zero mutated executions.  Run
 # over the seeds once plus a 2000-iteration margin, time-boxed.
 
+# AL1 (round 29): the -dict flag is conditional.  The smoke/run
+# loops cover every TARGET, but dictionaries/nodes.dic never
+# existed in git (git ls-files shows the five AE-era dicts, and
+# AG2's d9fe315 added fuzz_nodes to these loops without one),
+# and this libFuzzer hard-fails on a named-but-missing -dict:
+# `make smoke` had been dying at fuzz_nodes since round 24.  It
+# went unnoticed because no fuzz target linked at all from AJ1
+# (86c2940) until the AL1 stubs; the smoke gate had not run.
 smoke: fuzzers
 	@for t in $(TARGETS); do \
 		n=$$(ls $(CORPUS)/$$t 2>/dev/null | wc -l | tr -d ' '); \
 		[ "$$n" -gt 0 ] || n=1; \
 		echo "===> smoke $$t (seeds=$$n +2000)"; \
+		dict=; [ -f dictionaries/$${t#fuzz_}.dic ] && \
+			dict="-dict=dictionaries/$${t#fuzz_}.dic"; \
 		$(BUILD)/$$t $(CORPUS)/$$t \
 			-runs=$$((n + 2000)) -max_total_time=25 -timeout=30 \
 			-error_exitcode=1 \
 			-rss_limit_mb=4096 \
-			-dict=dictionaries/$${t#fuzz_}.dic \
+			$$dict \
 			-artifact_prefix=$(CRASHDIR)/ || exit 1; \
 	done
 
@@ -167,12 +177,14 @@ SEED ?= 0
 RUNS ?= 0
 
 run: fuzzers
+	@dict=; [ -f dictionaries/$${T#fuzz_}.dic ] && \
+		dict="-dict=dictionaries/$${T#fuzz_}.dic"; \
 	$(BUILD)/$(T) $(CORPUS)/$(T) \
 		$(if $($(T)_MAXLEN),-max_len=$($(T)_MAXLEN),) \
 		$(if $(RUNS),-runs=$(RUNS),) \
 		-max_total_time=$(TIME) -error_exitcode=1 \
 		-rss_limit_mb=8192 -artifact_prefix=$(CRASHDIR)/ \
-		-dict=dictionaries/$${T#fuzz_}.dic \
+		$$dict \
 		-seed=$(SEED)
 
 # --- AF2.3: corpus minimisation: copy only coverage-producing units
