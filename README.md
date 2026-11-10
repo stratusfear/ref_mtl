@@ -7,6 +7,16 @@ A native **Metal 4** rendering backend plugin (`ref_mtl.dylib`) for
 failed or missing plugin can never brick the game (the host falls back
 through `gl3` → `gles3` → `gl1` → `gles1` → `soft`).
 
+## AI assistance
+
+Much of this renderer's code, tooling and review reports was produced
+with AI assistance. A local LLM, Qwen3.8-Flash-Next, wrote most of the
+implementation and fixes. Claude (Anthropic) wrote the review briefs and
+independently verified the results. Everything was run against real game
+data and a hostile-input test suite before commit, but treat it as
+AI-assisted code and review it accordingly. Human direction and final
+decisions: [@stratusfear](https://github.com/stratusfear).
+
 ## Requirements
 
 - **macOS 26+** (Metal 4 is a macOS 26 feature)
