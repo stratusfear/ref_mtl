@@ -132,11 +132,11 @@ $(BUILD)/fuzz_nodes: $(OBJDIR)/fuzz_nodes.o $(OBJDIR)/fuzz_engine.o $(OBJDIR)/sh
 # AL1 (round 29): the -dict flag is conditional.  The smoke/run
 # loops cover every TARGET, but dictionaries/nodes.dic never
 # existed in git (git ls-files shows the five AE-era dicts, and
-# AG2's d9fe315 added fuzz_nodes to these loops without one),
+# AG2's 135a37d added fuzz_nodes to these loops without one),
 # and this libFuzzer hard-fails on a named-but-missing -dict:
 # `make smoke` had been dying at fuzz_nodes since round 24.  It
 # went unnoticed because no fuzz target linked at all from AJ1
-# (86c2940) until the AL1 stubs; the smoke gate had not run.
+# (8f7b206) until the AL1 stubs; the smoke gate had not run.
 smoke: fuzzers
 	@for t in $(TARGETS); do \
 		n=$$(ls $(CORPUS)/$$t 2>/dev/null | wc -l | tr -d ' '); \

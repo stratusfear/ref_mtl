@@ -76,7 +76,7 @@ rm -f "$HOSTLOG"
 # AL1.3 (round 29): fuzz-harness link leg.  The tools/fuzz harnesses
 # link the loader TUs directly (stb.o and friends), so a ref_mtl
 # change that adds a bridge symbol only the Metal TUs define breaks
-# every fuzz target - which is exactly what AJ1 did at 86c2940: the
+# every fuzz target - which is exactly what AJ1 did at 8f7b206: the
 # fuzzers did not link for four commits, invisible because no gate
 # ever built them (the AJ1/AJ2/AK2/AK3 gate batteries all built the
 # renderer + host + suite, not tools/fuzz).  This leg is build-only

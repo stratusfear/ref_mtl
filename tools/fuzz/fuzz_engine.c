@@ -370,7 +370,7 @@ FuzzFindImage(const char *name, imagetype_t type)
 /* AL1 (round 29): the stb budget bridge (stb_budget.h).  AJ1 gave
    stb.c three callers that live in Metal TUs (MTL_STBMarkImage in
    mtl_image.m, the two budget-value readers in mtl_main.m); the
-   harness links no Metal TU, so since 86c2940 every fuzz target
+   harness links no Metal TU, so since 8f7b206 every fuzz target
    failed to link.  The stubs below keep the budget code paths in
    stb.c exercised, honestly: */
 /* ------------------------------------------------------------------ */
