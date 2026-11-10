@@ -69,7 +69,12 @@ On mismatch the host prints e.g.
 in its order list. This is expected, safe behavior — e.g. an SDL 3
 plugin next to an SDL 2 host.
 
-### Runtime validation (Metal)
+### Debugging: Metal validation (developers only)
+
+**You do not need this to play.** It is a debugging aid for people
+building, forking or extending the renderer, to be used after a build
+when tracking down Metal API misuse or shader problems. The validation
+layers add overhead, so leave them off for normal play.
 
 Apple's Metal validation layers must be enabled **before launch** via
 environment variables (they cannot be toggled at runtime):
@@ -77,6 +82,9 @@ environment variables (they cannot be toggled at runtime):
 ```sh
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ./quake2
 ```
+
+`DEBUG_LAYER=1 tools/fix_verify.sh` runs the repo's smoke test under the
+same layers.
 
 ## Scope: intentionally not implemented
 
