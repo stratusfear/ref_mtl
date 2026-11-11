@@ -34,16 +34,16 @@ Design rules (round-22 brief):
 
 ## Toolchain
 
-Required and verified on this machine:
-
-```
-/opt/local/bin/clang-mp-23        build + fuzz
-/opt/local/bin/llvm-profdata-mp-23  coverage merge
-/opt/local/bin/llvm-cov-mp-23       coverage report
-```
+The Makefile uses the newest MacPorts `clang-mp-N` installed with N >= 22
+(a version pinned in the Makefile as `FUZZ_MIN_LLVM`), together with the
+matching `llvm-profdata` and `llvm-cov` (in `/opt/local/bin/*-mp-N` or
+`/opt/local/libexec/llvm-N/bin/`). Force a version with
+`FUZZ_CLANG_VER=<N>`, or the compiler itself with `make CC=...`.
+clang-mp-23 and clang-mp-22 are both verified to build and run all six
+targets; MacPorts removed clang-mp-23 from this machine in November 2026.
 
 clang-mp-20 with ASan hangs at startup on this host *silently* - do
-not use it. Verified fallback (used if clang-mp-23 ever vanishes):
+not use it. Verified fallback (used if no clang-mp-N >= 22 is installed):
 
 ```
 /usr/bin/clang -g -O1 -fno-omit-frame-pointer \

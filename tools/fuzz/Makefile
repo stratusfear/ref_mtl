@@ -29,7 +29,7 @@
 #                                                        #
 # Toolchain notes (AE1):                                 #
 #  - clang-mp-20 with ASan hangs at startup on this      #
-#    host, silently. Everything here uses clang-mp-23.   #
+#    host, silently. See the toolchain selection below.  #
 #  - clang-mp-23 does not accept a _Noreturn function    #
 #    for a __attribute__((noreturn))-annotated function  #
 #    pointer type (verified on a minimal TU); the        #
@@ -38,11 +38,27 @@
 #    the llvm-20 fuzzer runtime, see README.md.          #
 # ------------------------------------------------------ #
 
-# CC is a builtin make variable (cc), so ?= never assigns: use :=
-# and override with `make CC=...` on the command line if needed.
-CC       := /opt/local/bin/clang-mp-23
-PROFDATA := /opt/local/bin/llvm-profdata-mp-23
-LLCOV    := /opt/local/bin/llvm-cov-mp-23
+# Toolchain selection.  The fuzzers need a MacPorts clang with the
+# libFuzzer runtime (Apple's clang has none).  clang-mp-23 was the pin,
+# but MacPorts can drop a version out from under us (it did: only 20 and
+# 22 were left), and a hard-coded path then fails every gate that builds
+# the harnesses.  So: use the newest installed clang-mp-N with N >=
+# FUZZ_MIN_LLVM (clang-mp-20 hangs under ASan on this host, see above;
+# clang-mp-22 is verified to build and run all six targets), or force one
+# with FUZZ_CLANG_VER=<N> in the environment or on the command line.
+# `make CC=...` still overrides the compiler outright.  CC is a builtin
+# make variable (cc), so ?= never assigns: use :=.
+FUZZ_MIN_LLVM := 22
+CLANG_VER := $(or $(FUZZ_CLANG_VER),$(shell ls /opt/local/bin/clang-mp-[0-9]* 2>/dev/null | sed 's/.*clang-mp-//' | awk '$$1 >= $(FUZZ_MIN_LLVM)' | sort -n | tail -1))
+ifeq ($(CLANG_VER),)
+$(warning no clang-mp-N >= $(FUZZ_MIN_LLVM) under /opt/local/bin; install one with MacPorts or see README.md for the fallback toolchain)
+CLANG_VER := 23
+endif
+CC       := /opt/local/bin/clang-mp-$(CLANG_VER)
+# The llvm tools sit in /opt/local/bin as *-mp-N on some MacPorts
+# versions and only under libexec/llvm-N/bin on others.
+PROFDATA := $(firstword $(wildcard /opt/local/bin/llvm-profdata-mp-$(CLANG_VER) /opt/local/libexec/llvm-$(CLANG_VER)/bin/llvm-profdata) /opt/local/bin/llvm-profdata-mp-$(CLANG_VER))
+LLCOV    := $(firstword $(wildcard /opt/local/bin/llvm-cov-mp-$(CLANG_VER) /opt/local/libexec/llvm-$(CLANG_VER)/bin/llvm-cov) /opt/local/bin/llvm-cov-mp-$(CLANG_VER))
 PY       ?= python3
 
 SRCDIR   := ../../src
