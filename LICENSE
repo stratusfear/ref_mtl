@@ -1,10 +1,18 @@
-The Yamagi Quake II Vulkan renderer lib is based upon vkQuake2 and
-ontains software developed by multiple individuals, projects and
-organisations. Following is a list of this software and copys of each
-license:
+ref_mtl, the Metal 4 renderer lib for Yamagi Quake II, is based upon
+ref_vk (the Yamagi Quake II Vulkan renderer lib), which is in turn
+based upon vkQuake2. It contains software developed by multiple
+individuals, projects and organisations; see "Acknowledgements and
+provenance" in README.md for which files come from where.
 
-- Quake II
-- stb_image.h, stb_image_write.h
+New code written for ref_mtl is released under the same terms as the
+code it builds on: the GNU General Public License, version 2 or (at
+your option) any later version, as stated in the source file headers.
+
+Following is a list of the software this project contains and copies
+of each license:
+
+- Quake II, vkQuake2 and the Yamagi Quake II renderers (GPL version 2)
+- stb_image.h, stb_image_resize.h
 
 ===============================================================================
 

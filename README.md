@@ -106,3 +106,33 @@ src/constants/  lookup tables (anorms, warp sin)
 shaders/        MSL 3.2 sources (ported from ref_vk's GLSL; W2+)
 Makefile        Darwin-only, builds release/ref_mtl.dylib
 ```
+
+## Acknowledgements and provenance
+
+ref_mtl is a Metal 4 port of [`ref_vk`](https://github.com/yquake2/ref_vk),
+the Yamagi Quake II Vulkan renderer, which is based on
+[vkQuake2](https://github.com/kondrak/vkQuake2) by Krzysztof Kondrak and
+on id Software's Quake II. It builds against Yamagi Quake II's renderer
+plugin ABI. Per-file copyright headers are kept; the project is under the
+GPL (see `LICENSE`).
+
+What came from where (compared with `ref_vk` in November 2026):
+
+- **Copied unchanged from `ref_vk`:** `src/common/` (except
+  `stb_budget.h` and a small change to `ref_shared.h`), `src/constants/`,
+  `src/files/surf.c`, and the vendored `stb_image.h` and
+  `stb_image_resize.h`.
+- **Copied, then modified:** `src/files/pcx.c`, `wal.c`, `models.c`,
+  `pvs.c`, `stb.c` and `src/backends/hunk_unix.c`. Most of the change is
+  the hostile-input hardening described in the review reports (bounds
+  checks, the stb size caps and the `r_stb_budget` decode budget).
+- **Ported from `ref_vk` to Metal:** the files in `src/mtl/`. How much
+  carries over varies. `mtl_warp.m` and `mtl_light.m` are close ports,
+  `mtl_model.m`, `mtl_image.m` and `mtl_surf.m` are partly ported, and
+  `mtl_alias.m` and `mtl_main.m` are mostly Metal-specific.
+- **New for ref_mtl:** the Metal shaders in `shaders/` (the MSL is
+  ported from `ref_vk`'s GLSL), the embedded-shader generator, and the
+  `tools/` test and fuzzing harnesses.
+
+This list is a comparison of file contents, not a legal audit. If you
+spot a missing attribution, please open an issue.
