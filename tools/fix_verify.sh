@@ -145,6 +145,12 @@ GAME="${FIX_VERIFY_GAME:-$ROOT/yquake2/build-sdl3/release/quake2}"
 
 # Content legs' data source: the installed bundle datadir, overridable so
 # the selftest can prove the absent-data skip path.
+# Default: the project-local bundle if present, else /Applications (where
+# Quake 2.app lives on this machine now).
+if [ -z "$FIX_VERIFY_DATADIR" ] && [ ! -d "$ROOT/Quake 2.app/Contents/Resources" ] \
+	&& [ -d "/Applications/Quake 2.app/Contents/Resources" ]; then
+	FIX_VERIFY_DATADIR="/Applications/Quake 2.app/Contents/Resources"
+fi
 DATADIR="${FIX_VERIFY_DATADIR:-$ROOT/Quake 2.app/Contents/Resources}"
 
 # Error grep shared by all legs. Deliberately NOT matching the benign

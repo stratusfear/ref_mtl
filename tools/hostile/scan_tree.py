@@ -199,12 +199,23 @@ def analyze(name, d, stats):
         stats["nodes_not_in_world_tree"] += unreached
 
 
+def _default_datadir():
+    """Game data dir: $Q2_DATADIR, else the first installed Quake 2.app
+    bundle found (the project-local one, then /Applications)."""
+    for d in (os.environ.get("Q2_DATADIR"),
+              "/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources",
+              "/Applications/Quake 2.app/Contents/Resources"):
+        if d and os.path.isdir(d):
+            return d
+    return "/Applications/Quake 2.app/Contents/Resources"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--datadir", action="append", default=None,
                     help="dir holding baseq2/pak*.pak and/or loose maps (repeatable)")
     a = ap.parse_args()
-    roots = a.datadir or ["/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources",
+    roots = a.datadir or [_default_datadir(),
                           "/Volumes/Scratch/dev/quake2/yquake2/build-sdl3/release"]
     stats = {"maps": 0, "nodes": 0, "leafs": 0, "max_leafs": 0, "max_nodes": 0,
              "max_nodes_map": ("", 0), "max_depth": 0,

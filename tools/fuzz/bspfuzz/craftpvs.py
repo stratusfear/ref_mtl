@@ -319,9 +319,20 @@ def build_minimodel(mode):
     return bytes(head) + bytes(body)
 
 
+def _default_datadir():
+    """Game data dir: $Q2_DATADIR, else the first installed Quake 2.app
+    bundle found (the project-local one, then /Applications)."""
+    for d in (os.environ.get("Q2_DATADIR"),
+              "/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources",
+              "/Applications/Quake 2.app/Contents/Resources"):
+        if d and os.path.isdir(d):
+            return d
+    return "/Applications/Quake 2.app/Contents/Resources"
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "."
-    maps = collect_maps("/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources")
+    maps = collect_maps(_default_datadir())
     os.makedirs(out, exist_ok=True)
     for name, builder in (("cal_bigvis", build_bigvis),
             ("cal_earlyterm", build_earlyterm)):

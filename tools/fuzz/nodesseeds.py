@@ -82,10 +82,20 @@ def node(planenum, c0, c1, firstface=0, numfaces=0):
                        firstface, numfaces)
 
 
+def _default_datadir():
+    """Game data dir: $Q2_DATADIR, else the first installed Quake 2.app
+    bundle found (the project-local one, then /Applications)."""
+    for d in (os.environ.get("Q2_DATADIR"),
+              "/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources",
+              "/Applications/Quake 2.app/Contents/Resources"):
+        if d and os.path.isdir(d):
+            return d
+    return "/Applications/Quake 2.app/Contents/Resources"
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--datadir", default="/Volumes/Scratch/dev/quake2/Quake 2.app/"
-                    "Contents/Resources")
+    ap.add_argument("--datadir", default=_default_datadir())
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                   "corpus", "fuzz_nodes"))
     ap.add_argument("--depths", default="")

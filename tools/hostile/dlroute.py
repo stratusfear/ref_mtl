@@ -79,7 +79,19 @@ import mkbsp  # noqa: E402  (pak_extract + the map mutators live there)
 
 HOST = "/Volumes/Scratch/dev/quake2/yquake2/build-sdl3/release/quake2"
 Q2DED = "/Volumes/Scratch/dev/quake2/yquake2/build-sdl3/release/q2ded"
-DATADIR = "/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources"
+
+def _default_datadir():
+    """Game data dir: $Q2_DATADIR, else the first installed Quake 2.app
+    bundle found (the project-local one, then /Applications)."""
+    for d in (os.environ.get("Q2_DATADIR"),
+              "/Volumes/Scratch/dev/quake2/Quake 2.app/Contents/Resources",
+              "/Applications/Quake 2.app/Contents/Resources"):
+        if d and os.path.isdir(d):
+            return d
+    return "/Applications/Quake 2.app/Contents/Resources"
+
+
+DATADIR = _default_datadir()
 YQ2 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    os.pardir, os.pardir, os.pardir, "yquake2")
 
@@ -213,7 +225,7 @@ def main():
     slog = os.path.join(a.srchome, "sgame", "baseq2", "qconsole.log")
 
     srv = subprocess.Popen(
-        [Q2DED, "-datadir", DATADIR, "-cfgdir", "sgame",
+        [Q2DED, "-datadir", a.datadir, "-cfgdir", "sgame",
          "+set", "port", str(a.port),
          "+set", "allow_download", "1", "+set", "deathmatch", "0",
          "+set", "logfile", "2", "+map", a.srvmap],
@@ -222,7 +234,7 @@ def main():
 
     clog = os.path.join(a.clihome, "hgame", "baseq2", "qconsole.log")
     cli = subprocess.Popen(
-        [HOST, "-datadir", DATADIR, "-cfgdir", "hgame",
+        [HOST, "-datadir", a.datadir, "-cfgdir", "hgame",
          "+set", "vid_renderer", "mtl", "+set", "vid_fullscreen", "0",
          "+set", "logfile", "2", "+set", "r_speeds", "1",
          "+set", "developer", "1" if a.dev else "0",
