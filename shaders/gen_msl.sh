@@ -1,4 +1,22 @@
 #!/bin/sh
+# Copyright (C) 2026 ref_mtl port
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or (at
+# your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+#
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+# 02110-1301, USA.
+
 #
 # gen_msl.sh - embed the Metal Shading Language sources in shaders/ as
 # C byte arrays in src/files/mtl_shaders.c.
@@ -60,6 +78,25 @@ def emit(name, path):
     return "\n".join(lines)
 
 with open(out_path, "w") as out:
+    out.write("/*\n")
+    out.write(" * Copyright (C) 2026 ref_mtl port\n")
+    out.write(" *\n")
+    out.write(" * This program is free software; you can redistribute it and/or modify\n")
+    out.write(" * it under the terms of the GNU General Public License as published by\n")
+    out.write(" * the Free Software Foundation; either version 2 of the License, or (at\n")
+    out.write(" * your option) any later version.\n")
+    out.write(" *\n")
+    out.write(" * This program is distributed in the hope that it will be useful, but\n")
+    out.write(" * WITHOUT ANY WARRANTY; without even the implied warranty of\n")
+    out.write(" * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n")
+    out.write(" *\n")
+    out.write(" * See the GNU General Public License for more details.\n")
+    out.write(" *\n")
+    out.write(" * You should have received a copy of the GNU General Public License\n")
+    out.write(" * along with this program; if not, write to the Free Software\n")
+    out.write(" * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA\n")
+    out.write(" * 02110-1301, USA.\n")
+    out.write(" */\n\n")
     out.write("/*\n")
     out.write(" * Embedded Metal Shading Language sources (byte arrays).\n")
     out.write(" *\n")
